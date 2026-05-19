@@ -1028,6 +1028,32 @@ export class SessionPage {
     return this.changes.locator("[data-selected='true']");
   }
 
+  /** All file rows in the changes panel currently marked as the active tab. */
+  changesActiveRows(): Locator {
+    return this.changes.locator("[data-active='true']");
+  }
+
+  /**
+   * Close every file-diff panel in dockview: the `preview:file-diff` slot AND
+   * any pinned `diff:file:<path>` panels created by promoting the preview.
+   * After this resolves, no diff tab is active so the changes-panel rows
+   * settle to `data-active="false"`.
+   */
+  async closeFileDiffPreview(): Promise<void> {
+    await this.page.evaluate(() => {
+      type PanelApi = { close: () => void };
+      type Panel = { id: string; api: PanelApi };
+      type Api = { panels: Panel[]; getPanel: (i: string) => Panel | undefined };
+      const api = (window as unknown as { __dockviewApi__?: Api }).__dockviewApi__;
+      if (!api) return;
+      api.getPanel("preview:file-diff")?.api.close();
+      // Snapshot before iterating: panel.api.close() mutates api.panels in
+      // place, so iterating the live array would skip every other panel.
+      const pinned = [...api.panels].filter((p) => p.id.startsWith("diff:file:"));
+      for (const panel of pinned) panel.api.close();
+    });
+  }
+
   /** Bulk action bar for a variant (unstaged/staged). */
   changesBulkActionBar(variant: "unstaged" | "staged"): Locator {
     return this.changes.getByTestId(`bulk-actions-${variant}`);
