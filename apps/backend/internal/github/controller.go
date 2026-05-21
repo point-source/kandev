@@ -60,6 +60,9 @@ func (c *Controller) RegisterHTTPRoutes(router *gin.Engine) {
 	api.POST("/watches/issue/:id/trigger", c.httpTriggerIssueWatch)
 	api.POST("/watches/issue/trigger-all", c.httpTriggerAllIssueChecks)
 
+	api.POST("/cleanup/review-tasks", c.httpCleanupReviewTasks)
+	api.POST("/cleanup/issue-tasks", c.httpCleanupIssueTasks)
+
 	api.GET("/orgs", c.httpListUserOrgs)
 	api.GET("/repos/search", c.httpSearchRepos)
 	api.GET("/repos/:owner/:repo/branches", c.httpListRepoBranches)
@@ -778,4 +781,34 @@ func (c *Controller) httpResetActionPresets(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, presets)
+}
+
+// httpCleanupReviewTasks runs a sweep over every review-PR dedup row
+// (including rows under enabled watches) applying each watch's cleanup
+// policy. Manual trigger for users to drain a pile of merged-PR tasks
+// without waiting for the next 5-minute poller cycle.
+//
+// SCOPE: install-wide — walks dedup rows across all workspaces. The
+// trigger-all endpoints (httpTriggerAllReviewChecks /
+// httpTriggerAllIssueChecks) take a required workspace_id, but cleanup
+// is install-wide on purpose so a user can drain orphans whose original
+// watch lived in a workspace they no longer have open. A future
+// multi-tenant rollout would add an optional workspace_id query param.
+func (c *Controller) httpCleanupReviewTasks(ctx *gin.Context) {
+	deleted, err := c.service.CleanupAllReviewTasks(ctx.Request.Context())
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
+// httpCleanupIssueTasks mirrors httpCleanupReviewTasks for issue watches.
+func (c *Controller) httpCleanupIssueTasks(ctx *gin.Context) {
+	deleted, err := c.service.CleanupAllIssueTasks(ctx.Request.Context())
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
