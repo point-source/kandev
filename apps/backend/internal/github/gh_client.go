@@ -646,6 +646,32 @@ func ghMergeStatusCode(err error) (int, bool) {
 	return 0, false
 }
 
+func (c *GHClient) GetRepoMergeMethods(ctx context.Context, owner, repo string) (RepoMergeMethods, error) {
+	out, err := c.run(ctx, "api", fmt.Sprintf("repos/%s/%s", owner, repo))
+	if err != nil {
+		return RepoMergeMethods{}, fmt.Errorf("get repo merge methods: %w", err)
+	}
+	var raw struct {
+		AllowMergeCommit *bool `json:"allow_merge_commit"`
+		AllowSquashMerge *bool `json:"allow_squash_merge"`
+		AllowRebaseMerge *bool `json:"allow_rebase_merge"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return RepoMergeMethods{}, fmt.Errorf("parse repo: %w", err)
+	}
+	// Conservative read: missing field → false. A permission-gated response
+	// that omits allow_* would otherwise let us pick a disallowed method
+	// (e.g. "merge" on a rebase-only repo), reproducing the 405 this fix is
+	// designed to prevent. Callers that fall back to GitHub's default on an
+	// empty pick get a meaningful error instead of a wrong-method 405.
+	allowed := func(p *bool) bool { return p != nil && *p }
+	return RepoMergeMethods{
+		Merge:  allowed(raw.AllowMergeCommit),
+		Squash: allowed(raw.AllowSquashMerge),
+		Rebase: allowed(raw.AllowRebaseMerge),
+	}, nil
+}
+
 func (c *GHClient) ListRepoBranches(ctx context.Context, owner, repo string) ([]RepoBranch, error) {
 	out, err := c.run(ctx, "api",
 		fmt.Sprintf("repos/%s/%s/branches", owner, repo),
