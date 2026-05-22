@@ -141,13 +141,13 @@ func (c *CloudClient) do(ctx context.Context, method, path string, body interfac
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Message: c.summarizeBody(resp, raw)}
+		return &APIError{StatusCode: resp.StatusCode, Message: c.summarizeBody(resp, raw, false)}
 	}
 	// Guardrail: some misconfigured Atlassian flows return a 200 HTML login
 	// page instead of JSON. If we accidentally get HTML, surface an auth error
 	// rather than letting json.Unmarshal fail with "invalid character '<'".
 	if isHTMLResponse(resp, raw) {
-		return &APIError{StatusCode: resp.StatusCode, Message: c.htmlAuthHint(resp.StatusCode)}
+		return &APIError{StatusCode: resp.StatusCode, Message: c.summarizeBody(resp, raw, true)}
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
@@ -167,28 +167,27 @@ func isHTMLResponse(resp *http.Response, raw []byte) bool {
 	return bytes.HasPrefix(trimmed, []byte("<"))
 }
 
-// summarizeBody returns a short, useful error message from a non-2xx response.
+// summarizeBody returns a short, useful error message from a Jira response.
 // For HTML bodies it skips the page content in favor of an auth-method-aware
 // hint; for plain text or JSON it returns the body verbatim (capped, so we
-// don't spam logs with multi-KB pages).
-func (c *CloudClient) summarizeBody(resp *http.Response, raw []byte) string {
-	if isHTMLResponse(resp, raw) {
+// don't spam logs with multi-KB pages). htmlOn2xx flags the "successful status
+// but HTML body" case — that means the response went through an auth-filter
+// login page instead of the REST API, so the hint adds "instead of JSON" to
+// distinguish it from the more common error-status HTML case.
+func (c *CloudClient) summarizeBody(resp *http.Response, raw []byte, htmlOn2xx bool) string {
+	if htmlOn2xx || isHTMLResponse(resp, raw) {
+		suffix := ". "
+		if htmlOn2xx {
+			suffix = " instead of JSON. "
+		}
 		return "Jira returned an HTML page (status " + strconv.Itoa(resp.StatusCode) +
-			"). " + c.authHint()
+			")" + suffix + c.authHint()
 	}
 	const maxMsg = 500
 	if len(raw) > maxMsg {
 		return string(raw[:maxMsg]) + "…"
 	}
 	return string(raw)
-}
-
-// htmlAuthHint is the message used when a successful HTTP status accidentally
-// carries HTML — meaning the response went through an auth-filter login page
-// instead of the REST API.
-func (c *CloudClient) htmlAuthHint(status int) string {
-	return "Jira returned an HTML page (status " + strconv.Itoa(status) +
-		") instead of JSON. " + c.authHint()
 }
 
 // authHint picks an actionable explanation for an HTML-from-API response,

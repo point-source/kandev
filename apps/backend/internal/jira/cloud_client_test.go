@@ -328,7 +328,10 @@ func TestCloudClient_ServerMode_SearchTickets_StartAtPagination(t *testing.T) {
 	}
 }
 
-func TestCloudClient_ServerMode_SearchTickets_LastPage(t *testing.T) {
+// Jira Server can return fewer issues than maxResults on a non-terminal page
+// (rate limits, filtered results). The pager must still advance — IsLast is
+// driven by total, not by len(issues) < maxResults.
+func TestCloudClient_ServerMode_SearchTickets_PartialBatchAdvances(t *testing.T) {
 	ts := newMockServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -345,12 +348,8 @@ func TestCloudClient_ServerMode_SearchTickets_LastPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	// 100 + 1 = 101 < 110 (total). Still expect IsLast=false because we only
-	// received 1 of the 10 remaining issues — but the loop above said total=110
-	// and we got 1 issue. Cover the actual last-page case in a separate
-	// scenario where the math agrees with no further work.
 	if res.IsLast {
-		t.Error("expected IsLast=false when more issues remain")
+		t.Error("expected IsLast=false: startAt+len=101 < total=110")
 	}
 	if res.NextPageToken != "101" {
 		t.Errorf("next page token = %q, want 101", res.NextPageToken)

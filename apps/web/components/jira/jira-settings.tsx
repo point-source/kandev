@@ -153,7 +153,9 @@ function InstanceFields({ form, loading, setForm }: InstanceFieldsProps) {
           data-testid="jira-project-input"
           placeholder="PROJ"
           value={form.defaultProjectKey}
-          onChange={(e) => setForm((prev) => ({ ...prev, defaultProjectKey: e.target.value.toUpperCase() }))}
+          onChange={(e) =>
+            setForm((prev) => ({ ...prev, defaultProjectKey: e.target.value.toUpperCase() }))
+          }
           disabled={loading}
         />
       </div>
@@ -162,9 +164,8 @@ function InstanceFields({ form, loading, setForm }: InstanceFieldsProps) {
 }
 
 function SiteFields({ form, loading, update }: FieldsRowProps) {
-  const placeholder = form.instanceType === "server"
-    ? "https://jira.your-company.com"
-    : "https://acme.atlassian.net";
+  const placeholder =
+    form.instanceType === "server" ? "https://jira.your-company.com" : "https://acme.atlassian.net";
   return (
     <div className="space-y-1.5">
       <Label htmlFor="jira-site">Site URL</Label>
@@ -250,29 +251,17 @@ function SessionSnippet() {
 
 type SecretFieldProps = FieldsRowProps & { hasSavedSecret: boolean };
 
-function secretLabel(method: JiraAuthMethod): string {
-  switch (method) {
-    case "api_token":
-      return "API token";
-    case "pat":
-      return "Personal Access Token";
-    case "session_cookie":
-    default:
-      return "Session token value";
-  }
-}
+// SECRET_COPY centralizes the field label and empty-state placeholder per
+// auth method. Keyed by JiraAuthMethod so adding a new method causes the
+// type system to flag the missing entry.
+const SECRET_COPY: Record<JiraAuthMethod, { label: string; placeholder: string }> = {
+  api_token: { label: "API token", placeholder: "paste API token here" },
+  pat: { label: "Personal Access Token", placeholder: "paste personal access token here" },
+  session_cookie: { label: "Session token value", placeholder: "paste cloud.session.token value" },
+};
 
 function secretPlaceholder(method: JiraAuthMethod, hasSavedSecret: boolean): string {
-  if (hasSavedSecret) return "••••••••";
-  switch (method) {
-    case "api_token":
-      return "paste API token here";
-    case "pat":
-      return "paste personal access token here";
-    case "session_cookie":
-    default:
-      return "paste cloud.session.token value";
-  }
+  return hasSavedSecret ? "••••••••" : SECRET_COPY[method].placeholder;
 }
 
 function formatExpiry(expiresAt: string): { label: string; tone: "ok" | "warn" | "danger" } {
@@ -322,7 +311,7 @@ function SecretField({
   return (
     <div className="space-y-1.5">
       <Label htmlFor="jira-secret">
-        {secretLabel(method)}
+        {SECRET_COPY[method].label}
         {hasSavedSecret && (
           <span className="text-xs text-muted-foreground ml-2">
             (saved — leave blank to keep the current value)
@@ -361,7 +350,12 @@ function SecretField({
             <>
               {" "}
               (
-              <a className="underline cursor-pointer" href={patHref} target="_blank" rel="noreferrer">
+              <a
+                className="underline cursor-pointer"
+                href={patHref}
+                target="_blank"
+                rel="noreferrer"
+              >
                 {patHref}
               </a>
               ){" "}
@@ -590,43 +584,45 @@ function EnabledPill() {
   );
 }
 
+// normalizeComparableSiteUrl mirrors the backend's normalizeSiteURL (strip
+// trailing slash, prepend https:// if no scheme) so that
+// "acme.atlassian.net" and "https://acme.atlassian.net" don't read as
+// different hosts in savedSecretMatches.
+function normalizeComparableSiteUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+}
+
+// savedSecretMatches reports whether the saved secret can be reused against
+// the current form values. Reuse is only safe when every identity component
+// of the saved credential still matches: same auth method, same instance
+// type, same Jira host, and — for Cloud api_token where the basic pair is
+// email:token — the same email (case-insensitive). Otherwise the user could
+// change the site URL or Cloud account and silently submit the previous
+// token to a different host/account.
+function savedSecretMatches(config: JiraConfig | null, form: FormState): boolean {
+  if (!config?.hasSecret) return false;
+  if (config.authMethod !== form.authMethod) return false;
+  if ((config.instanceType || "cloud") !== form.instanceType) return false;
+  if (normalizeComparableSiteUrl(config.siteUrl) !== normalizeComparableSiteUrl(form.siteUrl)) {
+    return false;
+  }
+  if (form.authMethod !== "api_token") return true;
+  return (config.email ?? "").toLowerCase() === form.email.toLowerCase();
+}
+
 // JiraConnectionSection holds the install-wide credentials form. Watchers and
 // task presets live elsewhere because they scope per workspace.
 export function JiraConnectionSection() {
   const s = useJiraSettings();
-  // The stored secret is only safe to reuse when every identity component of
-  // the saved credential still matches: same auth method, same (normalized)
-  // instance type, same Jira host, and — for Cloud api_token where the basic
-  // pair is email:token — the same email. Otherwise the user could change the
-  // site URL or Cloud account and silently submit the previous token to a
-  // different host/account. The host comparison mirrors the backend's
-  // normalizeSiteURL (strip trailing slash, prepend https:// if no scheme) so
-  // that "acme.atlassian.net" and "https://acme.atlassian.net" don't read as
-  // different hosts.
-  const normalizeComparableSiteUrl = (value: string) => {
-    const trimmed = value.trim().replace(/\/+$/, "");
-    if (!trimmed) return "";
-    return trimmed.includes("://") ? trimmed : `https://${trimmed}`;
-  };
-  const savedInstance = s.config?.instanceType || "cloud";
-  const savedSiteUrl = normalizeComparableSiteUrl(s.config?.siteUrl ?? "");
-  const currentSiteUrl = normalizeComparableSiteUrl(s.form.siteUrl);
-  const savedSecretMatchesMode =
-    !!s.config?.hasSecret &&
-    s.config?.authMethod === s.form.authMethod &&
-    savedInstance === s.form.instanceType &&
-    savedSiteUrl === currentSiteUrl &&
-    (s.form.authMethod !== "api_token" || s.config?.email === s.form.email);
+  const savedSecretMatchesMode = savedSecretMatches(s.config, s.form);
   const missingSecret = !savedSecretMatchesMode && !s.form.secret;
   // Email is only required for the Cloud + api_token combination. Server PAT
   // and session cookies authenticate the user out of the token itself.
-  const emailRequired =
-    s.form.instanceType === "cloud" && s.form.authMethod === "api_token";
+  const emailRequired = s.form.instanceType === "cloud" && s.form.authMethod === "api_token";
   const disableSave =
-    s.saving ||
-    !s.form.siteUrl ||
-    (emailRequired && !s.form.email) ||
-    missingSecret;
+    s.saving || !s.form.siteUrl || (emailRequired && !s.form.email) || missingSecret;
   const disableTest = missingSecret;
 
   return (
@@ -639,12 +635,7 @@ export function JiraConnectionSection() {
       <Card>
         <CardContent className="space-y-4 pt-6">
           <IntegrationAuthStatusBanner health={s.health} />
-          <InstanceFields
-            form={s.form}
-            loading={s.loading}
-            update={s.update}
-            setForm={s.setForm}
-          />
+          <InstanceFields form={s.form} loading={s.loading} update={s.update} setForm={s.setForm} />
           <SiteFields form={s.form} loading={s.loading} update={s.update} />
           <AuthFields form={s.form} loading={s.loading} update={s.update} />
           <SecretField
