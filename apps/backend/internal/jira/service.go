@@ -370,23 +370,8 @@ func (s *Service) resolveCredentials(ctx context.Context, req *SetConfigRequest)
 		cfg.InstanceType == "" ||
 		(cfg.AuthMethod == AuthMethodAPIToken && cfg.Email == "")
 	if needsStoredConfig {
-		stored, err := s.store.GetConfig(ctx)
-		if err != nil {
-			return nil, "", fmt.Errorf("read jira config: %w", err)
-		}
-		if stored != nil {
-			if cfg.SiteURL == "" {
-				cfg.SiteURL = stored.SiteURL
-			}
-			if cfg.Email == "" {
-				cfg.Email = stored.Email
-			}
-			if cfg.AuthMethod == "" {
-				cfg.AuthMethod = stored.AuthMethod
-			}
-			if cfg.InstanceType == "" {
-				cfg.InstanceType = stored.InstanceType
-			}
+		if err := s.fillConfigFromStored(ctx, cfg); err != nil {
+			return nil, "", err
 		}
 	}
 	if cfg.InstanceType == "" {
@@ -399,6 +384,34 @@ func (s *Service) resolveCredentials(ctx context.Context, req *SetConfigRequest)
 		return nil, "", err
 	}
 	return cfg, secret, nil
+}
+
+// fillConfigFromStored reads the persisted singleton config and copies any
+// fields the caller left blank onto cfg. A real read failure is returned so
+// callers don't mask DB errors as opaque "missing field" validation errors;
+// a missing row (stored == nil) is treated as "nothing to fill" rather than
+// an error so first-time TestConnection requests still go through.
+func (s *Service) fillConfigFromStored(ctx context.Context, cfg *JiraConfig) error {
+	stored, err := s.store.GetConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("read jira config: %w", err)
+	}
+	if stored == nil {
+		return nil
+	}
+	if cfg.SiteURL == "" {
+		cfg.SiteURL = stored.SiteURL
+	}
+	if cfg.Email == "" {
+		cfg.Email = stored.Email
+	}
+	if cfg.AuthMethod == "" {
+		cfg.AuthMethod = stored.AuthMethod
+	}
+	if cfg.InstanceType == "" {
+		cfg.InstanceType = stored.InstanceType
+	}
+	return nil
 }
 
 func validateConfigRequest(req *SetConfigRequest) error {
