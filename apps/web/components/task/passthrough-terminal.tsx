@@ -249,6 +249,7 @@ export function PassthroughTerminal(props: PassthroughTerminalProps) {
   });
 
   usePendingCommand(pendingCommand, isConnected, wsRef, onCommandSent);
+  useTouchScrollFallback(refs.terminalRef, refs.xtermRef, isTerminalReady);
 
   return (
     <div
@@ -298,4 +299,76 @@ function usePendingCommand(
     }, 300);
     return () => clearTimeout(timer);
   }, [pendingCommand, isConnected, wsRef, onCommandSent]);
+}
+
+/**
+ * Touch-drag fallback for mobile. xterm.js renders `.xterm-screen` (canvas)
+ * above `.xterm-viewport`, so iOS / Android native scroll on the viewport
+ * never sees touches and the terminal is effectively unscrollable on mobile.
+ * This hook maps vertical drag to `Terminal.scrollLines`. It's coarse (no
+ * inertia) — the proper fix is upstream in xterm-js. Gated on
+ * `(pointer: coarse)` so desktop behaviour is untouched.
+ */
+function useTouchScrollFallback(
+  terminalRef: React.RefObject<HTMLDivElement | null>,
+  xtermRef: React.RefObject<Terminal | null>,
+  isTerminalReady: boolean,
+) {
+  React.useEffect(() => {
+    if (!isTerminalReady) return;
+    const el = terminalRef.current;
+    const term = xtermRef.current;
+    if (!el || !term) return;
+    if (typeof window === "undefined" || !window.matchMedia("(pointer: coarse)").matches) return;
+
+    // Take ownership of touch gestures so the page doesn't pull-to-refresh.
+    const prevTouchAction = el.style.touchAction;
+    el.style.touchAction = "none";
+    const prevOverscroll = el.style.overscrollBehavior;
+    el.style.overscrollBehavior = "contain";
+
+    let lastY: number | null = null;
+    let pendingRows = 0;
+    // 16px is a safe fallback; xterm's actual cell height is queryable via
+    // its internal render service but the path is private API.
+    const rowHeightPx = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const h = (term as any)?._core?._renderService?.dimensions?.css?.cell?.height;
+      return typeof h === "number" && h > 0 ? h : 16;
+    };
+
+    const onStart = (e: TouchEvent) => {
+      pendingRows = 0;
+      lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (lastY === null || e.touches.length !== 1) return;
+      e.preventDefault();
+      const y = e.touches[0].clientY;
+      pendingRows += (lastY - y) / rowHeightPx();
+      lastY = y;
+      const rows = Math.trunc(pendingRows);
+      if (rows !== 0) {
+        term.scrollLines(rows);
+        pendingRows -= rows;
+      }
+    };
+    const onEnd = () => {
+      lastY = null;
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", onEnd, { passive: true });
+
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+      el.style.touchAction = prevTouchAction;
+      el.style.overscrollBehavior = prevOverscroll;
+    };
+  }, [isTerminalReady, terminalRef, xtermRef]);
 }
