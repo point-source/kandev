@@ -62,12 +62,26 @@ export function useSessionLayoutState(options: UseSessionLayoutStateOptions = {}
   // --- Agent state ---
   const isAgentWorking = activeSession?.state === "STARTING" || activeSession?.state === "RUNNING";
 
+  // Passthrough detection priority — see task-center-panel.tsx for the same
+  // reasoning. The session's is_passthrough column is the source of truth
+  // (matches manager_startup.go's StartAgentProcess routing and what
+  // dockview-desktop-layout.tsx already reads). The agent_profile_snapshot
+  // fallback handles legacy session rows that pre-date the column.
+  //
+  // Mobile lands on this hook (session-mobile-layout.tsx →
+  // MobileChatPanelContent) — and previously only checked the snapshot, so
+  // any path that reset the snapshot in the Redux store (e.g. a page reload
+  // triggered by iOS pull-to-refresh racing the session fetch) flipped the
+  // mobile chat panel to TaskChatPanel and stuck there until a layout
+  // change forced a remount (portrait→landscape uses desktop layout, which
+  // renders PassthroughTerminal unconditionally).
   const isPassthroughMode = useMemo(() => {
+    if (activeSession?.is_passthrough === true) return true;
     if (!activeSession?.agent_profile_snapshot) return false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = activeSession.agent_profile_snapshot as any;
     return snapshot?.cli_passthrough === true;
-  }, [activeSession?.agent_profile_snapshot]);
+  }, [activeSession?.is_passthrough, activeSession?.agent_profile_snapshot]);
 
   const { selectedDiff, handleSelectDiff, handleClearSelectedDiff } = useSelectedDiffState();
   const { openFileRequest, handleOpenFile, handleFileOpenHandled } = useOpenFileRequestState();

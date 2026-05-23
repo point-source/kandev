@@ -309,6 +309,16 @@ function usePendingCommand(
  *
  * Only attaches on coarse-pointer devices (mobile/tablet) so desktop xterm
  * behaviour stays unchanged.
+ *
+ * Two important behaviours:
+ *   1. `touchAction: 'none'` is set inline on the terminal div so the browser
+ *      never claims the gesture for page scroll / pull-to-refresh. The terminal
+ *      itself doesn't need browser touch behaviours (no pinch-zoom, no native
+ *      scroll), so taking full ownership is safe.
+ *   2. Every touchmove with a 1-finger drag calls preventDefault, regardless
+ *      of whether the row-delta calculation rounded to zero this tick. Without
+ *      that, sub-row-height drags would slip through to the parent scroll and
+ *      cause the page to drift while the terminal stayed put.
  */
 function useMobileTouchScroll(
   terminalRef: React.RefObject<HTMLDivElement | null>,
@@ -327,6 +337,17 @@ function useMobileTouchScroll(
       const coarse = window.matchMedia("(pointer: coarse)").matches;
       if (!coarse) return;
     }
+
+    // Take full ownership of touch gestures inside the terminal. Saving the
+    // prior value so we can restore on unmount (a different feature might
+    // expect a specific value later).
+    const prevTouchAction = el.style.touchAction;
+    el.style.touchAction = "none";
+    // overscroll-behavior: contain stops gestures that reach a scroll boundary
+    // from propagating to ancestors (no pull-to-refresh / rubber-band that
+    // remounts the parent).
+    const prevOverscroll = el.style.overscrollBehavior;
+    el.style.overscrollBehavior = "contain";
 
     // Compute the row height from xterm's internal render dimensions, with
     // graceful fallback. The internal path is the xterm 5.x layout; if the
@@ -354,6 +375,9 @@ function useMobileTouchScroll(
 
     const onTouchMove = (e: TouchEvent) => {
       if (startY === null || e.touches.length !== 1) return;
+      // Always claim the gesture regardless of whether this tick crosses a
+      // row boundary. Sub-row-height drags would otherwise leak to the parent.
+      e.preventDefault();
       const currentY = e.touches[0].clientY;
       const dy = startY - currentY;
       const rh = rowHeightPx();
@@ -363,9 +387,6 @@ function useMobileTouchScroll(
         // Advance the anchor by the consumed pixels so the next move computes
         // relative to here (avoids jumpy multi-row scrolls).
         startY = currentY + (dy - rows * rh);
-        // preventDefault keeps the browser from also scrolling the page.
-        // Requires passive: false on the listener registration below.
-        e.preventDefault();
       }
     };
 
@@ -383,6 +404,8 @@ function useMobileTouchScroll(
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
       el.removeEventListener("touchcancel", onTouchEnd);
+      el.style.touchAction = prevTouchAction;
+      el.style.overscrollBehavior = prevOverscroll;
     };
   }, [isTerminalReady, terminalRef, xtermRef]);
 }
