@@ -305,9 +305,10 @@ function usePendingCommand(
  * Touch-drag fallback for mobile. xterm.js renders `.xterm-screen` (canvas)
  * above `.xterm-viewport`, so iOS / Android native scroll on the viewport
  * never sees touches and the terminal is effectively unscrollable on mobile.
- * This hook maps vertical drag to `Terminal.scrollLines`. It's coarse (no
- * inertia) — the proper fix is upstream in xterm-js. Gated on
- * `(pointer: coarse)` so desktop behaviour is untouched.
+ * This hook maps vertical drag to `Terminal.scrollLines` and adds a small
+ * inertia decay on release so the gesture feels closer to the native scroll
+ * on the Files panel. Gated on `(pointer: coarse)` so desktop xterm
+ * behaviour is unchanged.
  */
 function useTouchScrollFallback(
   terminalRef: React.RefObject<HTMLDivElement | null>,
@@ -327,8 +328,6 @@ function useTouchScrollFallback(
     const prevOverscroll = el.style.overscrollBehavior;
     el.style.overscrollBehavior = "contain";
 
-    let lastY: number | null = null;
-    let pendingRows = 0;
     // 16px is a safe fallback; xterm's actual cell height is queryable via
     // its internal render service but the path is private API.
     const rowHeightPx = () => {
@@ -337,16 +336,67 @@ function useTouchScrollFallback(
       return typeof h === "number" && h > 0 ? h : 16;
     };
 
+    // Drag state
+    let lastY: number | null = null;
+    let pendingRows = 0;
+    // Last ~80ms of (timestamp, pixel-delta) pairs — used to estimate
+    // release velocity. Shorter window than typical (100ms) since long
+    // windows include the start of the gesture and over-smooth the speed.
+    let samples: Array<{ t: number; dy: number }> = [];
+    let inertiaRaf: number | null = null;
+
+    const stopInertia = () => {
+      if (inertiaRaf !== null) {
+        cancelAnimationFrame(inertiaRaf);
+        inertiaRaf = null;
+      }
+    };
+
+    // Decay velocity to zero. FRICTION 0.94 per 16ms tick gives a feel
+    // close to iOS scroll on the Files panel — quick deceleration, no tail.
+    const runInertia = (velocityPxPerMs: number) => {
+      let v = velocityPxPerMs;
+      let prev = performance.now();
+      let carryPx = 0;
+      const step = () => {
+        const now = performance.now();
+        const dt = now - prev;
+        prev = now;
+        const dPx = v * dt + carryPx;
+        const rh = rowHeightPx();
+        const rows = Math.trunc(dPx / rh);
+        if (rows !== 0) {
+          term.scrollLines(rows);
+          carryPx = dPx - rows * rh;
+        } else {
+          carryPx = dPx;
+        }
+        v *= Math.pow(0.94, dt / 16);
+        if (Math.abs(v) < 0.01) {
+          inertiaRaf = null;
+          return;
+        }
+        inertiaRaf = requestAnimationFrame(step);
+      };
+      inertiaRaf = requestAnimationFrame(step);
+    };
+
     const onStart = (e: TouchEvent) => {
+      stopInertia();
       pendingRows = 0;
+      samples = [];
       lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
     };
     const onMove = (e: TouchEvent) => {
       if (lastY === null || e.touches.length !== 1) return;
       e.preventDefault();
       const y = e.touches[0].clientY;
-      pendingRows += (lastY - y) / rowHeightPx();
+      const dy = lastY - y;
       lastY = y;
+      const now = performance.now();
+      samples.push({ t: now, dy });
+      while (samples.length > 0 && now - samples[0].t > 80) samples.shift();
+      pendingRows += dy / rowHeightPx();
       const rows = Math.trunc(pendingRows);
       if (rows !== 0) {
         term.scrollLines(rows);
@@ -355,6 +405,15 @@ function useTouchScrollFallback(
     };
     const onEnd = () => {
       lastY = null;
+      if (samples.length < 2) return;
+      const totalDy = samples.reduce((s, v) => s + v.dy, 0);
+      const span = samples[samples.length - 1].t - samples[0].t;
+      samples = [];
+      if (span <= 0) return;
+      const v = totalDy / span;
+      // Don't fire inertia for tiny / slow releases — those would feel
+      // like the screen drifted after a tap.
+      if (Math.abs(v) >= 0.3) runInertia(v);
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });
@@ -363,6 +422,7 @@ function useTouchScrollFallback(
     el.addEventListener("touchcancel", onEnd, { passive: true });
 
     return () => {
+      stopInertia();
       el.removeEventListener("touchstart", onStart);
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
