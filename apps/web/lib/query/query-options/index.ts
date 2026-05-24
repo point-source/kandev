@@ -17,3 +17,5 @@
  * key factories in lib/query/keys.ts so SSR prefetch and CSR useQuery
  * share the same options object.
  */
+
+export * from "./automations";
