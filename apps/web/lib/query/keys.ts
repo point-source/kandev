@@ -115,4 +115,22 @@ export const qk = {
   integrations: {
     health: (kind: string) => ["integrations", "health", kind] as const,
   },
+
+  // -------------------------------------------------------------------------
+  // Comments
+  //
+  // Comments in this domain are client-side diff/plan/file-editor/PR-feedback
+  // annotations stored in sessionStorage — they are NOT fetched from the
+  // server. These keys are reserved for potential future server persistence,
+  // and to satisfy the Wave 1 deliverable contract.
+  //
+  // The Office domain's task-level user comments (Kanban comments) live under
+  // qk.office.* and are a separate concept.
+  // -------------------------------------------------------------------------
+  comments: {
+    /** All comments for a session. */
+    bySession: (sessionId: string) => ["comments", "session", sessionId] as const,
+    /** All pending (unsent) comments. */
+    pending: () => ["comments", "pending"] as const,
+  },
 } as const;
