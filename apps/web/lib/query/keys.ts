@@ -110,6 +110,16 @@ export const qk = {
   },
 
   // -------------------------------------------------------------------------
+  // Automations
+  // Invalidate together with prefix ["automations", wsId]
+  // -------------------------------------------------------------------------
+  automations: {
+    prefix: (wsId: string) => ["automations", wsId] as const,
+    list: (wsId: string) => ["automations", wsId, "list"] as const,
+    runs: (automationId: string) => ["automations", "runs", automationId] as const,
+  },
+
+  // -------------------------------------------------------------------------
   // Integrations (health pollers — jira, linear, slack, etc.)
   //
   // health(kind)        — HTTP probe result from the 90s backend poller.
