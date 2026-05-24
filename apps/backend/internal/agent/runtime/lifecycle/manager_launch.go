@@ -813,6 +813,18 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 		m.publishLaunchPrepareCompleted(req, prepResult, progressRecorder, workspacePath, false, err)
 		return nil, err
 	}
+
+	// Remote executors (Docker, Sprites) clone the workspace inside the
+	// container, so the worktree path's host-side copy_files never ran.
+	// Ship the bytes through agentctl now that the instance is up. The
+	// worktree path is already gated by reqWithWorktree.UseWorktree, so
+	// it's safe to skip when that's true. For multi-repo launches, loop
+	// over every per-repo spec — each repo's CopyFiles ships into its
+	// own RepoName subdir under the workspace.
+	if !reqWithWorktree.UseWorktree && execInstance != nil && execInstance.Client != nil {
+		shipRemoteCopyfilesForLaunch(ctx, m.logger, &reqWithWorktree, execInstance.Client, runtimeProgress, progressRecorder)
+	}
+
 	if prepResult != nil {
 		prepResult.Steps = progressRecorder.Steps()
 	}
