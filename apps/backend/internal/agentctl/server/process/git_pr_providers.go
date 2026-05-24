@@ -1,0 +1,300 @@
+package process
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"go.uber.org/zap"
+)
+
+type prProvider string
+
+const (
+	prProviderGitHub     prProvider = "github"
+	prProviderAzureRepos prProvider = "azure_repos"
+	prCreateSubcommand              = "create"
+)
+
+type azureRepoInfo struct {
+	OrganizationURL string
+	Project         string
+	Repository      string
+}
+
+type azurePRCreateResponse struct {
+	PullRequestID int `json:"pullRequestId"`
+	Repository    struct {
+		RemoteURL string `json:"remoteUrl"`
+	} `json:"repository"`
+}
+
+func detectPRProvider(remoteURL string) prProvider {
+	lower := strings.ToLower(strings.TrimSpace(remoteURL))
+	if strings.Contains(lower, "dev.azure.com") ||
+		strings.Contains(lower, "ssh.dev.azure.com") ||
+		strings.Contains(lower, "visualstudio.com") {
+		return prProviderAzureRepos
+	}
+	return prProviderGitHub
+}
+
+func parseAzureRepoInfo(remoteURL string) (*azureRepoInfo, error) {
+	trimmed := strings.TrimSpace(remoteURL)
+	switch {
+	case strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://"):
+		return parseAzureHTTPRemote(trimmed)
+	case strings.HasPrefix(trimmed, "ssh://"):
+		return parseAzureSSHRemote(trimmed)
+	case strings.Contains(trimmed, "@") && strings.Contains(trimmed, ":"):
+		return parseAzureSCPRemote(trimmed)
+	default:
+		return nil, fmt.Errorf("unsupported Azure Repos remote URL: %s", remoteURL)
+	}
+}
+
+func parseAzureHTTPRemote(remoteURL string) (*azureRepoInfo, error) {
+	trimmed := strings.TrimSpace(remoteURL)
+	withoutScheme := strings.TrimPrefix(trimmed, "https://")
+	withoutScheme = strings.TrimPrefix(withoutScheme, "http://")
+
+	hostAndPath := withoutScheme
+	if _, after, ok := strings.Cut(hostAndPath, "@"); ok {
+		hostAndPath = after
+	}
+
+	host, path, ok := strings.Cut(hostAndPath, "/")
+	if !ok {
+		return nil, fmt.Errorf("missing repository path in Azure Repos URL: %s", remoteURL)
+	}
+
+	segments := splitRemotePath(path)
+	if len(segments) < 3 {
+		return nil, fmt.Errorf("invalid Azure Repos URL path: %s", remoteURL)
+	}
+
+	lowerHost := strings.ToLower(host)
+	scheme := "https://"
+	switch {
+	case strings.Contains(lowerHost, "dev.azure.com"):
+		if len(segments) < 4 || segments[2] != "_git" {
+			return nil, fmt.Errorf("invalid Azure Repos dev.azure.com URL: %s", remoteURL)
+		}
+		return &azureRepoInfo{
+			OrganizationURL: scheme + host + "/" + segments[0],
+			Project:         segments[1],
+			Repository:      trimGitSuffix(segments[3]),
+		}, nil
+	case strings.Contains(lowerHost, "visualstudio.com"):
+		if len(segments) < 3 || segments[1] != "_git" {
+			return nil, fmt.Errorf("invalid Azure Repos visualstudio.com URL: %s", remoteURL)
+		}
+		return &azureRepoInfo{
+			OrganizationURL: scheme + host,
+			Project:         segments[0],
+			Repository:      trimGitSuffix(segments[2]),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported Azure Repos host: %s", host)
+	}
+}
+
+func parseAzureSSHRemote(remoteURL string) (*azureRepoInfo, error) {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(remoteURL), "ssh://")
+	if _, after, ok := strings.Cut(trimmed, "@"); ok {
+		trimmed = after
+	}
+	hostPort, path, ok := strings.Cut(trimmed, "/")
+	if !ok {
+		return nil, fmt.Errorf("missing repository path in Azure Repos SSH URL: %s", remoteURL)
+	}
+	return parseAzureSSHParts(hostPort, path, remoteURL)
+}
+
+func parseAzureSCPRemote(remoteURL string) (*azureRepoInfo, error) {
+	trimmed := strings.TrimSpace(remoteURL)
+	if _, after, ok := strings.Cut(trimmed, "@"); ok {
+		trimmed = after
+	}
+	hostPort, path, ok := strings.Cut(trimmed, ":")
+	if !ok {
+		return nil, fmt.Errorf("missing repository path in Azure Repos SCP URL: %s", remoteURL)
+	}
+	return parseAzureSSHParts(hostPort, path, remoteURL)
+}
+
+func parseAzureSSHParts(hostPort, path, rawURL string) (*azureRepoInfo, error) {
+	host := hostPort
+	if idx := strings.Index(host, ":"); idx >= 0 {
+		host = host[:idx]
+	}
+	segments := splitRemotePath(path)
+	if len(segments) < 4 || segments[0] != "v3" {
+		return nil, fmt.Errorf("invalid Azure Repos SSH path: %s", rawURL)
+	}
+
+	org := segments[1]
+	project := segments[2]
+	repo := trimGitSuffix(segments[3])
+	lowerHost := strings.ToLower(host)
+
+	switch {
+	case strings.Contains(lowerHost, "ssh.dev.azure.com"):
+		return &azureRepoInfo{
+			OrganizationURL: "https://dev.azure.com/" + org,
+			Project:         project,
+			Repository:      repo,
+		}, nil
+	case strings.Contains(lowerHost, "visualstudio.com"):
+		return &azureRepoInfo{
+			OrganizationURL: "https://" + org + ".visualstudio.com",
+			Project:         project,
+			Repository:      repo,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported Azure Repos SSH host: %s", host)
+	}
+}
+
+func splitRemotePath(path string) []string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		segments = append(segments, part)
+	}
+	return segments
+}
+
+func trimGitSuffix(name string) string {
+	return strings.TrimSuffix(name, ".git")
+}
+
+func cleanBaseBranch(baseBranch string) string {
+	return strings.TrimPrefix(strings.TrimSpace(baseBranch), "origin/")
+}
+
+func (g *GitOperator) getOriginRemoteURL(ctx context.Context) (string, error) {
+	output, err := g.runGitCommand(ctx, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("failed to get origin remote URL: %w", err)
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func (g *GitOperator) runRepositoryCommand(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = g.workDir
+	cmd.Env = filterGitEnv(os.Environ())
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	g.logger.Debug("executing repository command",
+		zap.String("command", name),
+		zap.Strings("args", args),
+		zap.String("workDir", g.workDir))
+
+	err := cmd.Run()
+	output := strings.TrimSpace(stdout.String())
+	stderrOutput := strings.TrimSpace(stderr.String())
+	if stderrOutput != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += stderrOutput
+	}
+	if err != nil {
+		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
+	}
+	return output, nil
+}
+
+func (g *GitOperator) createGitHubPR(
+	ctx context.Context,
+	result *PRCreateResult,
+	branch, title, body, baseBranch string,
+	draft bool,
+) (*PRCreateResult, error) {
+	args := []string{"pr", prCreateSubcommand, "--title", title, "--body", body, "--head", branch}
+	if cleanBase := cleanBaseBranch(baseBranch); cleanBase != "" {
+		args = append(args, "--base", cleanBase)
+	}
+	if draft {
+		args = append(args, "--draft")
+	}
+
+	output, err := g.runRepositoryCommand(ctx, "gh", args...)
+	result.Output = output
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+
+	result.PRURL = strings.TrimSpace(output)
+	result.Success = true
+	g.logger.Info("PR created", zap.String("url", result.PRURL))
+	return result, nil
+}
+
+func (g *GitOperator) createAzureReposPR(
+	ctx context.Context,
+	result *PRCreateResult,
+	remoteURL, branch, title, body, baseBranch string,
+	draft bool,
+) (*PRCreateResult, error) {
+	info, err := parseAzureRepoInfo(remoteURL)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+
+	args := []string{
+		"repos", "pr", prCreateSubcommand,
+		"--organization", info.OrganizationURL,
+		"--project", info.Project,
+		"--repository", info.Repository,
+		"--source-branch", branch,
+	}
+	if cleanBase := cleanBaseBranch(baseBranch); cleanBase != "" {
+		args = append(args, "--target-branch", cleanBase)
+	}
+	args = append(args,
+		"--title", title,
+		"--description", body,
+	)
+	if draft {
+		args = append(args, "--draft", "true")
+	}
+	args = append(args, "-o", "json")
+
+	output, err := g.runRepositoryCommand(ctx, "az", args...)
+	result.Output = output
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+
+	var response azurePRCreateResponse
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		result.Error = fmt.Sprintf("failed to parse Azure Repos PR output: %v", err)
+		return result, nil
+	}
+	if response.PullRequestID <= 0 || strings.TrimSpace(response.Repository.RemoteURL) == "" {
+		result.Error = "Azure Repos PR output did not include a pull request URL"
+		return result, nil
+	}
+
+	result.PRURL = strings.TrimRight(response.Repository.RemoteURL, "/") + "/pullrequest/" + strconv.Itoa(response.PullRequestID)
+	result.Success = true
+	g.logger.Info("PR created", zap.String("url", result.PRURL))
+	return result, nil
+}

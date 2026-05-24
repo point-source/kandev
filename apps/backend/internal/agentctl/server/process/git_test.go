@@ -2,8 +2,11 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,4 +89,135 @@ func TestParseCommitDiff_PathsWithSpaces(t *testing.T) {
 		}
 		t.Errorf("expected Files to contain key %q, got keys: %v", expectedPath, keys)
 	}
+}
+
+func TestGitOperatorCreatePR_UsesAzureCLIForAzureRepos(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper test is Unix-only")
+	}
+
+	repoDir, cleanup := setupTestRepo(t)
+	defer cleanup()
+
+	log := newTestLogger(t)
+	runGit(t, repoDir, "checkout", "-b", "feature/azure-pr")
+	writeFile(t, repoDir, "azure.txt", "azure repos\n")
+	runGit(t, repoDir, "add", ".")
+	runGit(t, repoDir, "commit", "-m", "add azure change")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+
+	scriptDir := t.TempDir()
+	azArgsPath := filepath.Join(scriptDir, "az-args.txt")
+	writeExecutable(t, filepath.Join(scriptDir, "git"), fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"remote\" ] && [ \"$2\" = \"get-url\" ] && [ \"$3\" = \"origin\" ]; then\n  printf '%s\\n' 'git@ssh.dev.azure.com:v3/acme/platform/widgets'\n  exit 0\nfi\nexec %q \"$@\"\n", "%s", realGit))
+	writeExecutable(t, filepath.Join(scriptDir, "az"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n' \"$@\" > %q\ncat <<'EOF'\n{\"pullRequestId\":42,\"repository\":{\"remoteUrl\":\"https://dev.azure.com/acme/platform/_git/widgets\"}}\nEOF\n", "%s", azArgsPath))
+	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	gitOp := NewGitOperator(repoDir, log, nil)
+	result, err := gitOp.CreatePR(context.Background(), "Add Azure support", "PR body", "origin/main", true)
+	if err != nil {
+		t.Fatalf("CreatePR returned error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("CreatePR failed: %+v", result)
+	}
+
+	if got, want := result.PRURL, "https://dev.azure.com/acme/platform/_git/widgets/pullrequest/42"; got != want {
+		t.Fatalf("PRURL = %q, want %q", got, want)
+	}
+
+	gotArgs := readScriptArgs(t, azArgsPath)
+	wantArgs := []string{
+		"repos",
+		"pr",
+		"create",
+		"--organization",
+		"https://dev.azure.com/acme",
+		"--project",
+		"platform",
+		"--repository",
+		"widgets",
+		"--source-branch",
+		"feature/azure-pr",
+		"--target-branch",
+		"main",
+		"--title",
+		"Add Azure support",
+		"--description",
+		"PR body",
+		"--draft",
+		"true",
+		"-o",
+		"json",
+	}
+	if strings.Join(gotArgs, "\n") != strings.Join(wantArgs, "\n") {
+		t.Fatalf("az args mismatch\n got: %q\nwant: %q", gotArgs, wantArgs)
+	}
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func TestParseAzureRepoInfo(t *testing.T) {
+	tests := []struct {
+		name     string
+		remote   string
+		wantOrg  string
+		wantProj string
+		wantRepo string
+	}{
+		{
+			name:     "dev azure https",
+			remote:   "https://dev.azure.com/acme/platform/_git/widgets.git",
+			wantOrg:  "https://dev.azure.com/acme",
+			wantProj: "platform",
+			wantRepo: "widgets",
+		},
+		{
+			name:     "visualstudio https",
+			remote:   "https://acme.visualstudio.com/platform/_git/widgets",
+			wantOrg:  "https://acme.visualstudio.com",
+			wantProj: "platform",
+			wantRepo: "widgets",
+		},
+		{
+			name:     "azure ssh",
+			remote:   "git@ssh.dev.azure.com:v3/acme/platform/widgets",
+			wantOrg:  "https://dev.azure.com/acme",
+			wantProj: "platform",
+			wantRepo: "widgets",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, err := parseAzureRepoInfo(tt.remote)
+			if err != nil {
+				t.Fatalf("parseAzureRepoInfo(%q) error = %v", tt.remote, err)
+			}
+			if info.OrganizationURL != tt.wantOrg || info.Project != tt.wantProj || info.Repository != tt.wantRepo {
+				t.Fatalf("parseAzureRepoInfo(%q) = %+v, want org=%q project=%q repo=%q", tt.remote, info, tt.wantOrg, tt.wantProj, tt.wantRepo)
+			}
+		})
+	}
+}
+
+func readScriptArgs(t *testing.T, path string) []string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read args file: %v", err)
+	}
+	trimmed := strings.TrimSpace(string(content))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
 }
