@@ -73,6 +73,9 @@ func (h *GitHandlers) SetOnPRCreated(cb PRCreatedCallback) {
 	h.onPRCreated = cb
 }
 
+// isGitHubPRURL reports whether prURL is a GitHub pull request link. Azure Repos
+// (/pullrequest/) and GitLab (/-/merge_requests/) are excluded so onPRCreated only
+// wires GitHub TaskPR / PRWatch rows (Azure association is a separate follow-up).
 func isGitHubPRURL(prURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(prURL)), "/pull/")
 }

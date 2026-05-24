@@ -113,7 +113,7 @@ func TestGitOperatorCreatePR_UsesAzureCLIForAzureRepos(t *testing.T) {
 	scriptDir := t.TempDir()
 	azArgsPath := filepath.Join(scriptDir, "az-args.txt")
 	writeExecutable(t, filepath.Join(scriptDir, "git"), fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"remote\" ] && [ \"$2\" = \"get-url\" ] && [ \"$3\" = \"origin\" ]; then\n  printf '%s\\n' 'git@ssh.dev.azure.com:v3/acme/platform/widgets'\n  exit 0\nfi\nexec %q \"$@\"\n", "%s", realGit))
-	writeExecutable(t, filepath.Join(scriptDir, "az"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n' \"$@\" > %q\nprintf '%s\\n' 'WARNING: preview command group' >&2\ncat <<'EOF'\n{\"pullRequestId\":42,\"repository\":{\"remoteUrl\":\"https://dev.azure.com/acme/platform/_git/widgets\"}}\nEOF\n", "%s", azArgsPath, "%s"))
+	writeExecutable(t, filepath.Join(scriptDir, "az"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n' \"$@\" > %q\nprintf '%s\\n' 'WARNING: preview command group' >&2\nprintf 'Creating pull request...\\n'\ncat <<'EOF'\n{\"pullRequestId\":42,\"repository\":{\"remoteUrl\":\"https://dev.azure.com/acme/platform/_git/widgets\"}}\nEOF\n", "%s", azArgsPath, "%s"))
 	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	gitOp := NewGitOperator(repoDir, log, nil)
@@ -162,6 +162,73 @@ func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func TestDetectPRProvider(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		want   prProvider
+	}{
+		{name: "azure https", remote: "https://dev.azure.com/acme/platform/_git/widgets", want: prProviderAzureRepos},
+		{name: "azure ssh", remote: "git@ssh.dev.azure.com:v3/acme/platform/widgets", want: prProviderAzureRepos},
+		{name: "visualstudio", remote: "https://acme.visualstudio.com/platform/_git/widgets", want: prProviderAzureRepos},
+		{name: "github", remote: "https://github.com/acme/widgets.git", want: prProviderGitHub},
+		{
+			name:   "github path must not match azure substring",
+			remote: "git@github.com:acme/dev.azure.com-docs.git",
+			want:   prProviderGitHub,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectPRProvider(tt.remote); got != tt.want {
+				t.Fatalf("detectPRProvider(%q) = %q, want %q", tt.remote, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemoteHostFromURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{name: "https", remote: "https://dev.azure.com/acme/platform/_git/widgets", want: "dev.azure.com"},
+		{name: "scp", remote: "git@ssh.dev.azure.com:v3/acme/platform/widgets", want: "ssh.dev.azure.com"},
+		{name: "github", remote: "https://github.com/acme/widgets.git", want: "github.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remoteHostFromURL(tt.remote); got != tt.want {
+				t.Fatalf("remoteHostFromURL(%q) = %q, want %q", tt.remote, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractJSONObject(t *testing.T) {
+	payload := `{"pullRequestId":42,"repository":{"remoteUrl":"https://dev.azure.com/acme/platform/_git/widgets"}}`
+	stdout := "Creating pull request...\n" + payload
+
+	got, ok := extractJSONObject(stdout)
+	if !ok {
+		t.Fatal("extractJSONObject() = false")
+	}
+	if got != payload {
+		t.Fatalf("extractJSONObject() = %q, want %q", got, payload)
+	}
+
+	response, err := parseAzurePRCreateResponse(stdout)
+	if err != nil {
+		t.Fatalf("parseAzurePRCreateResponse() error = %v", err)
+	}
+	if response.PullRequestID != 42 {
+		t.Fatalf("PullRequestID = %d, want 42", response.PullRequestID)
 	}
 }
 

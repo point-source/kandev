@@ -40,13 +40,84 @@ type azurePRCreateResponse struct {
 }
 
 func detectPRProvider(remoteURL string) prProvider {
-	lower := strings.ToLower(strings.TrimSpace(remoteURL))
-	if strings.Contains(lower, "dev.azure.com") ||
-		strings.Contains(lower, "ssh.dev.azure.com") ||
-		strings.Contains(lower, "visualstudio.com") {
+	if isAzureReposHost(remoteHostFromURL(remoteURL)) {
 		return prProviderAzureRepos
 	}
 	return prProviderGitHub
+}
+
+func isAzureReposHost(host string) bool {
+	switch host {
+	case "dev.azure.com", "ssh.dev.azure.com":
+		return true
+	default:
+		return strings.HasSuffix(host, ".visualstudio.com")
+	}
+}
+
+// remoteHostFromURL returns the lowercase hostname from an origin remote URL.
+func remoteHostFromURL(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	if strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil && parsed.Host != "" {
+			host := parsed.Hostname()
+			return strings.ToLower(host)
+		}
+	}
+
+	rest := strings.TrimPrefix(trimmed, "ssh://")
+	if _, after, ok := strings.Cut(rest, "@"); ok {
+		rest = after
+	}
+	hostPort, _, ok := strings.Cut(rest, ":")
+	if !ok {
+		hostPort, _, _ = strings.Cut(rest, "/")
+	}
+	host := hostPort
+	if idx := strings.Index(host, ":"); idx >= 0 {
+		host = host[:idx]
+	}
+	return strings.ToLower(host)
+}
+
+// extractJSONObject returns the first balanced {...} object in output. Some az
+// versions prefix stdout with status text before the JSON payload.
+func extractJSONObject(output string) (string, bool) {
+	start := strings.Index(output, "{")
+	if start < 0 {
+		return "", false
+	}
+
+	depth := 0
+	for i := start; i < len(output); i++ {
+		switch output[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return output[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+func parseAzurePRCreateResponse(stdoutOutput string) (azurePRCreateResponse, error) {
+	jsonPayload, ok := extractJSONObject(stdoutOutput)
+	if !ok {
+		return azurePRCreateResponse{}, fmt.Errorf("no JSON object in output")
+	}
+	var response azurePRCreateResponse
+	if err := json.Unmarshal([]byte(jsonPayload), &response); err != nil {
+		return azurePRCreateResponse{}, err
+	}
+	return response, nil
 }
 
 func parseAzureRepoInfo(remoteURL string) (*azureRepoInfo, error) {
@@ -323,6 +394,11 @@ func (g *GitOperator) createAzureReposPR(
 	remoteURL, branch, title, body, baseBranch string,
 	draft bool,
 ) (*PRCreateResult, error) {
+	if _, err := exec.LookPath("az"); err != nil {
+		result.Error = "Azure CLI (az) is not on PATH; install it and run: az extension add --name azure-devops"
+		return result, nil
+	}
+
 	info, err := parseAzureRepoInfo(remoteURL)
 	if err != nil {
 		result.Error = err.Error()
@@ -355,8 +431,8 @@ func (g *GitOperator) createAzureReposPR(
 		return result, nil
 	}
 
-	var response azurePRCreateResponse
-	if err := json.Unmarshal([]byte(stdoutOutput), &response); err != nil {
+	response, err := parseAzurePRCreateResponse(stdoutOutput)
+	if err != nil {
 		result.Error = fmt.Sprintf("failed to parse Azure Repos PR output: %v", err)
 		return result, nil
 	}
