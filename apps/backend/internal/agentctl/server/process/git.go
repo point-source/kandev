@@ -981,7 +981,7 @@ func (g *GitOperator) CreatePR(ctx context.Context, title, body, baseBranch stri
 		result.Error = err.Error()
 		return result, nil
 	}
-	g.logger.Debug("origin remote", zap.String("remote", remoteURL))
+	g.logger.Debug("origin remote", zap.String("remote", redactRemoteURL(remoteURL)))
 
 	pushOutput, err := g.runGitCommand(ctx, "push", "--set-upstream", "origin", "HEAD")
 	if err != nil {

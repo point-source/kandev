@@ -87,6 +87,8 @@ Prefer the Azure CLI when it is on `PATH`:
 
 SOURCE_BRANCH="$(git branch --show-current)"
 TARGET_BRANCH="${TARGET_BRANCH:-}"   # leave empty to let Azure use the repo default branch
+DRAFT_FLAG=""
+[ "${DRAFT:-false}" = "true" ] && DRAFT_FLAG="--draft"
 
 az repos pr create \
   ${TARGET_BRANCH:+--target-branch "$TARGET_BRANCH"} \
@@ -96,7 +98,7 @@ az repos pr create \
 <filled PR template>
 EOF
 )" \
-  --draft ${DRAFT:-false}
+  ${DRAFT_FLAG:+$DRAFT_FLAG}
 ```
 
 Notes:

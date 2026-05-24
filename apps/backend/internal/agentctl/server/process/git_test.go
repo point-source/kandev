@@ -113,7 +113,7 @@ func TestGitOperatorCreatePR_UsesAzureCLIForAzureRepos(t *testing.T) {
 	scriptDir := t.TempDir()
 	azArgsPath := filepath.Join(scriptDir, "az-args.txt")
 	writeExecutable(t, filepath.Join(scriptDir, "git"), fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"remote\" ] && [ \"$2\" = \"get-url\" ] && [ \"$3\" = \"origin\" ]; then\n  printf '%s\\n' 'git@ssh.dev.azure.com:v3/acme/platform/widgets'\n  exit 0\nfi\nexec %q \"$@\"\n", "%s", realGit))
-	writeExecutable(t, filepath.Join(scriptDir, "az"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n' \"$@\" > %q\ncat <<'EOF'\n{\"pullRequestId\":42,\"repository\":{\"remoteUrl\":\"https://dev.azure.com/acme/platform/_git/widgets\"}}\nEOF\n", "%s", azArgsPath))
+	writeExecutable(t, filepath.Join(scriptDir, "az"), fmt.Sprintf("#!/bin/sh\nprintf '%s\\n' \"$@\" > %q\nprintf '%s\\n' 'WARNING: preview command group' >&2\ncat <<'EOF'\n{\"pullRequestId\":42,\"repository\":{\"remoteUrl\":\"https://dev.azure.com/acme/platform/_git/widgets\"}}\nEOF\n", "%s", azArgsPath, "%s"))
 	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	gitOp := NewGitOperator(repoDir, log, nil)
@@ -204,6 +204,67 @@ func TestParseAzureRepoInfo(t *testing.T) {
 			}
 			if info.OrganizationURL != tt.wantOrg || info.Project != tt.wantProj || info.Repository != tt.wantRepo {
 				t.Fatalf("parseAzureRepoInfo(%q) = %+v, want org=%q project=%q repo=%q", tt.remote, info, tt.wantOrg, tt.wantProj, tt.wantRepo)
+			}
+		})
+	}
+}
+
+func TestSanitizeRepositoryArgs(t *testing.T) {
+	got := sanitizeRepositoryArgs([]string{
+		"pr",
+		"create",
+		"--title",
+		"real title",
+		"--body=secret body",
+		"--description",
+		"secret description",
+		"--head",
+		"feature/branch",
+	})
+
+	want := []string{
+		"pr",
+		"create",
+		"--title",
+		"[REDACTED]",
+		"--body=[REDACTED]",
+		"--description",
+		"[REDACTED]",
+		"--head",
+		"feature/branch",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("sanitizeRepositoryArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestRedactRemoteURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "https credentials",
+			url:  "https://token:x-oauth-basic@github.com/acme/widgets.git",
+			want: "https://github.com/acme/widgets.git",
+		},
+		{
+			name: "scp style",
+			url:  "git@ssh.dev.azure.com:v3/acme/platform/widgets",
+			want: "ssh.dev.azure.com:v3/acme/platform/widgets",
+		},
+		{
+			name: "plain https",
+			url:  "https://dev.azure.com/acme/platform/_git/widgets",
+			want: "https://dev.azure.com/acme/platform/_git/widgets",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactRemoteURL(tt.url); got != tt.want {
+				t.Fatalf("redactRemoteURL(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
 	}

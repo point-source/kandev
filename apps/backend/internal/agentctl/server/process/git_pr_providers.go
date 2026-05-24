@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -16,9 +17,13 @@ import (
 type prProvider string
 
 const (
-	prProviderGitHub     prProvider = "github"
-	prProviderAzureRepos prProvider = "azure_repos"
-	prCreateSubcommand              = "create"
+	prProviderGitHub          prProvider = "github"
+	prProviderAzureRepos      prProvider = "azure_repos"
+	prCreateSubcommand                   = "create"
+	repositoryFlagTitle                  = "--title"
+	repositoryFlagBody                   = "--body"
+	repositoryFlagDescription            = "--description"
+	repositoryFlagHead                   = "--head"
 )
 
 type azureRepoInfo struct {
@@ -181,6 +186,75 @@ func cleanBaseBranch(baseBranch string) string {
 	return strings.TrimPrefix(strings.TrimSpace(baseBranch), "origin/")
 }
 
+func sanitizeRepositoryArgs(args []string) []string {
+	redactedFlags := map[string]struct{}{
+		repositoryFlagTitle:       {},
+		repositoryFlagBody:        {},
+		repositoryFlagDescription: {},
+	}
+
+	sanitized := make([]string, 0, len(args))
+	redactNext := false
+	for _, arg := range args {
+		if redactNext {
+			sanitized = append(sanitized, "[REDACTED]")
+			redactNext = false
+			continue
+		}
+
+		if _, ok := redactedFlags[arg]; ok {
+			sanitized = append(sanitized, arg)
+			redactNext = true
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(arg, repositoryFlagTitle+"="):
+			sanitized = append(sanitized, repositoryFlagTitle+"=[REDACTED]")
+		case strings.HasPrefix(arg, repositoryFlagBody+"="):
+			sanitized = append(sanitized, repositoryFlagBody+"=[REDACTED]")
+		case strings.HasPrefix(arg, repositoryFlagDescription+"="):
+			sanitized = append(sanitized, repositoryFlagDescription+"=[REDACTED]")
+		default:
+			sanitized = append(sanitized, arg)
+		}
+	}
+
+	return sanitized
+}
+
+func combineCommandOutput(stdout, stderr string) string {
+	parts := make([]string, 0, 2)
+	if trimmedStdout := strings.TrimSpace(stdout); trimmedStdout != "" {
+		parts = append(parts, trimmedStdout)
+	}
+	if trimmedStderr := strings.TrimSpace(stderr); trimmedStderr != "" {
+		parts = append(parts, trimmedStderr)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func redactRemoteURL(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	if strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil {
+			parsed.User = nil
+			return parsed.String()
+		}
+	}
+
+	if before, after, ok := strings.Cut(trimmed, "@"); ok && before != "" && strings.Contains(after, ":") {
+		return after
+	}
+
+	return trimmed
+}
+
 func (g *GitOperator) getOriginRemoteURL(ctx context.Context) (string, error) {
 	output, err := g.runGitCommand(ctx, "remote", "get-url", "origin")
 	if err != nil {
@@ -189,7 +263,7 @@ func (g *GitOperator) getOriginRemoteURL(ctx context.Context) (string, error) {
 	return strings.TrimSpace(output), nil
 }
 
-func (g *GitOperator) runRepositoryCommand(ctx context.Context, name string, args ...string) (string, error) {
+func (g *GitOperator) runRepositoryCommand(ctx context.Context, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = g.workDir
 	cmd.Env = filterGitEnv(os.Environ())
@@ -200,22 +274,20 @@ func (g *GitOperator) runRepositoryCommand(ctx context.Context, name string, arg
 
 	g.logger.Debug("executing repository command",
 		zap.String("command", name),
-		zap.Strings("args", args),
+		zap.Strings("args", sanitizeRepositoryArgs(args)),
 		zap.String("workDir", g.workDir))
 
 	err := cmd.Run()
-	output := strings.TrimSpace(stdout.String())
+	stdoutOutput := strings.TrimSpace(stdout.String())
 	stderrOutput := strings.TrimSpace(stderr.String())
-	if stderrOutput != "" {
-		if output != "" {
-			output += "\n"
-		}
-		output += stderrOutput
-	}
 	if err != nil {
-		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
+		combined := combineCommandOutput(stdoutOutput, stderrOutput)
+		if combined == "" {
+			combined = err.Error()
+		}
+		return stdoutOutput, stderrOutput, fmt.Errorf("%w: %s", err, combined)
 	}
-	return output, nil
+	return stdoutOutput, stderrOutput, nil
 }
 
 func (g *GitOperator) createGitHubPR(
@@ -224,7 +296,7 @@ func (g *GitOperator) createGitHubPR(
 	branch, title, body, baseBranch string,
 	draft bool,
 ) (*PRCreateResult, error) {
-	args := []string{"pr", prCreateSubcommand, "--title", title, "--body", body, "--head", branch}
+	args := []string{"pr", prCreateSubcommand, repositoryFlagTitle, title, repositoryFlagBody, body, repositoryFlagHead, branch}
 	if cleanBase := cleanBaseBranch(baseBranch); cleanBase != "" {
 		args = append(args, "--base", cleanBase)
 	}
@@ -232,14 +304,14 @@ func (g *GitOperator) createGitHubPR(
 		args = append(args, "--draft")
 	}
 
-	output, err := g.runRepositoryCommand(ctx, "gh", args...)
-	result.Output = output
+	stdoutOutput, stderrOutput, err := g.runRepositoryCommand(ctx, "gh", args...)
+	result.Output = combineCommandOutput(stdoutOutput, stderrOutput)
 	if err != nil {
 		result.Error = err.Error()
 		return result, nil
 	}
 
-	result.PRURL = strings.TrimSpace(output)
+	result.PRURL = strings.TrimSpace(stdoutOutput)
 	result.Success = true
 	g.logger.Info("PR created", zap.String("url", result.PRURL))
 	return result, nil
@@ -268,23 +340,23 @@ func (g *GitOperator) createAzureReposPR(
 		args = append(args, "--target-branch", cleanBase)
 	}
 	args = append(args,
-		"--title", title,
-		"--description", body,
+		repositoryFlagTitle, title,
+		repositoryFlagDescription, body,
 	)
 	if draft {
 		args = append(args, "--draft", "true")
 	}
 	args = append(args, "-o", "json")
 
-	output, err := g.runRepositoryCommand(ctx, "az", args...)
-	result.Output = output
+	stdoutOutput, stderrOutput, err := g.runRepositoryCommand(ctx, "az", args...)
+	result.Output = combineCommandOutput(stdoutOutput, stderrOutput)
 	if err != nil {
 		result.Error = err.Error()
 		return result, nil
 	}
 
 	var response azurePRCreateResponse
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
+	if err := json.Unmarshal([]byte(stdoutOutput), &response); err != nil {
 		result.Error = fmt.Sprintf("failed to parse Azure Repos PR output: %v", err)
 		return result, nil
 	}
