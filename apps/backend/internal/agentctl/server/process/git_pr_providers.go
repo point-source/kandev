@@ -101,8 +101,15 @@ func parseAzurePRCreateResponse(stdoutOutput string) (azurePRCreateResponse, err
 		return response, nil
 	}
 
-	// az may prefix stdout with status lines; parse JSON lines so braces inside
-	// string values do not confuse a naive brace balancer.
+	// az may prefix stdout with status text; decode the first JSON value (incl. pretty-printed).
+	if start := strings.Index(trimmed, "{"); start >= 0 {
+		dec := json.NewDecoder(strings.NewReader(trimmed[start:]))
+		if err := dec.Decode(&response); err == nil {
+			return response, nil
+		}
+	}
+
+	// Some az versions emit single-line JSON after status lines.
 	lines := strings.Split(trimmed, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])

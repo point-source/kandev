@@ -234,6 +234,18 @@ func TestParseAzurePRCreateResponse(t *testing.T) {
 	}
 }
 
+func TestParseAzurePRCreateResponse_multilineJSON(t *testing.T) {
+	stdout := "Creating pull request...\n{\n  \"pullRequestId\": 9,\n  \"repository\": {\n    \"remoteUrl\": \"https://dev.azure.com/acme/platform/_git/widgets\"\n  }\n}\n"
+
+	response, err := parseAzurePRCreateResponse(stdout)
+	if err != nil {
+		t.Fatalf("parseAzurePRCreateResponse() error = %v", err)
+	}
+	if response.PullRequestID != 9 {
+		t.Fatalf("PullRequestID = %d, want 9", response.PullRequestID)
+	}
+}
+
 func TestParseAzurePRCreateResponse_bracesInString(t *testing.T) {
 	// Braces inside JSON string values must not break line-based parsing.
 	stdout := "status line\n" + `{"pullRequestId":7,"repository":{"remoteUrl":"https://dev.azure.com/o/p/_git/r","note":"} not end"}}`
