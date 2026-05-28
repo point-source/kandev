@@ -194,8 +194,10 @@ jobs:
           retention-days: 7
 
   # Real-Docker E2E: exercises the local_docker executor end-to-end.
-  # ubuntu-latest ships with Docker preinstalled, so no service container is
-  # required. Container-bound tests are slow (~2 min each), so we shard across
+  # Blacksmith's Ubuntu 24.04 image (like ubuntu-latest) ships with Docker
+  # preinstalled, so no service container is required — the `docker info`
+  # step below verifies this at the start of every run.
+  # Container-bound tests are slow (~2 min each), so we shard across
   # 6 runners — Playwright's --shard splits the project's tests into N groups.
   # Cleans up any leftover kandev-managed containers at the end so a leaky
   # process doesn't poison the next run on the same self-hosted runner.
@@ -207,7 +209,7 @@ jobs:
   e2e-containers:
     name: E2E Containers Shard ${{ matrix.shard }}/6
     needs: build
-    # This job intentionally runs on the host ubuntu runner (NOT the kandev-ci
+    # This job intentionally runs on the host runner (NOT the kandev-ci
     # container image): the containers project needs direct access to the
     # host Docker daemon, and a docker-in-docker setup would break the tests'
     # host-style bind mounts (paths under os.tmpdir() inside a runner container
