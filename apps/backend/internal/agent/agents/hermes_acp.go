@@ -25,8 +25,9 @@ var (
 )
 
 // HermesACP implements Agent for Nous Research's Hermes CLI using ACP.
-// Not on npm — users install via the upstream curl|bash script which puts
-// the `hermes` Python entry point on PATH.
+// Not on npm — installation is a multi-step Python/uv flow documented
+// upstream, so InstallScript() points at the docs rather than offering
+// a one-shot install button.
 type HermesACP struct {
 	StandardPassthrough
 }
@@ -65,7 +66,13 @@ func (a *HermesACP) Logo(v LogoVariant) []byte {
 }
 
 func (a *HermesACP) IsInstalled(ctx context.Context) (*DiscoveryResult, error) {
-	result, err := Detect(ctx, WithCommand(hermesACPBin))
+	// The `hermes` binary name collides with Meta's Hermes JavaScript engine
+	// (distributed via `hermes-engine` npm; occasionally globally installed in
+	// React Native setups). A bare LookPath would report Available=true for
+	// that stray binary, then `hermes acp` would fail and surface a misleading
+	// auth_required state. Match the Nous Research version banner
+	// ("Hermes Agent v…", emitted by cli.py) so detection is specific.
+	result, err := Detect(ctx, WithCommandOutput(`(?i)hermes\s+agent`, hermesACPBin, "--version"))
 	if err != nil {
 		return result, err
 	}
