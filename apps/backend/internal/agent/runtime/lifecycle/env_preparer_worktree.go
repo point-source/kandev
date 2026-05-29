@@ -181,7 +181,55 @@ func (p *WorktreePreparer) createWorktreeWithSync(
 	step.Command = "git worktree add"
 	reportProgress(onProgress, step, stepIdx, totalSteps)
 
-	createReq := worktree.CreateRequest{
+	createReq := buildWorktreeCreateRequest(req)
+	if syncStep != nil {
+		createReq.OnSyncProgress = func(event worktree.SyncProgressEvent) {
+			applySyncProgressEvent(syncStep, event)
+			reportProgress(onProgress, *syncStep, syncStepIndex, totalSteps)
+		}
+	}
+	// Complete the "Create worktree" step the moment the worktree dir is ready,
+	// before the per-repo setup script runs inside Create() — the setup script
+	// streams its own step, so this keeps the two from overlapping in the UI.
+	stepCompleted := false
+	createReq.OnWorktreeCreated = func(wt *worktree.Worktree) {
+		completeCreateWorktreeStep(&step, wt, stepIdx, totalSteps, onProgress)
+		stepCompleted = true
+	}
+
+	wt, err := p.worktreeMgr.Create(ctx, createReq)
+	steps = finalizeSyncStep(syncStep, syncStepIndex, totalSteps, onProgress, steps, err)
+	if err != nil {
+		// If the callback already completed the step (worktree add succeeded,
+		// but a later phase like the setup script failed), leave it green — the
+		// failing phase owns its own step. Only attribute the error to "Create
+		// worktree" when it never completed (the creation itself failed).
+		if !stepCompleted {
+			completeStepError(&step, err.Error())
+			reportProgress(onProgress, step, stepIdx, totalSteps)
+		}
+		steps = append(steps, step)
+		p.logger.Error("worktree creation failed", zap.String("task_id", req.TaskID), zap.Error(err))
+		return nil, steps, stepIdx, err
+	}
+
+	// Reuse of an existing worktree skips OnWorktreeCreated, so complete the
+	// step here when the callback did not fire.
+	if !stepCompleted {
+		completeCreateWorktreeStep(&step, wt, stepIdx, totalSteps, onProgress)
+	}
+	// wt.FetchWarning is surfaced in the separate "Fetch PR branch" step
+	// rendered later in the pipeline. It can only be non-empty when
+	// req.CheckoutBranch != "" (it is set inside fetchBranchToLocal), so the
+	// two warnings always co-occur and FetchWarning is never silently dropped.
+	steps = append(steps, step)
+	return wt, steps, stepIdx + 1, nil
+}
+
+// buildWorktreeCreateRequest maps an EnvPrepareRequest onto the worktree
+// manager's CreateRequest. Progress callbacks are wired by the caller.
+func buildWorktreeCreateRequest(req *EnvPrepareRequest) worktree.CreateRequest {
+	return worktree.CreateRequest{
 		TaskID:               req.TaskID,
 		SessionID:            req.SessionID,
 		TaskTitle:            req.TaskTitle,
@@ -197,35 +245,18 @@ func (p *WorktreePreparer) createWorktreeWithSync(
 		TaskDirName:          req.TaskDirName,
 		RepoName:             req.RepoName,
 	}
-	if syncStep != nil {
-		createReq.OnSyncProgress = func(event worktree.SyncProgressEvent) {
-			applySyncProgressEvent(syncStep, event)
-			reportProgress(onProgress, *syncStep, syncStepIndex, totalSteps)
-		}
-	}
+}
 
-	wt, err := p.worktreeMgr.Create(ctx, createReq)
-	steps = finalizeSyncStep(syncStep, syncStepIndex, totalSteps, onProgress, steps, err)
-	if err != nil {
-		completeStepError(&step, err.Error())
-		steps = append(steps, step)
-		reportProgress(onProgress, step, stepIdx, totalSteps)
-		p.logger.Error("worktree creation failed", zap.String("task_id", req.TaskID), zap.Error(err))
-		return nil, steps, stepIdx, err
-	}
-
-	completeStepSuccess(&step)
+// completeCreateWorktreeStep marks the "Create worktree" step successful,
+// attaches any base-branch fallback warning carried by the worktree, and
+// reports progress.
+func completeCreateWorktreeStep(step *PrepareStep, wt *worktree.Worktree, stepIdx, totalSteps int, onProgress PrepareProgressCallback) {
+	completeStepSuccess(step)
 	if wt.BaseBranchFallbackWarning != "" {
 		step.Warning = wt.BaseBranchFallbackWarning
 		step.WarningDetail = wt.BaseBranchFallbackDetail
 	}
-	// wt.FetchWarning is surfaced in the separate "Fetch PR branch" step
-	// rendered later in the pipeline. It can only be non-empty when
-	// req.CheckoutBranch != "" (it is set inside fetchBranchToLocal), so the
-	// two warnings always co-occur and FetchWarning is never silently dropped.
-	steps = append(steps, step)
-	reportProgress(onProgress, step, stepIdx, totalSteps)
-	return wt, steps, stepIdx + 1, nil
+	reportProgress(onProgress, *step, stepIdx, totalSteps)
 }
 
 // finalizeSyncStep closes out the optional sync step after worktree.Create returns.
