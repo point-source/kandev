@@ -17,6 +17,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@kandev/ui/select";
 import { IconInfoCircle } from "@tabler/icons-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@kandev/ui/tooltip";
+import { CliModeIcon } from "@/components/cli-mode-icon";
 import { useAppStore } from "@/components/state-provider";
 import { useSettingsData } from "@/hooks/domains/settings/use-settings-data";
 import { useWorkflows } from "@/hooks/use-workflows";
@@ -75,12 +76,10 @@ function useFormData(workspaceId: string) {
         .flatMap((e) => e.profiles ?? []),
     [executors],
   );
-  const filteredAgentProfiles = useMemo(
-    () => agentProfiles.filter((p) => !p.cli_passthrough),
-    [agentProfiles],
-  );
-  return { workflows, agentProfiles: filteredAgentProfiles, allExecutorProfiles };
+  return { workflows, agentProfiles, allExecutorProfiles };
 }
+
+type SelectFieldItem = { id: string; label: string; icon?: React.ReactNode };
 
 function SelectField(props: {
   label: string;
@@ -88,7 +87,7 @@ function SelectField(props: {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
-  items: { id: string; label: string }[];
+  items: SelectFieldItem[];
   disabled?: boolean;
 }) {
   return (
@@ -106,7 +105,14 @@ function SelectField(props: {
         <SelectContent>
           {props.items.map((item) => (
             <SelectItem key={item.id} value={item.id}>
-              {item.label}
+              {item.icon ? (
+                <span className="flex items-center gap-1.5">
+                  <span>{item.label}</span>
+                  {item.icon}
+                </span>
+              ) : (
+                item.label
+              )}
             </SelectItem>
           ))}
         </SelectContent>
@@ -427,7 +433,11 @@ function AutomationFields({
           value={form.agentProfileId}
           onChange={(v) => setForm((p) => ({ ...p, agentProfileId: v }))}
           placeholder="(use step default)"
-          items={agentProfiles.map((p) => ({ id: p.id, label: p.label }))}
+          items={agentProfiles.map((p) => ({
+            id: p.id,
+            label: p.label,
+            icon: p.cli_passthrough ? <CliModeIcon /> : undefined,
+          }))}
         />
         <SelectField
           label="Executor Profile"
