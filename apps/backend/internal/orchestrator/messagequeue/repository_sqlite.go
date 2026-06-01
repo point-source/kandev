@@ -44,6 +44,7 @@ func (r *sqliteRepository) initSchema() error {
 		queued_by        TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_queued_messages_session_position ON queued_messages(session_id, position);
+	CREATE INDEX IF NOT EXISTS idx_queued_messages_queued_by_at ON queued_messages(queued_by, queued_at);
 
 	CREATE TABLE IF NOT EXISTS pending_moves (
 		id               TEXT PRIMARY KEY,

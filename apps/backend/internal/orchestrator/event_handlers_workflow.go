@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -1554,7 +1555,7 @@ func (s *Service) scheduleAutoResumeForWorkflowQueue(ctx context.Context, sessio
 //
 // queuedAt is the queued_at of the oldest matched entry, used only for the
 // recovery log line.
-func (s *Service) maybeRecoverOrphanedWorkflowQueue(ctx context.Context, sessionID string, queuedAt time.Time) {
+func (s *Service) maybeRecoverOrphanedWorkflowQueue(ctx context.Context, sessionID string, queuedAt time.Time, wg *sync.WaitGroup) {
 	session, err := s.repo.GetTaskSession(ctx, sessionID)
 	if err != nil {
 		// Transient DB read failure — leave the queue alone and let the
@@ -1607,7 +1608,11 @@ func (s *Service) maybeRecoverOrphanedWorkflowQueue(ctx context.Context, session
 	// underlying executor environment is broken. That's the right escalation
 	// (the orphan can never drain anyway) but worth flagging for future
 	// maintainers: the watchdog is "best-effort recover OR fail loudly".
-	go s.tryEnsureExecution(context.WithoutCancel(ctx), sessionID)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.tryEnsureExecution(ctx, sessionID)
+	}()
 }
 
 // dropOrphanedWorkflowQueue removes every workflow-tagged queued entry for

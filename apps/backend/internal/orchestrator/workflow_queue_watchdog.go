@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -40,6 +41,8 @@ type workflowQueueWatchdog struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
+	started  atomic.Bool
+	wg       sync.WaitGroup
 }
 
 // newWorkflowQueueWatchdog constructs a watchdog tied to the orchestrator
@@ -60,6 +63,7 @@ func (s *Service) newWorkflowQueueWatchdog() *workflowQueueWatchdog {
 // same instance spawn additional goroutines that all close the same doneCh
 // and panic. Call exactly once per watchdog; Stop must follow to drain.
 func (w *workflowQueueWatchdog) Start(ctx context.Context) {
+	w.started.Store(true)
 	go w.run(ctx)
 }
 
@@ -69,7 +73,10 @@ func (w *workflowQueueWatchdog) Stop() {
 	w.stopOnce.Do(func() {
 		close(w.stopCh)
 	})
-	<-w.doneCh
+	if w.started.Load() {
+		<-w.doneCh
+		w.wg.Wait()
+	}
 }
 
 func (w *workflowQueueWatchdog) run(ctx context.Context) {
@@ -113,7 +120,7 @@ func (w *workflowQueueWatchdog) sweep(ctx context.Context) {
 			continue
 		}
 		seen[entry.SessionID] = true
-		w.svc.maybeRecoverOrphanedWorkflowQueue(ctx, entry.SessionID, entry.QueuedAt)
+		w.svc.maybeRecoverOrphanedWorkflowQueue(ctx, entry.SessionID, entry.QueuedAt, &w.wg)
 	}
 }
 

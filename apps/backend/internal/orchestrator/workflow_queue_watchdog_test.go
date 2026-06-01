@@ -101,7 +101,7 @@ func seedWorkflowQueueWatchdogTaskAndSession(
 	// memory-repo test helper so the watchdog's "older than X" filter
 	// matches. Mirrors how the bug looks in production — a stuck queue
 	// entry whose queued_at is many minutes/hours in the past.
-	mq.SetQueuedAtForTesting(sessionID, now.Add(-10*time.Minute))
+	mq.SetQueuedAtForTesting(t, sessionID, now.Add(-10*time.Minute))
 
 	return svc, agentMgr, mq
 }
@@ -297,7 +297,7 @@ func TestWorkflowQueueWatchdog_DedupesBySession(t *testing.T) {
 	if _, err := mq.QueueMessageWithMetadata(ctx, sessionID, taskID, "second", "", messagequeue.QueuedByWorkflow, false, nil, nil); err != nil {
 		t.Fatalf("seed second queue entry: %v", err)
 	}
-	mq.SetQueuedAtForTesting(sessionID, time.Now().Add(-10*time.Minute))
+	mq.SetQueuedAtForTesting(t, sessionID, time.Now().Add(-10*time.Minute))
 	if got := mq.GetStatus(ctx, sessionID).Count; got != 2 {
 		t.Fatalf("expected 2 stale entries before sweep, got %d", got)
 	}
@@ -363,8 +363,12 @@ func TestWorkflowQueueWatchdog_DedupesBySession(t *testing.T) {
 	// spawn N concurrent resumes for the dedupe-target session — checked
 	// by ensuring sweep() returned before any extra resume fired (the
 	// launchCount snapshot below). It's >=1 (first sweep) and bounded.
-	if got := launchCount.Load(); got < 1 {
+	got := launchCount.Load()
+	if got < 1 {
 		t.Errorf("expected at least 1 LaunchAgent call from the dedupe sweep, got %d", got)
+	}
+	if got > 2 {
+		t.Errorf("expected at most 2 LaunchAgent calls (1 sweep + 1 re-resume), got %d — dedupe may be broken", got)
 	}
 }
 

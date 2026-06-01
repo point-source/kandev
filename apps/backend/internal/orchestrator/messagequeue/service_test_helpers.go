@@ -1,6 +1,7 @@
 package messagequeue
 
 import (
+	"testing"
 	"time"
 )
 
@@ -11,7 +12,7 @@ import (
 //
 // No-op when the service is not backed by the in-memory repository. Callers
 // must guarantee the repo is a memoryRepository (NewServiceMemory).
-func (s *Service) SetQueuedAtForTesting(sessionID string, at time.Time) {
+func (s *Service) SetQueuedAtForTesting(_ testing.TB, sessionID string, at time.Time) {
 	mem, ok := s.repo.(*memoryRepository)
 	if !ok {
 		return

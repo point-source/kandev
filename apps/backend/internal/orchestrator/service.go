@@ -845,8 +845,11 @@ func (s *Service) Start(ctx context.Context) error {
 	// recovered if the inline auto-resume hook misses them. Skip when the
 	// pieces aren't wired (tests that only need a partial service).
 	if s.messageQueue != nil && s.executor != nil {
-		s.workflowQueueWatchdog = s.newWorkflowQueueWatchdog()
-		s.workflowQueueWatchdog.Start(ctx)
+		wd := s.newWorkflowQueueWatchdog()
+		wd.Start(ctx)
+		s.mu.Lock()
+		s.workflowQueueWatchdog = wd
+		s.mu.Unlock()
 	}
 
 	s.logger.Info("orchestrator service started successfully")
@@ -878,9 +881,12 @@ func (s *Service) Stop() error {
 		errs = append(errs, err)
 	}
 
-	if s.workflowQueueWatchdog != nil {
-		s.workflowQueueWatchdog.Stop()
-		s.workflowQueueWatchdog = nil
+	s.mu.Lock()
+	wd := s.workflowQueueWatchdog
+	s.workflowQueueWatchdog = nil
+	s.mu.Unlock()
+	if wd != nil {
+		wd.Stop()
 	}
 
 	s.cancelAllClarificationWatchdogs()
