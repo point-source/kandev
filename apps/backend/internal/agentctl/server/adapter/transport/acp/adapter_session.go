@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/kandev/kandev/internal/agentctl/server/adapter/transport/shared"
@@ -378,7 +379,7 @@ func (a *Adapter) emitSessionModels(sessionID string, models *acp.SessionModelSt
 	// CurrentModelId nor a configOption surface a value, emit empty and let
 	// the frontend fall through to its profile/snapshot resolution.
 	if currentModelID == "" {
-		currentModelID = resolveCurrentModelFromConfig(configOptions)
+		currentModelID = resolveCurrentModelFromConfig(configOptions, models.AvailableModels)
 	}
 
 	// Cache config options so emitSetModelEvent can include them in the
@@ -422,9 +423,19 @@ func (a *Adapter) emitSetModelEvent(sessionID, modelID string, cachedModels []ac
 		// deep copy to avoid aliasing the caller's backing array.
 		outConfig = make([]streams.ConfigOption, len(cachedConfig))
 		copy(outConfig, cachedConfig)
+		baseModelID, reasoningEffort, splitReasoningModel := splitReasoningModelID(modelID, outConfig)
 		for i := range outConfig {
 			if outConfig[i].ID == configOptionIDModel || outConfig[i].Category == configOptionIDModel {
-				outConfig[i].CurrentValue = modelID
+				if splitReasoningModel {
+					outConfig[i].CurrentValue = baseModelID
+				} else {
+					outConfig[i].CurrentValue = modelID
+				}
+			}
+			if splitReasoningModel &&
+				(outConfig[i].ID == configOptionIDReasoningEffort ||
+					outConfig[i].Category == configOptionCategoryThoughtLevel) {
+				outConfig[i].CurrentValue = reasoningEffort
 			}
 		}
 	}
@@ -443,13 +454,82 @@ func (a *Adapter) emitSetModelEvent(sessionID, modelID string, cachedModels []ac
 }
 
 // resolveCurrentModelFromConfig extracts current model ID from configOptions.
-func resolveCurrentModelFromConfig(options []streams.ConfigOption) string {
+func resolveCurrentModelFromConfig(options []streams.ConfigOption, available []acp.ModelInfo) string {
+	modelID := ""
+	reasoningEffort := ""
 	for _, opt := range options {
 		if opt.ID == configOptionIDModel || opt.Category == configOptionIDModel {
-			return opt.CurrentValue
+			modelID = opt.CurrentValue
+		}
+		if opt.ID == configOptionIDReasoningEffort || opt.Category == configOptionCategoryThoughtLevel {
+			reasoningEffort = opt.CurrentValue
 		}
 	}
-	return ""
+	if modelID == "" {
+		return ""
+	}
+	if reasoningEffort != "" {
+		combined := modelID + "/" + reasoningEffort
+		if modelIDExists(combined, available) {
+			return combined
+		}
+	}
+	if modelIDExists(modelID, available) {
+		return modelID
+	}
+	// Keep the agent-reported config value as a best-effort fallback for
+	// providers that expose the current model only through configOptions.
+	return modelID
+}
+
+func splitReasoningModelID(modelID string, options []streams.ConfigOption) (string, string, bool) {
+	allowedReasoningEfforts := map[string]bool{}
+	hasReasoningOption := false
+	for _, opt := range options {
+		if opt.ID == configOptionIDReasoningEffort || opt.Category == configOptionCategoryThoughtLevel {
+			hasReasoningOption = true
+			for _, optionValue := range opt.Options {
+				if optionValue.Value != "" {
+					allowedReasoningEfforts[optionValue.Value] = true
+				}
+			}
+		}
+	}
+	if hasReasoningOption && len(allowedReasoningEfforts) == 0 {
+		for _, effort := range []string{
+			reasoningEffortLow,
+			reasoningEffortMedium,
+			reasoningEffortHigh,
+			reasoningEffortXHigh,
+		} {
+			allowedReasoningEfforts[effort] = true
+		}
+	}
+	if len(allowedReasoningEfforts) == 0 {
+		return "", "", false
+	}
+	slashIndex := strings.LastIndex(modelID, "/")
+	if slashIndex < 1 || slashIndex == len(modelID)-1 {
+		return "", "", false
+	}
+	baseModelID := modelID[:slashIndex]
+	reasoningEffort := modelID[slashIndex+1:]
+	if !allowedReasoningEfforts[reasoningEffort] {
+		return "", "", false
+	}
+	return baseModelID, reasoningEffort, true
+}
+
+func modelIDExists(modelID string, available []acp.ModelInfo) bool {
+	if len(available) == 0 {
+		return false
+	}
+	for _, model := range available {
+		if string(model.ModelId) == modelID {
+			return true
+		}
+	}
+	return false
 }
 
 // SetMode changes the agent's session mode via ACP session/set_mode.
