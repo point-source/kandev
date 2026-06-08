@@ -108,7 +108,13 @@ export function mergeSyntheticMessages(server: Message[], prev: Message[] | unde
       (m.turn_id == null || serverTurnIds.has(m.turn_id)),
   );
   if (carried.length === 0) return server;
-  return [...server, ...carried];
+  const combined = [...server, ...carried];
+  combined.sort((a, b) => {
+    const ta = a.created_at ? Date.parse(a.created_at) : 0;
+    const tb = b.created_at ? Date.parse(b.created_at) : 0;
+    return ta - tb;
+  });
+  return combined;
 }
 
 export const sessionMessagesQueryOptions = (sessionId: string) =>

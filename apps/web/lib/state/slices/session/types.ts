@@ -19,8 +19,8 @@ export type TurnsState = {
 
 /**
  * Worktree view-model derived from a TaskSession's worktree_* fields. No longer
- * a Zustand slice — built on demand by useSessionWorktrees / useWorktree from
- * the canonical TaskSession TQ cache (qk.taskSession.byId / .byTask).
+ * a Zustand slice — built on demand by useSessionWorktrees from the canonical
+ * TaskSession TQ cache (qk.taskSession.byId / .byTask).
  */
 export type Worktree = {
   id: string;

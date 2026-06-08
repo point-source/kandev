@@ -165,12 +165,11 @@ const eslintConfig = defineConfig([
           // Worktree server data is derived from the canonical TaskSession TQ
           // cache (worktree_id / worktree_path / worktree_branch). The Zustand
           // `worktrees` / `sessionWorktreesBySessionId` slices + their setters
-          // were removed. Read worktrees via hooks/domains/session/use-session-worktrees
-          // (useSessionWorktrees) or hooks/use-worktree (useWorktree).
+          // were removed. Read worktrees via hooks/domains/session/use-session-worktrees.
           selector:
             "MemberExpression[object.name=/^(state|s|draft)$/][property.name=/^(worktrees|sessionWorktreesBySessionId|setWorktree|setSessionWorktrees)$/]",
           message:
-            "Worktree state is derived from the TaskSession TQ cache (worktree_* fields). Read it via useSessionWorktrees (hooks/domains/session/use-session-worktrees) or useWorktree (hooks/use-worktree), not the removed Zustand worktrees / sessionWorktreesBySessionId mirror.",
+            "Worktree state is derived from the TaskSession TQ cache (worktree_* fields). Read it via useSessionWorktrees (hooks/domains/session/use-session-worktrees), not the removed Zustand worktrees / sessionWorktreesBySessionId mirror.",
         },
       ],
     },

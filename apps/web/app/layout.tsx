@@ -51,7 +51,7 @@ export default async function RootLayout({
   // to all-off when the backend is unreachable. See
   // docs/decisions/0007-runtime-feature-flags.md.
   const ssrQueryClient = makeQueryClient();
-  await ssrQueryClient.prefetchQuery(featuresQueryOptions());
+  await ssrQueryClient.prefetchQuery({ ...featuresQueryOptions(), retry: false });
   const dehydratedState = dehydrate(ssrQueryClient);
 
   return (

@@ -185,6 +185,14 @@ describe("git-status WS handler — stale-while-revalidate", () => {
     expect(state.sessionCommits.refetchTrigger[SESSION]).toBe(1);
     expect(state.sessionCommits.byEnvironmentId[SESSION]).toHaveLength(1);
   });
+
+  it("status_update leaves cumulative-diff invalidation to the TQ bridge", () => {
+    const handler = gitStatusHandler(store);
+
+    handler(gitEvent(statusUpdateEvent(STATUS_TIME_1)));
+
+    expect(invalidateCumulativeDiffCacheMock).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

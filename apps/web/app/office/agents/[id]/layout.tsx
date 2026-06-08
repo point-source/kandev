@@ -50,7 +50,7 @@ export default function AgentDetailLayout({ children, params }: AgentDetailLayou
   const agent = agents.find((a) => a.id === id);
   const activeSlug = activeSlugFromPath(pathname, id);
 
-  if (isPending) {
+  if (workspaceId && isPending) {
     return (
       <div className="p-6">
         <p className="text-muted-foreground">Loading...</p>

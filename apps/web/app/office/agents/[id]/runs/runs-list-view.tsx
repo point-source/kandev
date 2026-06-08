@@ -12,13 +12,16 @@ import {
 } from "@tabler/icons-react";
 import { Badge } from "@kandev/ui/badge";
 import { Button } from "@kandev/ui/button";
-import { useTaskCandidates } from "@/hooks/domains/office/use-task-candidates";
+import { useQuery } from "@tanstack/react-query";
+import { useAppStore } from "@/components/state-provider";
 import { useOfficeRoutines } from "@/hooks/domains/office/use-office-routines";
 import {
   listAgentRuns,
   type AgentRunsListPage,
   type AgentRunSummary,
 } from "@/lib/api/domains/office-extended-api";
+import { officeQueryOptions } from "@/lib/query/query-options/office";
+import type { OfficeTask, Routine } from "@/lib/state/slices/office/types";
 import { timeAgo } from "@/lib/utils/time";
 
 type Props = {
@@ -58,6 +61,12 @@ export function RunsListView({ initial, agentId }: Props) {
   const [pages, setPages] = useState<AgentRunsListPage[]>([initial]);
   const [loading, setLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const workspaceId = useAppStore((s) => s.workspaces.activeId);
+  const { data: tasks = [] } = useQuery({
+    ...officeQueryOptions.tasks(workspaceId ?? ""),
+    enabled: !!workspaceId,
+  });
+  const routines = useOfficeRoutines();
 
   const lastPage = pages[pages.length - 1];
   const runs = pages.flatMap((p) => p.runs);
@@ -113,14 +122,24 @@ export function RunsListView({ initial, agentId }: Props) {
         <span>Requested</span>
       </div>
       {runs.map((run) => (
-        <RunRow key={run.id} run={run} agentId={agentId} />
+        <RunRow key={run.id} run={run} agentId={agentId} tasks={tasks} routines={routines} />
       ))}
       <LoadMoreFooter hasMore={hasMore} loading={loading} onLoadMore={loadMore} />
     </div>
   );
 }
 
-function RunRow({ run, agentId }: { run: AgentRunSummary; agentId: string }) {
+function RunRow({
+  run,
+  agentId,
+  tasks,
+  routines,
+}: {
+  run: AgentRunSummary;
+  agentId: string;
+  tasks: OfficeTask[];
+  routines: Routine[];
+}) {
   return (
     <div
       className="grid grid-cols-[120px_140px_1fr_120px_120px] gap-4 px-4 py-2.5 text-sm hover:bg-muted/30 transition-colors"
@@ -138,7 +157,7 @@ function RunRow({ run, agentId }: { run: AgentRunSummary; agentId: string }) {
       >
         {formatReason(run.reason)}
       </Link>
-      <LinkedEntity run={run} />
+      <LinkedEntity run={run} tasks={tasks} routines={routines} />
       <span>
         <Badge variant={STATUS_VARIANT[run.status] ?? "secondary"}>{run.status}</Badge>
       </span>
@@ -156,10 +175,16 @@ function RunRow({ run, agentId }: { run: AgentRunSummary; agentId: string }) {
  * (assignment). Falls back to em-dash for runs with no linkable
  * origin (legacy rows, scheduled wakeups without a task).
  */
-function LinkedEntity({ run }: { run: AgentRunSummary }) {
-  const candidates = useTaskCandidates();
-  const routines = useOfficeRoutines();
-  const task = run.task_id ? candidates.find((t) => t.id === run.task_id) : undefined;
+function LinkedEntity({
+  run,
+  tasks,
+  routines,
+}: {
+  run: AgentRunSummary;
+  tasks: OfficeTask[];
+  routines: Routine[];
+}) {
+  const task = run.task_id ? tasks.find((t) => t.id === run.task_id) : undefined;
   const routine = run.routine_id ? routines.find((r) => r.id === run.routine_id) : undefined;
 
   if (run.routine_id) {

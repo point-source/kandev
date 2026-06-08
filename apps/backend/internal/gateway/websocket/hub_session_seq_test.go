@@ -226,6 +226,40 @@ func TestHub_SessionSeq_TwoSubscribersOneUnsubscribe(t *testing.T) {
 	}
 }
 
+// TestHub_SessionSeq_UnsubscribeKeepsFocusedCounter verifies focus-only
+// recipients keep the existing session_seq stream after subscriber count hits
+// zero. BroadcastToSession fans out to focused clients too, so deleting the
+// counter on unsubscribe would make the next focused event restart at 1.
+func TestHub_SessionSeq_UnsubscribeKeepsFocusedCounter(t *testing.T) {
+	h := newTestHub(t)
+	c := newTestClient("c-focus")
+	c.send = make(chan []byte, 8)
+	subscribeClientForTest(t, h, c, "sess-focus")
+	h.FocusSession(c, "sess-focus")
+
+	first, _ := ws.NewNotification("focused.evt", nil)
+	h.BroadcastToSession("sess-focus", first)
+	<-c.send
+
+	h.UnsubscribeFromSession(c, "sess-focus")
+
+	second, _ := ws.NewNotification("focused.evt", nil)
+	h.BroadcastToSession("sess-focus", second)
+	raw := <-c.send
+	var got ws.Message
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SessionSeq != 2 {
+		t.Fatalf("SessionSeq after focus-only unsubscribe=%d, want 2", got.SessionSeq)
+	}
+
+	h.UnfocusSession(c, "sess-focus")
+	if got := h.sessionSeqCountForTest(); got != 0 {
+		t.Errorf("after final unfocus sessionSeqs len=%d, want 0", got)
+	}
+}
+
 // TestHub_GetSentEventsForSession_ConnectionWideEventsAreFiltered ensures the
 // per-session view only returns session-routed events. A connection-wide
 // notification (BroadcastToTask, broadcast) emitted in between must not

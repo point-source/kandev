@@ -44,11 +44,9 @@ const gitEventHandlers: GitEventHandlers = {
         envMapped: event.session_id in store.getState().environmentIdBySessionId,
       });
     }
-    // Git status itself now lives in the TanStack Query cache
-    // (qk.session.git(envKey), written by bridge/session-runtime.ts). This
-    // handler only invalidates the derived cumulative-diff cache so the diff
-    // panel refetches when the working tree changes.
-    invalidateCumulativeDiffCache(resolveEnvKey(store, event.session_id));
+    // Git status now lives in the TanStack Query cache (qk.session.git,
+    // written by bridge/session-runtime.ts). The bridge owns cumulative-diff
+    // invalidation because it can gate on actual content changes.
   },
 
   commit_created: (store, event) => {

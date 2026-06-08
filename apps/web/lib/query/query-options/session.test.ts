@@ -55,7 +55,12 @@ describe("deriveActiveTurnId", () => {
   });
 });
 
-function msg(id: string, turnId: string | undefined, synthetic: boolean): Message {
+function msg(
+  id: string,
+  turnId: string | undefined,
+  synthetic: boolean,
+  createdAt: string = TS,
+): Message {
   return {
     id,
     session_id: toSessionId("sess-1"),
@@ -65,7 +70,7 @@ function msg(id: string, turnId: string | undefined, synthetic: boolean): Messag
     content: "x",
     type: synthetic ? "status" : "message",
     metadata: synthetic ? { empty_turn: true } : undefined,
-    created_at: TS,
+    created_at: createdAt,
   };
 }
 
@@ -84,6 +89,20 @@ describe("mergeSyntheticMessages", () => {
     const prev = [msg("u1", "t1", false), msg(NOTICE_T1, "t1", true)];
     const merged = mergeSyntheticMessages(server, prev);
     expect(merged.map((m) => m.id)).toEqual(["u1", NOTICE_T1]);
+  });
+
+  it("keeps carried notices in chronological order with later server messages", () => {
+    const server = [
+      msg("u1", "t1", false, "2026-05-30T00:00:00Z"),
+      msg("u2", "t2", false, "2026-05-30T00:02:00Z"),
+      msg("a2", "t2", false, "2026-05-30T00:03:00Z"),
+    ];
+    const prev = [
+      msg(NOTICE_T1, "t1", true, "2026-05-30T00:01:00Z"),
+      msg("u2", "t2", false, "2026-05-30T00:02:00Z"),
+    ];
+    const merged = mergeSyntheticMessages(server, prev);
+    expect(merged.map((m) => m.id)).toEqual(["u1", NOTICE_T1, "u2", "a2"]);
   });
 
   it("drops a synthetic notice whose turn scrolled out of the server window", () => {

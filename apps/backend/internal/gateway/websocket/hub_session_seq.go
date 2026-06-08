@@ -48,10 +48,10 @@ func (h *Hub) incSessionSubscribers(sessionID string) {
 }
 
 // decSessionSubscribers decrements the per-session subscriber count. When it
-// reaches zero, the counter entry AND the matching session_seq counter are
-// deleted so a long-lived hub doesn't accumulate one *atomic.Int64 per session
-// ever seen. Called by UnsubscribeFromSession and by removeClient's cleanup
-// loop (a client disconnecting without an explicit unsubscribe).
+// reaches zero, only the refcount entry is deleted. sessionSeqs is cleaned up
+// by recomputeSessionMode/fireDebouncedDownTransition once both subscribers
+// and focused clients are gone, so focus-only recipients do not see their
+// session_seq stream reset mid-task-switch.
 func (h *Hub) decSessionSubscribers(sessionID string) {
 	if sessionID == "" {
 		return
@@ -63,8 +63,24 @@ func (h *Hub) decSessionSubscribers(sessionID string) {
 	n := v.(*atomic.Int64).Add(-1)
 	if n <= 0 {
 		h.sessionSubscriberCounts.Delete(sessionID)
-		h.sessionSeqs.Delete(sessionID)
 	}
+}
+
+// deleteSessionSeqIfIdleLocked drops the per-session counter only once the
+// hub's routing maps confirm there are no subscribers and no focus clients.
+// Caller must hold h.mu (read or write) so a new subscriber/focus cannot race
+// between the idle check and the delete.
+func (h *Hub) deleteSessionSeqIfIdleLocked(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if len(h.sessionSubscribers[sessionID]) > 0 {
+		return
+	}
+	if len(h.sessionMode.focusByClient[sessionID]) > 0 {
+		return
+	}
+	h.sessionSeqs.Delete(sessionID)
 }
 
 // sessionSeqCountForTest returns the number of live per-session counters.
