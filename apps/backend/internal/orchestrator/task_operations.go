@@ -376,7 +376,7 @@ func (s *Service) StartCreatedSession(ctx context.Context, taskID, sessionID, ag
 	// agent CLI's TTY and the user sees it verbatim — they don't want a wall of
 	// MCP-tool boilerplate prepended to "hello".
 	if (effectivePrompt != "" || len(attachments) > 0) && !sysprompt.HasKandevContext(effectivePrompt) && !session.IsPassthrough {
-		effectivePrompt = sysprompt.InjectKandevContext(taskID, sessionID, effectivePrompt)
+		effectivePrompt = sysprompt.InjectKandevContext(taskID, sessionID, effectivePrompt, s.WorkflowStepRequiresCompletionSignal(ctx, dbTask.WorkflowStepID))
 	}
 
 	executorID := session.ExecutorID
@@ -599,8 +599,13 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 	if launchSession, sessErr := s.repo.GetTaskSession(ctx, sessionID); sessErr == nil {
 		skipKandevMCPWrap = launchSession.IsPassthrough
 	}
+	// `task` here is *v1.Task from the scheduler, which does NOT carry the
+	// orchestrator's WorkflowStepID — go through the task-ID variant so the
+	// repo lookup pulls the canonical step. Using the workflowStepID parameter
+	// directly is wrong because it can be empty on manual user-initiated starts
+	// while the task is already bound to a signal-gated step in the DB.
 	if (effectivePrompt != "" || len(attachments) > 0) && !sysprompt.HasKandevContext(effectivePrompt) && !skipKandevMCPWrap {
-		effectivePrompt = sysprompt.InjectKandevContext(task.ID, sessionID, effectivePrompt)
+		effectivePrompt = sysprompt.InjectKandevContext(task.ID, sessionID, effectivePrompt, s.StepRequiresCompletionSignal(ctx, task.ID))
 	}
 
 	// Office tasks restrict the MCP toolset: kanban tools (move/update/list

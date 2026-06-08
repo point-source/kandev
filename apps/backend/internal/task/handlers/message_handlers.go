@@ -29,6 +29,7 @@ type OrchestratorService interface {
 	ResumeTaskSession(ctx context.Context, taskID, taskSessionID string) error
 	StartCreatedSession(ctx context.Context, taskID, sessionID, agentProfileID, prompt string, skipMessageRecord, planMode, autoStart bool, attachments []v1.MessageAttachment) error
 	ProcessOnTurnStart(ctx context.Context, taskID, sessionID string) error
+	StepRequiresCompletionSignal(ctx context.Context, taskID string) bool
 }
 
 // MessageHandlers handles WebSocket requests for messages
@@ -211,6 +212,22 @@ func (h *MessageHandlers) wsAddMessage(ctx context.Context, msg *ws.Message) (*w
 		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to get task", nil)
 	}
 
+	// Run on_turn_start synchronously BEFORE wrapping the prompt with the
+	// Kandev MCP system block. A workflow step transition fired by
+	// on_turn_start changes which step's `auto_advance_requires_signal`
+	// applies — running the wrap first would bake in the previous step's
+	// flag and either hide or expose `step_complete_kandev` on the wrong
+	// first turn. dispatchPromptAsync no longer calls ProcessOnTurnStart;
+	// it forwards the (now correctly-wrapped) prompt to the agent.
+	if h.orchestrator != nil {
+		if err := h.orchestrator.ProcessOnTurnStart(ctx, req.TaskID, req.TaskSessionID); err != nil {
+			h.logger.Warn("failed to process on_turn_start",
+				zap.String("task_id", req.TaskID),
+				zap.String("session_id", req.TaskSessionID),
+				zap.Error(err))
+		}
+	}
+
 	// Build metadata with attachments, plan mode, review comments, and context files
 	meta := orchestrator.NewUserMessageMeta().
 		WithPlanMode(req.PlanMode).
@@ -235,7 +252,8 @@ func (h *MessageHandlers) wsAddMessage(ctx context.Context, msg *ws.Message) (*w
 	// wall of MCP-tool boilerplate prepended to "hello".
 	storedContent := req.Content
 	if isCreatedSession && !sessionResp.Session.IsPassthrough && (req.Content != "" || len(req.Attachments) > 0) {
-		storedContent = sysprompt.InjectKandevContext(req.TaskID, req.TaskSessionID, req.Content)
+		requiresSignal := h.orchestrator != nil && h.orchestrator.StepRequiresCompletionSignal(ctx, req.TaskID)
+		storedContent = sysprompt.InjectKandevContext(req.TaskID, req.TaskSessionID, req.Content, requiresSignal)
 		req.Content = storedContent
 	}
 
@@ -329,20 +347,11 @@ func (h *MessageHandlers) ensureTaskInProgress(ctx context.Context, taskID strin
 	return nil
 }
 
-// dispatchPromptAsync runs on_turn_start handling and then forwards the message to the
-// agent as a prompt in a background goroutine.
+// dispatchPromptAsync forwards the message to the agent as a prompt in a
+// background goroutine. The caller (wsAddMessage) is responsible for running
+// on_turn_start synchronously BEFORE wrapping the prompt, so this function
+// only handles the agent-facing dispatch.
 func (h *MessageHandlers) dispatchPromptAsync(ctx context.Context, req wsAddMessageRequest, agentProfileID string, isCreatedSession bool) {
-	// Process on_turn_start events synchronously BEFORE sending the prompt.
-	// This transitions the task to the right step (e.g., Todo → In Progress
-	// or Review → In Progress) before the agent receives the message.
-	// This applies to all sessions, including CREATED sessions from plan mode
-	// where the user sends the first message to start the agent.
-	if err := h.orchestrator.ProcessOnTurnStart(ctx, req.TaskID, req.TaskSessionID); err != nil {
-		h.logger.Warn("failed to process on_turn_start",
-			zap.String("task_id", req.TaskID),
-			zap.String("session_id", req.TaskSessionID),
-			zap.Error(err))
-	}
 	taskID := req.TaskID
 	sessionID := req.TaskSessionID
 	content := req.Content
