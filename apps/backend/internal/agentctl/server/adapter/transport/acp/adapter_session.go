@@ -55,8 +55,9 @@ func (a *Adapter) NewSession(ctx context.Context, mcpServers []types.McpServer) 
 	a.mu.Lock()
 	a.sessionID = string(resp.SessionId)
 	sessionID := a.sessionID
-	if resp.Models != nil {
-		a.availableModels = resp.Models.AvailableModels
+	initialModels := initialSessionModelState(resp.Models, resp.Meta, resp.ConfigOptions)
+	if initialModels != nil {
+		a.availableModels = initialModels.AvailableModels
 	}
 	a.mu.Unlock()
 	a.attachMgr.SetSessionID(sessionID)
@@ -69,9 +70,10 @@ func (a *Adapter) NewSession(ctx context.Context, mcpServers []types.McpServer) 
 		a.emitInitialModeState(resp.Modes)
 	}
 
-	// Emit session models if the agent returned model state
-	if resp.Models != nil {
-		a.emitSessionModels(sessionID, resp.Models, resp.Meta, resp.ConfigOptions)
+	// Emit session models if the agent returned model state, or if it exposes
+	// model selection only through configOptions.
+	if initialModels != nil {
+		a.emitSessionModels(sessionID, initialModels, resp.Meta, resp.ConfigOptions)
 	}
 
 	// Emit session status event to normalize with other adapters.
@@ -87,6 +89,37 @@ func (a *Adapter) NewSession(ctx context.Context, mcpServers []types.McpServer) 
 	})
 
 	return sessionID, nil
+}
+
+func initialSessionModelState(
+	models *acp.SessionModelState,
+	meta map[string]any,
+	configOptions []acp.SessionConfigOption,
+) *acp.SessionModelState {
+	if models != nil {
+		return models
+	}
+	if hasModelConfigOption(sessionConfigOptions(meta, configOptions)) {
+		return &acp.SessionModelState{}
+	}
+	return nil
+}
+
+func hasModelConfigOption(options []streams.ConfigOption) bool {
+	for _, option := range options {
+		if option.ID == configOptionIDModel || option.Category == configOptionIDModel {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionConfigOptions(meta map[string]any, acpConfigOptions []acp.SessionConfigOption) []streams.ConfigOption {
+	configOptions := convertACPConfigOptions(acpConfigOptions)
+	if len(configOptions) > 0 {
+		return configOptions
+	}
+	return extractConfigOptions(meta)
 }
 
 // effectiveMcpCapabilities applies the adapter's AssumeMcpSse/AssumeMcpHttp
@@ -266,8 +299,9 @@ func (a *Adapter) LoadSession(ctx context.Context, sessionID string, mcpServers 
 
 	a.mu.Lock()
 	a.sessionID = sessionID
-	if resp.Models != nil {
-		a.availableModels = resp.Models.AvailableModels
+	initialModels := initialSessionModelState(resp.Models, resp.Meta, resp.ConfigOptions)
+	if initialModels != nil {
+		a.availableModels = initialModels.AvailableModels
 	}
 	a.mu.Unlock()
 	a.attachMgr.SetSessionID(sessionID)
@@ -280,9 +314,10 @@ func (a *Adapter) LoadSession(ctx context.Context, sessionID string, mcpServers 
 		a.emitInitialModeState(resp.Modes)
 	}
 
-	// Emit session models if the agent returned model state
-	if resp.Models != nil {
-		a.emitSessionModels(sessionID, resp.Models, resp.Meta, resp.ConfigOptions)
+	// Emit session models if the agent returned model state, or if it exposes
+	// model selection only through configOptions.
+	if initialModels != nil {
+		a.emitSessionModels(sessionID, initialModels, resp.Meta, resp.ConfigOptions)
 	}
 
 	// Re-emit plan captured during history replay and clear the loading flag.
@@ -366,11 +401,9 @@ func (a *Adapter) emitInitialModeState(modes *acp.SessionModeState) {
 // emitSessionModels emits a session_models event from the session response.
 func (a *Adapter) emitSessionModels(sessionID string, models *acp.SessionModelState, meta map[string]any, acpConfigOptions []acp.SessionConfigOption) {
 	currentModelID := string(models.CurrentModelId)
-	// Prefer typed config options from the response; fall back to _meta extraction for older agents
-	configOptions := convertACPConfigOptions(acpConfigOptions)
-	if len(configOptions) == 0 {
-		configOptions = extractConfigOptions(meta)
-	}
+	// Prefer typed config options from the response; fall back to _meta
+	// extraction for older agents.
+	configOptions := sessionConfigOptions(meta, acpConfigOptions)
 
 	// Fallback: if the SDK didn't parse currentModelId (some agents omit it),
 	// try to resolve it from a model-shaped configOption. We deliberately do

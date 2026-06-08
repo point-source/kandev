@@ -158,6 +158,130 @@ func TestEmitSessionModels_EmptyCurrentIDComposesReasoningEffortFromTypedOptions
 	}
 }
 
+func TestInitialSessionModelState_UsesConfigOptionsWithoutModels(t *testing.T) {
+	modelCategory := acp.SessionConfigOptionCategoryModel
+	modelOptions := acp.SessionConfigSelectOptionsUngrouped{
+		{Name: "GPT-5.5", Value: "gpt-5.5"},
+		{Name: "GPT-5.3-Codex-Spark", Value: "gpt-5.3-codex-spark"},
+	}
+	configOptions := []acp.SessionConfigOption{
+		{Select: &acp.SessionConfigOptionSelect{
+			Type:         "select",
+			Id:           "model",
+			Name:         "Model",
+			Category:     &modelCategory,
+			CurrentValue: "gpt-5.5",
+			Options:      acp.SessionConfigSelectOptions{Ungrouped: &modelOptions},
+		}},
+	}
+
+	models := initialSessionModelState(nil, nil, configOptions)
+	if models == nil {
+		t.Fatal("initialSessionModelState returned nil for configOptions-only response")
+	}
+
+	a := newTestAdapter()
+	a.emitSessionModels("sess-1", models, nil, configOptions)
+
+	ev := findSessionModelsEvent(t, drainEvents(a))
+	if ev.CurrentModelID != "gpt-5.5" {
+		t.Errorf("CurrentModelID = %q, want %q", ev.CurrentModelID, "gpt-5.5")
+	}
+	if len(ev.ConfigOptions) != 1 {
+		t.Fatalf("ConfigOptions len = %d, want 1", len(ev.ConfigOptions))
+	}
+	if ev.ConfigOptions[0].ID != "model" {
+		t.Errorf("ConfigOptions[0].ID = %q, want model", ev.ConfigOptions[0].ID)
+	}
+}
+
+func TestInitialSessionModelState_UsesMetaConfigOptionsWithoutModels(t *testing.T) {
+	meta := map[string]any{
+		"configOptions": []any{
+			map[string]any{
+				"type":         "select",
+				"id":           "model",
+				"name":         "Model",
+				"category":     "model",
+				"currentValue": "gpt-5.5",
+			},
+		},
+	}
+
+	models := initialSessionModelState(nil, meta, nil)
+	if models == nil {
+		t.Fatal("initialSessionModelState returned nil for meta configOptions-only response")
+	}
+
+	a := newTestAdapter()
+	a.emitSessionModels("sess-1", models, meta, nil)
+
+	ev := findSessionModelsEvent(t, drainEvents(a))
+	if ev.CurrentModelID != "gpt-5.5" {
+		t.Errorf("CurrentModelID = %q, want %q", ev.CurrentModelID, "gpt-5.5")
+	}
+	if len(ev.ConfigOptions) != 1 {
+		t.Fatalf("ConfigOptions len = %d, want 1", len(ev.ConfigOptions))
+	}
+	if ev.ConfigOptions[0].ID != "model" {
+		t.Errorf("ConfigOptions[0].ID = %q, want model", ev.ConfigOptions[0].ID)
+	}
+}
+
+func TestInitialSessionModelState_IgnoresNonModelConfigOptions(t *testing.T) {
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	modeOptions := acp.SessionConfigSelectOptionsUngrouped{
+		{Name: "Read Only", Value: "read-only"},
+		{Name: "Default", Value: "auto"},
+	}
+	configOptions := []acp.SessionConfigOption{
+		{Select: &acp.SessionConfigOptionSelect{
+			Type:         "select",
+			Id:           "mode",
+			Name:         "Approval Preset",
+			Category:     &modeCategory,
+			CurrentValue: "read-only",
+			Options:      acp.SessionConfigSelectOptions{Ungrouped: &modeOptions},
+		}},
+	}
+
+	if models := initialSessionModelState(nil, nil, configOptions); models != nil {
+		t.Fatalf("initialSessionModelState returned %+v for non-model configOptions", models)
+	}
+}
+
+func TestInitialSessionModelState_UsesTypedConfigOptionPrecedence(t *testing.T) {
+	modeCategory := acp.SessionConfigOptionCategoryMode
+	modeOptions := acp.SessionConfigSelectOptionsUngrouped{
+		{Name: "Read Only", Value: "read-only"},
+	}
+	configOptions := []acp.SessionConfigOption{
+		{Select: &acp.SessionConfigOptionSelect{
+			Type:         "select",
+			Id:           "mode",
+			Name:         "Approval Preset",
+			Category:     &modeCategory,
+			CurrentValue: "read-only",
+			Options:      acp.SessionConfigSelectOptions{Ungrouped: &modeOptions},
+		}},
+	}
+	meta := map[string]any{
+		"configOptions": []any{
+			map[string]any{
+				"type":         "select",
+				"id":           "model",
+				"name":         "Model",
+				"category":     "model",
+				"currentValue": "gpt-5.5",
+			},
+		},
+	}
+
+	if models := initialSessionModelState(nil, meta, configOptions); models != nil {
+		t.Fatalf("initialSessionModelState returned %+v for non-model typed configOptions", models)
+	}
+}
+
 func TestResolveCurrentModelFromConfig_ComposesReasoningEffort(t *testing.T) {
 	options := []streams.ConfigOption{
 		{Type: "select", ID: "model", Category: "model", CurrentValue: "gpt-5.5"},
