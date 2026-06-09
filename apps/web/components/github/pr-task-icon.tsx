@@ -89,13 +89,18 @@ export function getPRTooltip(pr: TaskPR): string {
 
 /**
  * Picks the most attention-worthy color across N PRs. For multi-repo tasks one
- * red PR should dominate the visual even if the others are green.
+ * red PR should dominate the visual even if the others are green. Terminal
+ * (merged/closed) PRs are dropped when at least one PR is still open so a
+ * task whose first PR landed and was followed by a new open PR surfaces the
+ * live PR's status instead of the merged-purple from the closed one.
  */
 export function aggregatePRStatusColor(prs: TaskPR[]): string {
   if (prs.length === 0) return "text-muted-foreground";
+  const open = prs.filter((p) => p.state === "open");
+  const target = open.length > 0 ? open : prs;
   let bestColor = "text-muted-foreground";
   let bestRank = -1;
-  for (const pr of prs) {
+  for (const pr of target) {
     const color = getPRStatusColor(pr);
     const rank = STATUS_RANK[color] ?? 0;
     if (rank > bestRank) {
@@ -104,6 +109,16 @@ export function aggregatePRStatusColor(prs: TaskPR[]): string {
     }
   }
   return bestColor;
+}
+
+/**
+ * True when at least one PR is open AND every open PR is ready to merge.
+ * Terminal (merged/closed) siblings are ignored so they can't drag the result
+ * to false. Extracted so the rule is testable without mounting MultiPRIcon.
+ */
+export function areAllOpenPRsReadyToMerge(prs: TaskPR[]): boolean {
+  const openPRs = prs.filter((p) => p.state === "open");
+  return openPRs.length > 0 && openPRs.every(isPRReadyToMerge);
 }
 
 export function PRTaskIcon({ taskId }: { taskId: string }) {
@@ -138,7 +153,7 @@ function SinglePRIcon({ taskId, pr }: { taskId: string; pr: TaskPR }) {
 
 function MultiPRIcon({ taskId, prs }: { taskId: string; prs: TaskPR[] }) {
   const aggregateColor = aggregatePRStatusColor(prs);
-  const allReady = prs.every(isPRReadyToMerge);
+  const allReady = areAllOpenPRsReadyToMerge(prs);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
