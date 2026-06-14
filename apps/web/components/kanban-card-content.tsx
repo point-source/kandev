@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { CSS, type Transform } from "@dnd-kit/utilities";
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
-import { IconAlertCircle, IconArrowsMaximize, IconDots, IconSubtask } from "@tabler/icons-react";
+import {
+  IconAlertCircle,
+  IconArrowsMaximize,
+  IconDots,
+  IconLoader2,
+  IconSubtask,
+} from "@tabler/icons-react";
 import { Badge } from "@kandev/ui/badge";
 import { Card, CardContent } from "@kandev/ui/card";
 import { Checkbox } from "@kandev/ui/checkbox";
@@ -193,7 +199,11 @@ function KanbanCardActions({
   const hasPendingClarificationRequest = useTaskPendingClarification(task.primarySessionId);
   const showQuestionIcon = shouldUseQuestionTaskIcon(task.state, hasPendingClarificationRequest);
   const showRunningSpinner = shouldShowTaskRunningSpinner(task.state, task.primarySessionState);
-  const statusIcon = getTaskStateIcon(task.state, "h-4 w-4", hasPendingClarificationRequest);
+  const statusIcon = showRunningSpinner ? (
+    <IconLoader2 className="h-4 w-4 text-blue-500 animate-spin" />
+  ) : (
+    getTaskStateIcon(task.state, "h-4 w-4", hasPendingClarificationRequest)
+  );
   const hasKnownSession =
     Boolean(task.primarySessionId) || Boolean(task.sessionCount && task.sessionCount > 0);
 
