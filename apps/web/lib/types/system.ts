@@ -9,6 +9,8 @@ export interface SystemInfo {
   go_version: string;
   os: string;
   arch: string;
+  boot_id: string;
+  started_at: string;
 }
 
 export interface DiskBreakdown {
@@ -153,6 +155,19 @@ export interface SystemMetricsSnapshot {
 
 export interface JobAcceptResponse {
   job_id: string;
+}
+
+export interface RestartCapability {
+  supported: boolean;
+  mode: "manual" | "supervisor" | string;
+  adapter?: string;
+  reason?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface RestartResponse {
+  accepted: boolean;
+  message: string;
 }
 
 export type LicenseEcosystem = "npm" | "go";
