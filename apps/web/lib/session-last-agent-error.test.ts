@@ -41,6 +41,30 @@ describe("readLastAgentError", () => {
       agentExecutionId: AGENT_EXECUTION_ID,
     });
   });
+
+  it("returns null when the server has marked the error dismissed", () => {
+    expect(
+      readLastAgentError({
+        last_agent_error: {
+          message: AGENT_ERROR_MESSAGE,
+          occurred_at: OCCURRED_AT,
+          dismissed_at: "2026-06-14T12:05:00Z",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when dismissal is provided as camelCase dismissedAt", () => {
+    expect(
+      readLastAgentError({
+        last_agent_error: {
+          message: AGENT_ERROR_MESSAGE,
+          occurredAt: OCCURRED_AT,
+          dismissedAt: "2026-06-14T12:05:00Z",
+        },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("lastAgentErrorStamp", () => {
