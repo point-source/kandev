@@ -497,6 +497,7 @@ function buildPresetActions(set: StoreSet, get: StoreGet) {
         rightPanelsVisible: preset === "default",
         pinnedWidths: cleanedWidths,
       });
+      const targetEnvId = get().currentLayoutEnvId;
       requestAnimationFrame(() => {
         api.layout(safeWidth, safeHeight);
         if (isDebug()) {
@@ -507,6 +508,10 @@ function buildPresetActions(set: StoreSet, get: StoreGet) {
         enforceFromStore(api, get);
         syncPinnedWidthsFromApi(api, set);
         set({ isRestoringLayout: false });
+        const { currentLayoutEnvId, preMaximizeLayout } = get();
+        if (currentLayoutEnvId === targetEnvId) {
+          persistEnvLayoutNow(api, targetEnvId, preMaximizeLayout);
+        }
       });
     },
     applyCustomLayout: (layout: SavedLayoutConfig) => {
@@ -517,12 +522,14 @@ function buildPresetActions(set: StoreSet, get: StoreGet) {
       const { width: safeWidth, height: safeHeight } = measureDockviewContainer(api);
       set({ isRestoringLayout: true });
       const state = layout.layout as unknown as LayoutState;
+      let oldFormatRestoreFailed = false;
       if (!state?.columns) {
         try {
           api.fromJSON(layout.layout as unknown as SerializedDockview);
           set(applyLayoutFixups(api));
         } catch (e) {
           console.warn("applyCustomLayout: old-format restore failed:", e);
+          oldFormatRestoreFailed = true;
         }
       } else {
         const ids = applyLayout(api, state, liveWidths, safeWidth, safeHeight);
@@ -533,11 +540,17 @@ function buildPresetActions(set: StoreSet, get: StoreGet) {
       const sidebarCols = hasSidebar ? 1 : 0;
       const hasRight = colCount > sidebarCols + 1;
       set({ sidebarVisible: hasSidebar, rightPanelsVisible: hasRight });
+      const targetEnvId = get().currentLayoutEnvId;
       requestAnimationFrame(() => {
         api.layout(safeWidth, safeHeight);
         enforceFromStore(api, get);
         syncPinnedWidthsFromApi(api, set);
         set({ isRestoringLayout: false });
+        const { currentLayoutEnvId, preMaximizeLayout } = get();
+        // Don't persist when the legacy fromJSON restore threw: the API may be in a partial state and snapshotting it would propagate corruption to the next load.
+        if (currentLayoutEnvId === targetEnvId && !oldFormatRestoreFailed) {
+          persistEnvLayoutNow(api, targetEnvId, preMaximizeLayout);
+        }
       });
     },
     captureCurrentLayout: (): Record<string, unknown> => {
@@ -580,6 +593,22 @@ function restoreMaximizeFromStorage(api: DockviewApi, envId: string, set: StoreS
     set({ isRestoringLayout: false });
   });
   return true;
+}
+
+// Persist settled layout to env storage; auto-save in setupLayoutPersistence is gated by isRestoringLayout, so preset/custom actions must call this after the flag clears.
+export function persistEnvLayoutNow(
+  api: DockviewApi,
+  envId: string | null,
+  preMaximizeLayout: LayoutState | null,
+): void {
+  if (!envId) return;
+  // While maximized, api.toJSON() is the 2-column overlay; the regular layout has its own slot via saveOutgoingEnv.
+  if (preMaximizeLayout !== null) return;
+  try {
+    setEnvLayout(envId, api.toJSON());
+  } catch {
+    /* ignore serialization/storage failures */
+  }
 }
 
 /** Save the outgoing env's layout & maximize state, then release its portals. */
