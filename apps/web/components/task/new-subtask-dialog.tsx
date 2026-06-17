@@ -17,7 +17,7 @@ import {
 import { useSettingsData } from "@/hooks/domains/settings/use-settings-data";
 import { useRepositories } from "@/hooks/domains/workspace/use-repositories";
 import { useIsUtilityConfigured } from "@/hooks/use-is-utility-configured";
-import { useSummarizeSession } from "@/hooks/use-summarize-session";
+import { useSummarizeSession, type SummarizeSessionResult } from "@/hooks/use-summarize-session";
 import { useTaskSessions } from "@/hooks/use-task-sessions";
 import { getLocalStorage } from "@/lib/local-storage";
 import { STORAGE_KEYS } from "@/lib/settings/constants";
@@ -29,6 +29,7 @@ import {
   useSubtaskFormState,
 } from "./new-subtask-form-state";
 import { PromptZone, SubtaskFormBody } from "./new-subtask-form-parts";
+import { applySummarizeSessionResult, type SummaryToastFn } from "./session-context-summary";
 import { useSubtaskPromptZone, useSubtaskSubmit } from "./use-subtask-submit";
 
 type NewSubtaskDialogProps = {
@@ -166,9 +167,10 @@ function useContextChangeHandler(opts: {
   setHasPrompt: (v: boolean) => void;
   promptRef: React.RefObject<HTMLTextAreaElement | null>;
   initialPrompt: string | null;
-  summarize: (sessionId: string) => Promise<string | null>;
+  summarize: (sessionId: string) => Promise<SummarizeSessionResult>;
+  toast: SummaryToastFn;
 }) {
-  const { setContextValue, setHasPrompt, promptRef, initialPrompt, summarize } = opts;
+  const { setContextValue, setHasPrompt, promptRef, initialPrompt, summarize, toast } = opts;
   return useCallback(
     async (value: string) => {
       if (!value) return;
@@ -187,13 +189,10 @@ function useContextChangeHandler(opts: {
       }
       if (value.startsWith("summarize:")) {
         const result = await summarize(value.slice("summarize:".length));
-        if (result && promptRef.current) {
-          promptRef.current.value = result;
-          setHasPrompt(true);
-        }
+        applySummarizeSessionResult({ result, promptRef, setContextValue, setHasPrompt, toast });
       }
     },
-    [setContextValue, setHasPrompt, promptRef, initialPrompt, summarize],
+    [setContextValue, setHasPrompt, promptRef, initialPrompt, summarize, toast],
   );
 }
 
@@ -268,6 +267,7 @@ function NewSubtaskForm({
     promptRef: promptZone.promptRef,
     initialPrompt,
     summarize,
+    toast,
   });
   const { handleSubmit } = useSubtaskSubmit({
     fs,

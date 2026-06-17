@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
+	agentctlshared "github.com/kandev/kandev/internal/agentctl/server/adapter/transport/shared"
 	"github.com/kandev/kandev/internal/task/models"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	"go.uber.org/zap"
@@ -161,7 +164,7 @@ func (e *Executor) Prompt(ctx context.Context, taskID, sessionID string, prompt 
 	// dispatchOnly is intentionally not forwarded: PTY writes are inherently
 	// fire-and-forget, so the flag has no analogue in passthrough mode.
 	if e.agentManager.IsPassthroughSession(ctx, sessionID) {
-		return e.promptPassthrough(ctx, taskID, sessionID, prompt, attachments)
+		return e.promptPassthrough(ctx, taskID, session, prompt, attachments)
 	}
 
 	result, err := e.agentManager.PromptAgent(ctx, executionID, prompt, attachments, dispatchOnly)
@@ -175,9 +178,9 @@ func (e *Executor) Prompt(ctx context.Context, taskID, sessionID string, prompt 
 }
 
 // promptPassthrough delivers a user prompt to a passthrough (PTY) agent session.
-// Passthrough mode has no protocol channel for attachments: when the caller
-// supplies any, we log a warning so an operator can see they were dropped
-// (image-only messages are rejected outright since there is nothing to write).
+// Passthrough mode has no structured protocol channel for attachments, so we
+// save them into the session workspace and append path instructions to the
+// stdin prompt.
 //
 // The submit sequence is resolved per-agent via ResolvePassthroughConfig — most
 // TUI CLIs use "\r" but the config field lets a future agent override it
@@ -187,15 +190,14 @@ func (e *Executor) Prompt(ctx context.Context, taskID, sessionID string, prompt 
 // as an error so Service.handlePromptError can revert session state and surface
 // the failure to the user. A MarkPassthroughRunning failure is non-fatal — the
 // data is already in the PTY; only the AgentRunning event is missed.
-func (e *Executor) promptPassthrough(ctx context.Context, taskID, sessionID, prompt string, attachments []v1.MessageAttachment) (*PromptResult, error) {
-	if prompt == "" {
-		return nil, fmt.Errorf("passthrough prompt cannot be empty (attachments are not supported in CLI passthrough mode)")
+func (e *Executor) promptPassthrough(ctx context.Context, taskID string, session *models.TaskSession, prompt string, attachments []v1.MessageAttachment) (*PromptResult, error) {
+	sessionID := session.ID
+	promptWithAttachments, err := e.buildPassthroughPromptWithAttachments(ctx, session, prompt, attachments)
+	if err != nil {
+		return nil, err
 	}
-	if len(attachments) > 0 {
-		e.logger.Warn("dropping attachments on passthrough prompt; CLI passthrough mode has no attachment channel",
-			zap.String("task_id", taskID),
-			zap.String("session_id", sessionID),
-			zap.Int("attachments_count", len(attachments)))
+	if strings.TrimSpace(promptWithAttachments) == "" {
+		return nil, fmt.Errorf("passthrough prompt cannot be empty")
 	}
 	pt, err := e.agentManager.ResolvePassthroughConfig(ctx, sessionID)
 	if err != nil {
@@ -214,7 +216,7 @@ func (e *Executor) promptPassthrough(ctx context.Context, taskID, sessionID, pro
 			zap.String("session_id", sessionID),
 			zap.Error(err))
 	}
-	for _, chunk := range agents.PlanPassthroughStdinChunks(prompt, pt) {
+	for _, chunk := range agents.PlanPassthroughStdinChunks(promptWithAttachments, pt) {
 		if chunk.DelayBefore > 0 {
 			time.Sleep(chunk.DelayBefore)
 		}
@@ -223,6 +225,82 @@ func (e *Executor) promptPassthrough(ctx context.Context, taskID, sessionID, pro
 		}
 	}
 	return &PromptResult{StopReason: stopReasonPassthrough}, nil
+}
+
+func (e *Executor) buildPassthroughPromptWithAttachments(ctx context.Context, session *models.TaskSession, prompt string, attachments []v1.MessageAttachment) (string, error) {
+	if len(attachments) == 0 {
+		return prompt, nil
+	}
+	workDir := e.passthroughAttachmentWorkspace(ctx, session)
+	if workDir == "" {
+		return "", fmt.Errorf("passthrough attachments require a session workspace path")
+	}
+	attachMgr := agentctlshared.NewAttachmentManager(workDir, e.logger.Zap())
+	attachMgr.SetSessionID(session.ID)
+	saved, err := attachMgr.SaveAttachments(attachments)
+	if err != nil {
+		return "", fmt.Errorf("save passthrough attachments: %w", err)
+	}
+	if len(saved) == 0 {
+		if strings.TrimSpace(prompt) != "" {
+			e.logger.Warn("no attachments were saved for passthrough prompt; delivering text-only",
+				zap.String("session_id", session.ID),
+				zap.Int("attachments_submitted", len(attachments)))
+			return prompt, nil
+		}
+		return "", fmt.Errorf("passthrough prompt has no usable attachments")
+	}
+	attachmentPrompt := strings.TrimSpace(agentctlshared.BuildAttachmentPrompt(saved, true))
+	if strings.TrimSpace(prompt) == "" {
+		return attachmentPrompt, nil
+	}
+	return prompt + "\n\n" + attachmentPrompt, nil
+}
+
+func (e *Executor) passthroughAttachmentWorkspace(ctx context.Context, session *models.TaskSession) string {
+	if workDir := strings.TrimSpace(session.WorkspacePath); workDir != "" {
+		return workDir
+	}
+	if workDir := workspaceFromSessionWorktrees(session); workDir != "" {
+		return workDir
+	}
+	if session.TaskEnvironmentID != "" {
+		if env, err := e.repo.GetTaskEnvironment(ctx, session.TaskEnvironmentID); err == nil {
+			if workDir := workspaceFromTaskEnvironment(env); workDir != "" {
+				return workDir
+			}
+		}
+	}
+	if env, err := e.repo.GetTaskEnvironmentByTaskID(ctx, session.TaskID); err == nil {
+		if workDir := workspaceFromTaskEnvironment(env); workDir != "" {
+			return workDir
+		}
+	}
+	return ""
+}
+
+func workspaceFromSessionWorktrees(session *models.TaskSession) string {
+	if len(session.Worktrees) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(session.Worktrees[0].WorktreePath)
+	if first == "" {
+		return ""
+	}
+	if len(session.Worktrees) == 1 {
+		return first
+	}
+	return filepath.Dir(first)
+}
+
+func workspaceFromTaskEnvironment(env *models.TaskEnvironment) string {
+	if env == nil {
+		return ""
+	}
+	if workDir := strings.TrimSpace(env.WorkspacePath); workDir != "" {
+		return workDir
+	}
+	return strings.TrimSpace(env.WorktreePath)
 }
 
 // SwitchModel switches the model for a running session. It first attempts an

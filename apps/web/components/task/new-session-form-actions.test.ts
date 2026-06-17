@@ -109,8 +109,8 @@ describe("useSessionContextChange", () => {
   });
 
   it("summarizes sessions into prompt text", async () => {
-    const promptRef = { current: { value: "" } as unknown as HTMLTextAreaElement };
-    const summarize = vi.fn().mockResolvedValue("summary text");
+    const promptRef = { current: { value: "stale prompt" } as unknown as HTMLTextAreaElement };
+    const summarize = vi.fn().mockResolvedValue({ summary: "summary text" });
     const setContextValue = vi.fn();
     const setHasPrompt = vi.fn();
     const { result } = renderHook(() =>
@@ -136,7 +136,7 @@ describe("useSessionContextChange", () => {
 
   it("handles summarize failures by clearing context and showing toast", async () => {
     const promptRef = { current: { value: "" } as unknown as HTMLTextAreaElement };
-    const summarize = vi.fn().mockResolvedValue(null);
+    const summarize = vi.fn().mockResolvedValue({ summary: null, error: "connection refused" });
     const setContextValue = vi.fn();
     const setHasPrompt = vi.fn();
     const { result } = renderHook(() =>
@@ -157,16 +157,16 @@ describe("useSessionContextChange", () => {
     expect(setContextValue).toHaveBeenCalledWith("blank");
     expect(mockToast).toHaveBeenCalledWith({
       title: "Summarize failed",
-      description:
-        "Could not generate a summary. Check that the summarize utility agent is configured and enabled in settings.",
+      description: "connection refused",
       variant: "error",
     });
-    expect(setHasPrompt).not.toHaveBeenCalled();
+    expect(promptRef.current.value).toBe("");
+    expect(setHasPrompt).toHaveBeenCalledWith(false);
   });
 
   it("does not toast when summarize succeeds after prompt ref unmounts", async () => {
     const promptRef = { current: null as HTMLTextAreaElement | null };
-    const summarize = vi.fn().mockResolvedValue("summary text");
+    const summarize = vi.fn().mockResolvedValue({ summary: "summary text" });
     const setContextValue = vi.fn();
     const setHasPrompt = vi.fn();
     const { result } = renderHook(() =>
@@ -192,7 +192,7 @@ describe("useSessionContextChange", () => {
 
   it("sanitizes unsafe characters from summarize result before setting prompt", async () => {
     const promptRef = { current: { value: "" } as unknown as HTMLTextAreaElement };
-    const summarize = vi.fn().mockResolvedValue("line1\r\n<unsafe>\nline2");
+    const summarize = vi.fn().mockResolvedValue({ summary: "line1\r\n<unsafe>\nline2" });
     const setContextValue = vi.fn();
     const setHasPrompt = vi.fn();
     const { result } = renderHook(() =>

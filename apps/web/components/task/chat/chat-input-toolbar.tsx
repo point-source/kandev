@@ -78,6 +78,8 @@ export type ChatInputToolbarProps = {
   hideSessionsDropdown?: boolean;
   /** When true, only render the submit/cancel button — no other controls */
   minimalToolbar?: boolean;
+  /** Hide ACP/session-specific controls while keeping Plan, attachment, and context controls */
+  hideAgentControls?: boolean;
   /** Hide the plan mode toggle button (for ephemeral/quick chat sessions) */
   hidePlanMode?: boolean;
 };
@@ -376,7 +378,9 @@ function buildCollapsibleItems(props: {
   onEnhancePrompt?: () => void;
   isEnhancingPrompt: boolean;
   isUtilityConfigured: boolean;
+  hideAgentControls?: boolean;
 }): ToolbarItemConfig[] {
+  if (props.hideAgentControls) return [];
   return [
     {
       id: "mcp",
@@ -456,6 +460,7 @@ function AttachFilesButton({ onClick }: { onClick: () => void }) {
           size="sm"
           className="h-7 gap-1.5 px-2 cursor-pointer hover:bg-muted/40"
           onClick={onClick}
+          data-testid="chat-attachments-button"
         >
           <IconPaperclip className="h-4 w-4" />
         </Button>
@@ -513,6 +518,7 @@ const toolbarDefaults = {
   contextFiles: [] as ContextFile[],
   isEnhancingPrompt: false,
   isUtilityConfigured: false,
+  hideAgentControls: false,
   hidePlanMode: false,
 };
 
@@ -571,6 +577,7 @@ export const ChatInputToolbar = memo(function ChatInputToolbar(rawProps: ChatInp
               variant="ghost"
               size="sm"
               className="h-7 gap-1.5 px-2 cursor-pointer hover:bg-muted/40 relative"
+              data-testid="chat-context-button"
             >
               <IconAt className="h-4 w-4" />
               {props.contextCount > 0 && !isCollapsed && (

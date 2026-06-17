@@ -4,25 +4,17 @@ import { buildStartRequest } from "@/lib/services/session-launch-helpers";
 import { toMessageAttachments } from "@/components/task-create-dialog-helpers";
 import type { FileAttachment } from "./chat/file-attachment";
 import type { AgentProfileOption } from "@/lib/state/slices";
-
-type ToastFn = (opts: {
-  title: string;
-  description?: string;
-  variant?: "error" | "default";
-}) => void;
+import type { SummarizeSessionResult } from "@/hooks/use-summarize-session";
+import { applySummarizeSessionResult, type SummaryToastFn } from "./session-context-summary";
 
 type SessionContextChangeOpts = {
   promptRef: RefObject<HTMLTextAreaElement | null>;
   initialPrompt: string | null;
-  summarize: (sessionId: string) => Promise<string | null>;
-  toast: ToastFn;
+  summarize: (sessionId: string) => Promise<SummarizeSessionResult>;
+  toast: SummaryToastFn;
   setContextValue: (v: string) => void;
   setHasPrompt: (v: boolean) => void;
 };
-
-function sanitizePromptText(value: string): string {
-  return value.replace(/\r/g, "").replace(/[<>]/g, " ");
-}
 
 export function useSessionContextChange(opts: SessionContextChangeOpts) {
   const { promptRef, initialPrompt, summarize, toast, setContextValue, setHasPrompt } = opts;
@@ -39,18 +31,7 @@ export function useSessionContextChange(opts: SessionContextChangeOpts) {
       } else if (value.startsWith("summarize:")) {
         const sessionId = value.slice("summarize:".length);
         const result = await summarize(sessionId);
-        if (result === null) {
-          setContextValue("blank");
-          toast({
-            title: "Summarize failed",
-            description:
-              "Could not generate a summary. Check that the summarize utility agent is configured and enabled in settings.",
-            variant: "error",
-          });
-        } else if (promptRef.current) {
-          promptRef.current.value = sanitizePromptText(result);
-          setHasPrompt(true);
-        }
+        applySummarizeSessionResult({ result, promptRef, setContextValue, setHasPrompt, toast });
       }
     },
     [initialPrompt, promptRef, summarize, setContextValue, setHasPrompt, toast],
@@ -83,7 +64,7 @@ export function useSessionLaunchSubmit({
   groupId?: string;
   attachments: FileAttachment[];
   onClose: () => void;
-  toast: ToastFn;
+  toast: SummaryToastFn;
   setActiveSession: (taskId: string, sessionId: string) => void;
   activateSession: (
     sessionId: string,
