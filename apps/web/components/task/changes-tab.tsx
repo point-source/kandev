@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DockviewDefaultTab, type IDockviewPanelHeaderProps } from "dockview-react";
+import {
+  DockviewDefaultTab,
+  type DockviewApi,
+  type IDockviewPanelHeaderProps,
+} from "dockview-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -15,18 +19,20 @@ import { useDockviewStore } from "@/lib/state/dockview-store";
 import { cn } from "@kandev/ui/lib/utils";
 import { useTabMaximizeOnDoubleClick } from "./use-tab-maximize";
 
-/** Auto-activate the changes panel only when it lives in the right sidebar. */
+type DockviewPanel = NonNullable<ReturnType<DockviewApi["getPanel"]>>;
+
+function groupContainsAgentSessionPanel(panel: DockviewPanel): boolean {
+  return panel.group.panels.some((p) => p.id === "chat" || p.id.startsWith("session:"));
+}
+
+/** Auto-activate the changes panel unless it shares a group with agent sessions. */
 function autoActivateChangesPanel(): void {
-  const { api, rightTopGroupId } = useDockviewStore.getState();
+  const { api } = useDockviewStore.getState();
   if (!api) return;
 
   const panel = api.getPanel("changes");
-  // Only auto-focus when the panel is in the right sidebar.
-  // When it's in the center group (e.g. plan mode layout), never steal focus
-  // from the active chat/session panel.
-  if (panel && panel.group.id === rightTopGroupId) {
-    panel.api.setActive();
-  }
+  if (!panel || groupContainsAgentSessionPanel(panel)) return;
+  panel.api.setActive();
 }
 
 /**
@@ -48,6 +54,7 @@ export function ChangesTab(props: IDockviewPanelHeaderProps) {
 
   const prevTotalRef = useRef(totalCount);
   const seenCountRef = useRef(api.isActive ? totalCount : 0);
+  const activeSessionRef = useRef(activeSessionId);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Armed once we know the initial git data has settled. Until then, any
   // 0→N transition is treated as an initial load, not a real new change.
@@ -69,6 +76,14 @@ export function ChangesTab(props: IDockviewPanelHeaderProps) {
 
   // React to totalCount changes: auto-activate, flash, badge
   useEffect(() => {
+    if (activeSessionRef.current !== activeSessionId) {
+      activeSessionRef.current = activeSessionId;
+      prevTotalRef.current = totalCount;
+      seenCountRef.current = api.isActive ? totalCount : 0;
+      initializedRef.current = false;
+      setBadgeCount(0);
+    }
+
     if (api.isActive) {
       seenCountRef.current = totalCount;
     }
@@ -79,13 +94,14 @@ export function ChangesTab(props: IDockviewPanelHeaderProps) {
     const increased = totalCount > prev && totalCount > 0;
     const decreased = totalCount < prev;
 
-    // Auto-activate when changes appear for the first time (0 → N), but only
-    // after initial git data has settled.  gitStatusLoaded is false until the
-    // first WS git-status event arrives, guaranteeing data has loaded before we
-    // arm auto-activate (handles both page-refresh and clean-session cases).
+    // Auto-activate on real post-load updates, but only after initial git data
+    // has settled. gitStatusLoaded is false until the first WS git-status event
+    // arrives, guaranteeing existing changes on page refresh do not steal focus.
     if (!initializedRef.current) {
       if (gitStatusLoaded) initializedRef.current = true;
-    } else if (increased && prev === 0) {
+    } else if (increased) {
+      // The product behavior is to surface every new git update unless the
+      // changes panel shares a group with agent session panels.
       autoActivateChangesPanel();
     }
 
@@ -100,7 +116,7 @@ export function ChangesTab(props: IDockviewPanelHeaderProps) {
       const unseen = Math.max(0, totalCount - seenCountRef.current);
       requestAnimationFrame(() => setBadgeCount(unseen));
     }
-  }, [totalCount, api, gitStatusLoaded]);
+  }, [totalCount, api, gitStatusLoaded, activeSessionId]);
 
   // Cleanup flash timer on unmount
   useEffect(() => {
