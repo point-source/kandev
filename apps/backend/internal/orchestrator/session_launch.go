@@ -176,10 +176,22 @@ func (s *Service) launchStart(ctx context.Context, req *LaunchSessionRequest) (*
 	// duplicate session row and surface two tabs on a fresh task. Promote the
 	// prepared session to a start_created launch instead. ensureLocks is shared
 	// with EnsureSession so the two paths cannot race and both decide to create.
-	if req.SessionID == "" {
-		release := acquireEnsureLock(req.TaskID)
-		defer release()
-		if reused := s.findReusableCreatedSession(ctx, req.TaskID); reused != nil {
+	// EnsureSession holds the same mutex while re-entering through LaunchSession,
+	// so skip the acquire when its ctx marker is set — sync.Mutex isn't
+	// reentrant, and a recursive Lock would deadlock the request.
+	//
+	// Reuse is also skipped when the caller has explicitly chosen an executor
+	// or priority: start_created does not honor those, so adopting a prepared
+	// session would silently drop the caller's selection. Same logic applies
+	// when the caller's agent profile is set and disagrees with the prepared
+	// session's profile — that signals an intentionally different launch.
+	if s.canReusePreparedSession(req) {
+		if !ensureLockHeld(ctx) {
+			release := acquireEnsureLock(req.TaskID)
+			defer release()
+		}
+		if reused := s.findReusableCreatedSession(ctx, req.TaskID); reused != nil &&
+			(req.AgentProfileID == "" || req.AgentProfileID == reused.AgentProfileID) {
 			req.SessionID = reused.ID
 			if req.AgentProfileID == "" {
 				req.AgentProfileID = reused.AgentProfileID
@@ -199,6 +211,17 @@ func (s *Service) launchStart(ctx context.Context, req *LaunchSessionRequest) (*
 	return executionToLaunchResponse(req.TaskID, execution), nil
 }
 
+// canReusePreparedSession reports whether launchStart should consider adopting
+// an existing CREATED session. Reuse is unsafe when the caller has explicitly
+// chosen an executor or priority — start_created carries neither field, so
+// reusing would silently drop the caller's selection.
+func (s *Service) canReusePreparedSession(req *LaunchSessionRequest) bool {
+	return req.SessionID == "" &&
+		req.ExecutorID == "" &&
+		req.ExecutorProfileID == "" &&
+		req.Priority == ""
+}
+
 // findReusableCreatedSession returns a CREATED session on the task that an
 // explicit start should adopt instead of creating a new row. Primary wins; the
 // most-recently-updated CREATED session is the fallback. Non-CREATED states
@@ -208,6 +231,11 @@ func (s *Service) launchStart(ctx context.Context, req *LaunchSessionRequest) (*
 func (s *Service) findReusableCreatedSession(ctx context.Context, taskID string) *models.TaskSession {
 	sessions, err := s.repo.ListTaskSessions(ctx, taskID)
 	if err != nil {
+		// Swallowing the error would route the caller into StartTask and write
+		// the duplicate session row the reuse path is meant to prevent. Surface
+		// the failure so a transient DB error is visible in the logs instead.
+		s.logger.Warn("findReusableCreatedSession: list sessions failed; skipping reuse",
+			zap.String("task_id", taskID), zap.Error(err))
 		return nil
 	}
 	var best *models.TaskSession

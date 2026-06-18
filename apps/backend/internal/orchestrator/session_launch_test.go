@@ -523,27 +523,74 @@ func TestFindReusableCreatedSession(t *testing.T) {
 	})
 
 	t.Run("falls back to newest CREATED when no primary", func(t *testing.T) {
-		seedTaskAndSession(t, repo, "task-no-primary", "s-old", models.TaskSessionStateCreated)
-		older := time.Now().UTC().Add(-time.Hour)
-		if old, err := repo.GetTaskSession(ctx, "s-old"); err == nil {
-			old.UpdatedAt = older
-			_ = repo.UpdateTaskSession(ctx, old)
+		// Stress the UpdatedAt comparison by inverting it against the SQL
+		// started_at DESC order: s-sql-newer is inserted with a LATER
+		// StartedAt but an OLDER UpdatedAt than s-updated-newer. SQL puts
+		// s-sql-newer first; only the UpdatedAt comparison in
+		// findReusableCreatedSession can pick s-updated-newer. Without that
+		// comparison, the test would erroneously accept whatever SQL returns
+		// first. CreateTaskSession honors caller-supplied StartedAt/UpdatedAt
+		// when non-zero, so this writes the desired skew directly.
+		// seedTaskAndSession creates the parent task; the seeded session is
+		// dropped immediately so only the two crafted rows remain.
+		seedTaskAndSession(t, repo, "task-no-primary", "s-throwaway", models.TaskSessionStateCreated)
+		if err := repo.DeleteTaskSession(ctx, "s-throwaway"); err != nil {
+			t.Fatalf("delete throwaway: %v", err)
 		}
-		newer := &models.TaskSession{
-			ID:        "s-new",
+		now := time.Now().UTC()
+		sqlNewer := &models.TaskSession{
+			ID:        "s-sql-newer",
 			TaskID:    "task-no-primary",
 			State:     models.TaskSessionStateCreated,
-			StartedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
+			StartedAt: now.Add(time.Minute),
+			UpdatedAt: now.Add(-time.Hour),
 		}
-		if err := repo.CreateTaskSession(ctx, newer); err != nil {
-			t.Fatalf("create newer: %v", err)
+		if err := repo.CreateTaskSession(ctx, sqlNewer); err != nil {
+			t.Fatalf("create sql-newer: %v", err)
+		}
+		updatedNewer := &models.TaskSession{
+			ID:        "s-updated-newer",
+			TaskID:    "task-no-primary",
+			State:     models.TaskSessionStateCreated,
+			StartedAt: now,
+			UpdatedAt: now,
+		}
+		if err := repo.CreateTaskSession(ctx, updatedNewer); err != nil {
+			t.Fatalf("create updated-newer: %v", err)
 		}
 		got := svc.findReusableCreatedSession(ctx, "task-no-primary")
-		if got == nil || got.ID != "s-new" {
-			t.Fatalf("expected newest CREATED session, got %+v", got)
+		if got == nil || got.ID != "s-updated-newer" {
+			t.Fatalf("expected newest-UpdatedAt session, got %+v", got)
 		}
 	})
+}
+
+// TestCanReusePreparedSession pins the gate that protects launchStart from
+// adopting a prepared session when the caller has chosen its own executor,
+// executor profile, or priority — start_created carries none of those, so
+// reusing would silently drop them.
+func TestCanReusePreparedSession(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+
+	cases := []struct {
+		name string
+		req  LaunchSessionRequest
+		want bool
+	}{
+		{"empty fields → reuse", LaunchSessionRequest{TaskID: "t"}, true},
+		{"explicit session_id → no reuse", LaunchSessionRequest{TaskID: "t", SessionID: "s"}, false},
+		{"executor_id set → no reuse", LaunchSessionRequest{TaskID: "t", ExecutorID: "e"}, false},
+		{"executor_profile_id set → no reuse", LaunchSessionRequest{TaskID: "t", ExecutorProfileID: "ep"}, false},
+		{"priority set → no reuse", LaunchSessionRequest{TaskID: "t", Priority: "high"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := svc.canReusePreparedSession(&tc.req); got != tc.want {
+				t.Errorf("canReusePreparedSession()=%v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 // TestLaunchStart_ReusesPreparedSession regression-tests the duplicate-session
@@ -604,5 +651,104 @@ func TestLaunchStart_ReusesPreparedSession(t *testing.T) {
 	}
 	if sessions[0].ID != "session-prepared" {
 		t.Fatalf("expected reused session id, got %q", sessions[0].ID)
+	}
+}
+
+// TestLaunchStart_NoReuseOnProfileMismatch confirms that when the caller picks
+// an agent profile that differs from the prepared session's, launchStart falls
+// through to StartTask instead of silently overriding the prepared session's
+// profile.
+func TestLaunchStart_NoReuseOnProfileMismatch(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithScheduler(repo, newMockStepGetter(), taskRepo, &mockAgentManager{})
+
+	seedTaskAndSession(t, repo, "task1", "session-prepared", models.TaskSessionStateCreated)
+	taskRepo.tasks["task1"] = &v1.Task{ID: "task1", WorkspaceID: "ws1", Title: "Test", Description: "desc"}
+	if err := repo.SetSessionPrimary(ctx, "session-prepared"); err != nil {
+		t.Fatalf("set primary: %v", err)
+	}
+	prepared, err := repo.GetTaskSession(ctx, "session-prepared")
+	if err != nil {
+		t.Fatalf("load seeded session: %v", err)
+	}
+	prepared.AgentProfileID = "profile-prepared"
+	if err := repo.UpdateTaskSession(ctx, prepared); err != nil {
+		t.Fatalf("update seeded profile: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover()
+			close(done)
+		}()
+		_, _ = svc.LaunchSession(ctx, &LaunchSessionRequest{
+			TaskID:         "task1",
+			Intent:         IntentStart,
+			AgentProfileID: "profile-different",
+			Prompt:         "hello",
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("LaunchSession hung")
+	}
+
+	sessions, err := repo.ListTaskSessions(ctx, "task1")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected fresh session for different profile, got %d sessions", len(sessions))
+	}
+}
+
+// TestEnsureSession_AutoStartDoesNotDeadlock guards the reentrant-mutex bug:
+// EnsureSession acquires ensureLocks[taskID] then calls LaunchSession; when
+// the step has auto_start_agent, the dispatch lands in launchStart which used
+// to re-acquire the same non-reentrant mutex and freeze the request. The fix
+// threads an ensureLockHeld context marker so launchStart skips the inner
+// acquire — this test fails (hangs) without that marker.
+func TestEnsureSession_AutoStartDoesNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	taskRepo := newMockTaskRepo()
+	stepGetter := newMockStepGetter()
+	stepGetter.steps["step-auto"] = &wfmodels.WorkflowStep{
+		ID:             "step-auto",
+		Name:           "auto-start",
+		AgentProfileID: "profile1",
+		Events: wfmodels.StepEvents{
+			OnEnter: []wfmodels.OnEnterAction{{Type: wfmodels.OnEnterAutoStartAgent}},
+		},
+	}
+	svc := createTestServiceWithScheduler(repo, stepGetter, taskRepo, &mockAgentManager{})
+
+	seedTaskAndSessionWithStep(t, repo, "task1", "session-throwaway", "step-auto")
+	if err := repo.DeleteTaskSession(ctx, "session-throwaway"); err != nil {
+		t.Fatalf("delete seed session: %v", err)
+	}
+	taskRepo.tasks["task1"] = &v1.Task{
+		ID:          "task1",
+		WorkspaceID: "ws1",
+		Title:       "Test",
+		Description: "desc",
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover()
+			close(done)
+		}()
+		_, _ = svc.EnsureSession(ctx, "task1")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("EnsureSession deadlocked: launchStart re-acquired ensureLock that EnsureSession already holds")
 	}
 }
