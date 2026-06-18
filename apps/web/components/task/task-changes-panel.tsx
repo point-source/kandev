@@ -2,6 +2,7 @@
 
 import { memo, useMemo, useCallback, createRef, useState, useEffect, useRef } from "react";
 import { PanelRoot, PanelBody } from "./panel-primitives";
+import { TruncatedFilesBanner, useSelectedFileKey } from "./changes-panel-banner";
 import { useToast } from "@/components/toast-provider";
 import { useAppStore } from "@/components/state-provider";
 import { useReviewSources, type ReviewSource } from "@/hooks/domains/session/use-review-sources";
@@ -77,7 +78,7 @@ function scrollToFileAndClear(
 
 function useChangesView(selectedDiff: SelectedDiff | null, onClearSelected: () => void) {
   const activeSessionId = useAppStore((state) => state.tasks.activeSessionId);
-  const { allFiles, cumulativeLoading, prDiffLoading, gitStatus, rawPRFiles } =
+  const { allFiles, cumulativeLoading, prDiffLoading, gitStatus, rawPRFiles, truncatedFilesCount } =
     useReviewSources(activeSessionId);
   const pr = useActiveTaskPR();
   const { reviews } = useSessionFileReviews(activeSessionId);
@@ -151,6 +152,7 @@ function useChangesView(selectedDiff: SelectedDiff | null, onClearSelected: () =
     cumulativeLoading,
     prDiffLoading,
     gitStatus,
+    truncatedFilesCount,
   };
 }
 
@@ -457,6 +459,7 @@ const TaskChangesPanel = memo(function TaskChangesPanel({
     cumulativeLoading,
     prDiffLoading,
     gitStatus,
+    truncatedFilesCount,
   } = useChangesView(selectedDiff, onClearSelected);
   const {
     splitView,
@@ -481,13 +484,7 @@ const TaskChangesPanel = memo(function TaskChangesPanel({
       reviewedFiles,
       staleFiles,
     });
-  const selectedFileKey = useMemo(
-    () =>
-      mode === "file" && filePath
-        ? reviewFileKey({ path: filePath, repository_name: fileRepositoryName })
-        : undefined,
-    [mode, filePath, fileRepositoryName],
-  );
+  const selectedFileKey = useSelectedFileKey(mode, filePath, fileRepositoryName);
   useAutoCloseWhenEmpty({
     mode,
     filePath,
@@ -515,6 +512,7 @@ const TaskChangesPanel = memo(function TaskChangesPanel({
         handleFixComments={handleFixComments}
       />
       <PanelBody padding={false} scroll={false} className="overflow-hidden">
+        <TruncatedFilesBanner count={truncatedFilesCount} />
         <ChangesPanelContent
           isLoading={cumulativeLoading || prDiffLoading}
           files={visibleFiles}

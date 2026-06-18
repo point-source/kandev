@@ -128,6 +128,13 @@ export type CumulativeDiff = {
   head_commit: string;
   total_commits: number;
   files: Record<string, FileInfo>;
+  /**
+   * Files dropped from `files` because the cumulative range exceeded the
+   * backend's per-request file cap (a mid-rebase base→working-tree diff can
+   * enumerate tens of thousands of files). Zero/absent when the full set fit.
+   * Surfaced to the user as a "N more files hidden" banner.
+   */
+  truncated_files_count?: number;
 };
 
 export type SessionCommitsState = {

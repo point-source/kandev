@@ -22,11 +22,32 @@ const pendingInvalidationByEnvKey: Record<string, boolean> = {};
 type ListenerEvent = { envKey: string; kind: "invalidated" | "populated" };
 const listeners = new Set<(event: ListenerEvent) => void>();
 
+// Trailing-edge debounce for the refetch-triggering listener fanout. A large
+// rebase fires a burst of git WS events (one status_update per ~2 s poll tick,
+// one commit_created per rebased commit, plus commits_reset/branch_switched),
+// each of which would otherwise kick a fresh multi-MB cumulative-diff fetch.
+// Coalescing the fanout collapses an N-event burst into ~1 trailing refetch.
+// Per-envKey so unrelated environments don't block each other.
+const COALESCE_WINDOW_MS = 200;
+const invalidationTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+function clearInvalidationTimer(envKey: string) {
+  const timer = invalidationTimers[envKey];
+  if (timer) {
+    clearTimeout(timer);
+    delete invalidationTimers[envKey];
+  }
+}
+
 /**
  * Invalidate the cumulative diff cache for the given environment key.
  * Callers should resolve sessionId → envKey before calling this.
  */
 export function invalidateCumulativeDiffCache(envKey: string) {
+  // Cache deletion stays SYNCHRONOUS: components reading
+  // `cumulativeDiffCache[envKey]` on render (e.g. the useState initializer)
+  // must observe the miss immediately. Only the listener fanout — which is
+  // what actually triggers the refetch — is debounced.
   delete cumulativeDiffCache[envKey];
   // If a fetch is in flight, mark a pending refetch — the in-flight git diff
   // may have run before the worktree edit that triggered this invalidation,
@@ -38,7 +59,13 @@ export function invalidateCumulativeDiffCache(envKey: string) {
     pendingInvalidationByEnvKey[envKey] = true;
   }
   debug("cache.invalidated", { envKey });
-  listeners.forEach((fn) => fn({ envKey, kind: "invalidated" }));
+  // Coalesce the refetch trigger across a burst.
+  clearInvalidationTimer(envKey);
+  invalidationTimers[envKey] = setTimeout(() => {
+    delete invalidationTimers[envKey];
+    debug("cache.invalidated.coalesced", { envKey });
+    listeners.forEach((fn) => fn({ envKey, kind: "invalidated" }));
+  }, COALESCE_WINDOW_MS);
 }
 
 function commitFetchedDiff(
@@ -130,6 +157,10 @@ export function useCumulativeDiff(sessionId: string | null) {
       // pending state if needed.
       if (pendingInvalidationByEnvKey[envKey]) {
         delete pendingInvalidationByEnvKey[envKey];
+        // The invalidation that set the pending flag also queued a coalesced
+        // timer. We're about to drain it immediately, so cancel that timer —
+        // otherwise it fires later and triggers a redundant duplicate refetch.
+        clearInvalidationTimer(envKey);
         debug("fetch.drain.pending", { sessionId, envKey });
         listeners.forEach((fn) => fn({ envKey, kind: "invalidated" }));
       }
@@ -151,6 +182,13 @@ export function useCumulativeDiff(sessionId: string | null) {
       setDiff(null);
     }
     setLoading(false);
+    // NOTE: intentionally do NOT clear the coalesced invalidation timer here.
+    // The timer is shared per envKey across every subscriber on that
+    // environment; clearing it on one subscriber's unmount/env-change would
+    // cancel a pending refetch the others still need. Staleness is already
+    // prevented by the listener-subscription cleanup below — an unmounted hook
+    // removes its listener, so a timer that fires later is a harmless no-op for
+    // it while still refreshing the remaining subscribers.
   }, [envKey]);
 
   // Fetch on mount and when cache is invalidated
