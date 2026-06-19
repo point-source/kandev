@@ -79,10 +79,6 @@ export function useKanbanData({
         repositoryId: task.repositoryId,
         repositories: task.repositories,
         primarySessionId: task.primarySessionId,
-        sessionCount: task.sessionCount,
-        reviewStatus: task.reviewStatus,
-        parentTaskId: task.parentTaskId,
-        createdAt: task.createdAt,
       })),
     [kanban.tasks],
   );
