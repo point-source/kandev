@@ -27,6 +27,7 @@ import {
 } from "@/lib/github/check-buckets";
 import type { CheckRun, TaskPR } from "@/lib/types/github";
 import { PRMergeButton } from "./pr-merge-button";
+import { PRMergeabilityRow } from "./pr-mergeability-row";
 
 type CountsView = {
   passed: number;
@@ -543,6 +544,7 @@ export function PRCIPopover({
             <PRReviewRow pr={pr} />
             <PRCommentsRow pr={pr} />
           </div>
+          <PRMergeabilityRow pr={pr} />
           <PRMergeButton taskPR={pr} onMerged={refetch} compact />
         </>
       )}

@@ -1,12 +1,13 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   IconGitPullRequest,
   IconCheck,
   IconX,
   IconClock,
   IconChevronDown,
+  IconAlertTriangle,
 } from "@tabler/icons-react";
 import { Button } from "@kandev/ui/button";
 import { Popover, PopoverAnchor, PopoverContent } from "@kandev/ui/popover";
@@ -37,6 +38,21 @@ import type { TaskPR } from "@/lib/types/github";
 const POPOVER_OPEN_DELAY_MS = 150;
 const POPOVER_CLOSE_DELAY_MS = 150;
 
+// Badge for the hard merge blockers that must beat ready/awaiting-review:
+// conflicts (red) and behind-base (amber). Mirrors openMergeBlockerColor so
+// the badge agrees with the pill colour. Returns null otherwise. ("blocked"
+// is handled later, after awaiting-review.)
+function mergeBlockerBadge(pr: TaskPR): ReactNode | null {
+  if (pr.state !== "open") return null;
+  if (pr.mergeable_state === "dirty") {
+    return <IconAlertTriangle className="h-3 w-3 text-red-500" />;
+  }
+  if (pr.mergeable_state === "behind") {
+    return <IconAlertTriangle className="h-3 w-3 text-yellow-500" />;
+  }
+  return null;
+}
+
 function PRStatusIcon({ pr }: { pr: TaskPR }) {
   // Terminal states take priority
   if (pr.state === "merged") {
@@ -49,6 +65,8 @@ function PRStatusIcon({ pr }: { pr: TaskPR }) {
   if (pr.checks_state === "failure" || pr.review_state === "changes_requested") {
     return <IconX className="h-3 w-3 text-red-500" />;
   }
+  const blockerBadge = mergeBlockerBadge(pr);
+  if (blockerBadge) return blockerBadge;
   if (isPRReadyToMerge(pr)) {
     return <IconCheck className="h-3 w-3 text-emerald-400" />;
   }
@@ -56,6 +74,11 @@ function PRStatusIcon({ pr }: { pr: TaskPR }) {
   // with pending reviewers (1 of N required) doesn't read as fully approved.
   if (isPRAwaitingReview(pr)) {
     return <IconClock className="h-3 w-3 text-sky-400" />;
+  }
+  // Blocked by branch protection (not just an outstanding review) → amber,
+  // never the green "all good" check.
+  if (pr.state === "open" && pr.mergeable_state === "blocked") {
+    return <IconAlertTriangle className="h-3 w-3 text-yellow-500" />;
   }
   if (pr.checks_state === "success" && pr.review_state === "approved") {
     return <IconCheck className="h-3 w-3 text-green-500" />;
