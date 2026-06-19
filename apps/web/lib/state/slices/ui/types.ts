@@ -114,6 +114,8 @@ export type SidebarTaskPrefsState = {
    * Independent of the global `orderedTaskIds` and the view's sort spec.
    */
   subtaskOrderByParentId: Record<string, string[]>;
+  syncError?: string | null;
+  syncPending?: boolean;
 };
 
 /** Unified AppSidebar collapse + per-section expand state (localStorage). */
@@ -150,7 +152,7 @@ export type UISliceState = {
   collapsedSubtaskParents: string[];
   /** Task ID currently shown in the kanban preview side-panel, or null if closed. */
   kanbanPreviewedTaskId: string | null;
-  /** Sidebar pin + manual-order. Per-browser, persisted to localStorage. */
+  /** Sidebar pin + manual-order. Synced to backend, with localStorage fallback. */
   sidebarTaskPrefs: SidebarTaskPrefsState;
   /** Unified AppSidebar collapse + section expand state (localStorage). */
   appSidebar: AppSidebarState;
@@ -211,6 +213,7 @@ export type UISliceActions = {
   toggleSidebarGroupCollapsed: (viewId: string, groupKey: string) => void;
   toggleSubtaskCollapsed: (parentTaskId: string) => void;
   clearSidebarSyncError: () => void;
+  clearSidebarTaskPrefsSyncError: () => void;
   migrateLocalViewsToBackend: () => void;
   setKanbanPreviewedTaskId: (taskId: string | null) => void;
   togglePinnedTask: (taskId: string) => void;

@@ -6,6 +6,8 @@ import { useStore } from "zustand";
 import { isDebug, registerSessionTaskResolver } from "@/lib/debug/log";
 import type { AppState, StoreProviderProps } from "@/lib/state/store";
 import { createAppStore } from "@/lib/state/store";
+import { removeLocalStorage, setLocalStorage } from "@/lib/local-storage";
+import { STORAGE_KEYS } from "@/lib/settings/constants";
 
 const StoreContext = createContext<StoreApi<AppState> | null>(null);
 
@@ -31,6 +33,22 @@ export function StateProvider({ children, initialState }: StoreProviderProps) {
     }
   }, [store]);
 
+  useEffect(() => {
+    syncTaskCreateLastUsedCache(store.getState());
+    return store.subscribe((state, prevState) => {
+      if (
+        state.userSettings.loaded === prevState.userSettings.loaded &&
+        taskCreateLastUsedEqual(
+          state.userSettings.taskCreateLastUsed,
+          prevState.userSettings.taskCreateLastUsed,
+        )
+      ) {
+        return;
+      }
+      syncTaskCreateLastUsedCache(state);
+    });
+  }, [store]);
+
   // In debug builds, let the namespaced debug logger annotate every line that
   // carries a sessionId with `task_id=<...>` so console/log filters can scope to
   // a single task (see lib/debug/log.ts). No-op in production.
@@ -42,6 +60,44 @@ export function StateProvider({ children, initialState }: StoreProviderProps) {
   }, [store]);
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
+}
+
+function syncTaskCreateLastUsedCache(state: AppState) {
+  if (!state.userSettings.loaded) return;
+  const lastUsed = state.userSettings.taskCreateLastUsed;
+  if (!lastUsed) return;
+  if (lastUsed.repositoryId) {
+    setLocalStorage(STORAGE_KEYS.LAST_REPOSITORY_ID, lastUsed.repositoryId);
+  } else {
+    removeLocalStorage(STORAGE_KEYS.LAST_REPOSITORY_ID);
+  }
+  if (lastUsed.branch) {
+    setLocalStorage(STORAGE_KEYS.LAST_BRANCH, lastUsed.branch);
+  } else {
+    removeLocalStorage(STORAGE_KEYS.LAST_BRANCH);
+  }
+  if (lastUsed.agentProfileId) {
+    setLocalStorage(STORAGE_KEYS.LAST_AGENT_PROFILE_ID, lastUsed.agentProfileId);
+  } else {
+    removeLocalStorage(STORAGE_KEYS.LAST_AGENT_PROFILE_ID);
+  }
+  if (lastUsed.executorProfileId) {
+    setLocalStorage(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID, lastUsed.executorProfileId);
+  } else {
+    removeLocalStorage(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID);
+  }
+}
+
+function taskCreateLastUsedEqual(
+  a: AppState["userSettings"]["taskCreateLastUsed"],
+  b: AppState["userSettings"]["taskCreateLastUsed"],
+) {
+  return (
+    a?.repositoryId === b?.repositoryId &&
+    a?.branch === b?.branch &&
+    a?.agentProfileId === b?.agentProfileId &&
+    a?.executorProfileId === b?.executorProfileId
+  );
 }
 
 export function useAppStore<T>(selector: (state: AppState) => T) {

@@ -82,6 +82,10 @@ export type { OfficeEventType, OfficeEventPayload } from "./office-events";
 import type {
   AvailableAgent,
   SavedLayout,
+  SidebarViewApi,
+  SidebarViewDraftApi,
+  SidebarTaskPrefsApi,
+  TaskCreateLastUsedApi,
   StepEvents,
   TaskState,
   ToolStatus,
@@ -391,6 +395,16 @@ export type UserSettingsUpdatedPayload = {
   lsp_auto_start_languages?: string[];
   lsp_auto_install_languages?: string[];
   saved_layouts?: SavedLayout[];
+  sidebar_views?: SidebarViewApi[];
+  sidebar_active_view_id?: string;
+  sidebar_draft?: SidebarViewDraftApi | null;
+  sidebar_task_prefs?: SidebarTaskPrefsApi;
+  task_create_last_used?: TaskCreateLastUsedApi;
+  jira_saved_views?: unknown[] | null;
+  jira_task_presets?: unknown[] | null;
+  github_saved_presets?: unknown[] | null;
+  github_default_query_presets?: object | null;
+  gitlab_saved_presets?: unknown[] | null;
   default_utility_agent_id?: string;
   keyboard_shortcuts?: Record<string, { key: string; modifiers?: Record<string, boolean> }>;
   terminal_link_behavior?: string;

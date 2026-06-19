@@ -3,8 +3,67 @@
 import { useCallback } from "react";
 import type { Repository } from "@/lib/types/http";
 import type { DialogFormState, TaskRepoRow } from "@/components/task-create-dialog-types";
-import { setLocalStorage } from "@/lib/local-storage";
+import { removeLocalStorage, setLocalStorage } from "@/lib/local-storage";
 import { STORAGE_KEYS } from "@/lib/settings/constants";
+import { updateUserSettings } from "@/lib/api/domains/settings-api";
+
+type TaskCreateLastUsedPatch = {
+  repository_id?: string;
+  branch?: string;
+  agent_profile_id?: string;
+  executor_profile_id?: string;
+};
+
+let pendingLastUsed: TaskCreateLastUsedPatch = {};
+let lastUsedSync = Promise.resolve();
+const PENDING_LAST_USED_SYNC_KEY = "kandev.taskCreateLastUsed.pendingSync";
+
+export function resetTaskCreateLastUsedSync() {
+  pendingLastUsed = {};
+}
+
+function readPendingLastUsedSync(): TaskCreateLastUsedPatch {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PENDING_LAST_USED_SYNC_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const record = parsed as Record<string, unknown>;
+    return {
+      repository_id: typeof record.repository_id === "string" ? record.repository_id : undefined,
+      branch: typeof record.branch === "string" ? record.branch : undefined,
+      agent_profile_id:
+        typeof record.agent_profile_id === "string" ? record.agent_profile_id : undefined,
+      executor_profile_id:
+        typeof record.executor_profile_id === "string" ? record.executor_profile_id : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function persistPendingLastUsedSync(patch: TaskCreateLastUsedPatch) {
+  setLocalStorage(PENDING_LAST_USED_SYNC_KEY, patch as Record<string, string>);
+}
+
+export function syncTaskCreateLastUsed(patch: TaskCreateLastUsedPatch) {
+  pendingLastUsed = { ...readPendingLastUsedSync(), ...pendingLastUsed, ...patch };
+  const payload = { ...pendingLastUsed };
+  persistPendingLastUsedSync(payload);
+  lastUsedSync = lastUsedSync
+    .catch(() => undefined)
+    .then(() =>
+      updateUserSettings({ task_create_last_used: payload })
+        .then(() => {
+          if (JSON.stringify(pendingLastUsed) === JSON.stringify(payload)) {
+            pendingLastUsed = {};
+            removeLocalStorage(PENDING_LAST_USED_SYNC_KEY);
+          }
+        })
+        .catch(() => undefined),
+    );
+}
 
 /**
  * Centralizes form-field change handlers for the task-create dialog.
@@ -42,7 +101,10 @@ function useRepositoryHandlers(fs: DialogFormState, repositories: Repository[]) 
         ? { repositoryId: value, localPath: undefined, branch: "" }
         : { repositoryId: undefined, localPath: value, branch: "" };
       fs.updateRepository(key, patch);
-      if (isWorkspaceRepo) setLocalStorage(STORAGE_KEYS.LAST_REPOSITORY_ID, value);
+      if (isWorkspaceRepo) {
+        setLocalStorage(STORAGE_KEYS.LAST_REPOSITORY_ID, value);
+        syncTaskCreateLastUsed({ repository_id: value });
+      }
       // Switching the repo invalidates whatever local-status the fresh-branch
       // panel had cached.
       clearFreshBranch(fs);
@@ -54,6 +116,7 @@ function useRepositoryHandlers(fs: DialogFormState, repositories: Repository[]) 
     (key: string, value: string) => {
       fs.updateRepository(key, { branch: value });
       setLocalStorage(STORAGE_KEYS.LAST_BRANCH, value);
+      syncTaskCreateLastUsed({ branch: value });
     },
     [fs],
   );
@@ -66,6 +129,7 @@ function useProfileAndNameHandlers(fs: DialogFormState) {
     (value: string) => {
       fs.setAgentProfileId(value);
       setLocalStorage(STORAGE_KEYS.LAST_AGENT_PROFILE_ID, value);
+      syncTaskCreateLastUsed({ agent_profile_id: value });
     },
     [fs],
   );
@@ -73,6 +137,7 @@ function useProfileAndNameHandlers(fs: DialogFormState) {
     (value: string) => {
       fs.setExecutorProfileId(value);
       setLocalStorage(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID, value);
+      syncTaskCreateLastUsed({ executor_profile_id: value });
     },
     [fs],
   );

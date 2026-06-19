@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,6 +52,15 @@ type UpdateUserSettingsRequest struct {
 	LspServerConfigs            *map[string]map[string]interface{}
 	SavedLayouts                *[]models.SavedLayout
 	SidebarViews                *[]models.SidebarView
+	SidebarActiveViewID         *string
+	SidebarDraft                **models.SidebarViewDraft
+	SidebarTaskPrefs            *models.SidebarTaskPrefs
+	TaskCreateLastUsed          *models.TaskCreateLastUsed
+	JiraSavedViews              **json.RawMessage
+	JiraTaskPresets             **json.RawMessage
+	GitHubSavedPresets          **json.RawMessage
+	GitHubDefaultQueryPresets   **json.RawMessage
+	GitLabSavedPresets          **json.RawMessage
 	DefaultUtilityAgentID       *string
 	DefaultUtilityModel         *string
 	KeyboardShortcuts           *map[string]interface{}
@@ -122,6 +132,12 @@ func (s *Service) UpdateUserSettings(ctx context.Context, req *UpdateUserSetting
 		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
 	if err := applySidebarViews(settings, req); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
+	}
+	if err := applySidebarViewState(settings, req); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
+	}
+	if err := applyUserPreferenceBlobs(settings, req); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrValidation, err.Error())
 	}
 	if err := applyVoiceMode(settings, req.VoiceMode); err != nil {
@@ -370,6 +386,105 @@ func applySidebarViews(settings *models.UserSettings, req *UpdateUserSettingsReq
 	return nil
 }
 
+func applySidebarViewState(settings *models.UserSettings, req *UpdateUserSettingsRequest) error {
+	if req.SidebarActiveViewID != nil {
+		activeViewID := strings.TrimSpace(*req.SidebarActiveViewID)
+		if activeViewID == "" {
+			return errors.New("sidebar_active_view_id must not be empty")
+		}
+		if !sidebarViewIDExists(settings.SidebarViews, activeViewID) {
+			return fmt.Errorf("sidebar_active_view_id %q does not match any saved view", activeViewID)
+		}
+		settings.SidebarActiveViewID = activeViewID
+	}
+	if req.SidebarDraft != nil {
+		settings.SidebarDraft = *req.SidebarDraft
+	}
+	return nil
+}
+
+func sidebarViewIDExists(views []models.SidebarView, id string) bool {
+	for _, view := range views {
+		if view.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+const maxUserPreferenceBlobBytes = 64 * 1024
+
+func applyUserPreferenceBlobs(settings *models.UserSettings, req *UpdateUserSettingsRequest) error {
+	if req.SidebarTaskPrefs != nil {
+		settings.SidebarTaskPrefs = *req.SidebarTaskPrefs
+	}
+	if req.TaskCreateLastUsed != nil {
+		mergeTaskCreateLastUsed(&settings.TaskCreateLastUsed, *req.TaskCreateLastUsed)
+	}
+	if err := applyUserPreferenceBlob("jira_saved_views", req.JiraSavedViews, &settings.JiraSavedViews); err != nil {
+		return err
+	}
+	if err := applyUserPreferenceBlob("jira_task_presets", req.JiraTaskPresets, &settings.JiraTaskPresets); err != nil {
+		return err
+	}
+	if err := applyUserPreferenceBlob("github_saved_presets", req.GitHubSavedPresets, &settings.GitHubSavedPresets); err != nil {
+		return err
+	}
+	if err := applyUserPreferenceBlob("github_default_query_presets", req.GitHubDefaultQueryPresets, &settings.GitHubDefaultQueryPresets); err != nil {
+		return err
+	}
+	if err := applyUserPreferenceBlob("gitlab_saved_presets", req.GitLabSavedPresets, &settings.GitLabSavedPresets); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyUserPreferenceBlob(field string, value **json.RawMessage, target *json.RawMessage) error {
+	if value == nil {
+		return nil
+	}
+	if *value == nil {
+		*target = nil
+		return nil
+	}
+	if err := validateUserPreferenceBlob(field, **value); err != nil {
+		return err
+	}
+	*target = **value
+	return nil
+}
+
+func validateUserPreferenceBlob(field string, value json.RawMessage) error {
+	if len(value) > maxUserPreferenceBlobBytes {
+		return fmt.Errorf("%s: max %d bytes allowed", field, maxUserPreferenceBlobBytes)
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(value, &decoded); err != nil {
+		return fmt.Errorf("%s: must be valid JSON", field)
+	}
+	switch decoded.(type) {
+	case nil, []interface{}, map[string]interface{}:
+		return nil
+	default:
+		return fmt.Errorf("%s: must be a JSON object, array, or null", field)
+	}
+}
+
+func mergeTaskCreateLastUsed(current *models.TaskCreateLastUsed, patch models.TaskCreateLastUsed) {
+	if patch.RepositoryID != "" {
+		current.RepositoryID = patch.RepositoryID
+	}
+	if patch.Branch != "" {
+		current.Branch = patch.Branch
+	}
+	if patch.AgentProfileID != "" {
+		current.AgentProfileID = patch.AgentProfileID
+	}
+	if patch.ExecutorProfileID != "" {
+		current.ExecutorProfileID = patch.ExecutorProfileID
+	}
+}
+
 func (s *Service) publishUserSettingsEvent(ctx context.Context, settings *models.UserSettings) {
 	if s.eventBus == nil || settings == nil {
 		return
@@ -393,6 +508,15 @@ func (s *Service) publishUserSettingsEvent(ctx context.Context, settings *models
 		"lsp_server_configs":              settings.LspServerConfigs,
 		"saved_layouts":                   settings.SavedLayouts,
 		"sidebar_views":                   settings.SidebarViews,
+		"sidebar_active_view_id":          settings.SidebarActiveViewID,
+		"sidebar_draft":                   settings.SidebarDraft,
+		"sidebar_task_prefs":              settings.SidebarTaskPrefs,
+		"task_create_last_used":           settings.TaskCreateLastUsed,
+		"jira_saved_views":                settings.JiraSavedViews,
+		"jira_task_presets":               settings.JiraTaskPresets,
+		"github_saved_presets":            settings.GitHubSavedPresets,
+		"github_default_query_presets":    settings.GitHubDefaultQueryPresets,
+		"gitlab_saved_presets":            settings.GitLabSavedPresets,
 		"default_utility_agent_id":        settings.DefaultUtilityAgentID,
 		"default_utility_model":           settings.DefaultUtilityModel,
 		"keyboard_shortcuts":              settings.KeyboardShortcuts,
