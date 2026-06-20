@@ -1,16 +1,16 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   IconCircleCheckFilled,
   IconCircleXFilled,
   IconChecklist,
+  IconClock,
   IconLoader2,
   IconPointFilled,
   IconAlertTriangleFilled,
   IconX,
 } from "@tabler/icons-react";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@kandev/ui/hover-card";
 import {
   Drawer,
   DrawerClose,
@@ -20,13 +20,16 @@ import {
   DrawerTitle,
 } from "@kandev/ui/drawer";
 import { Button } from "@kandev/ui/button";
+import { Popover, PopoverAnchor, PopoverContent } from "@kandev/ui/popover";
 import { useTaskPR } from "@/hooks/domains/github/use-task-pr";
 import { usePRFeedbackBackgroundSync } from "@/hooks/domains/github/use-pr-ci-popover";
 import { PR_CI_DESKTOP_POPOVER_SCROLL_CLASS, PRCIPopover } from "@/components/github/pr-ci-popover";
+import { useTaskCIAutomationOptions } from "@/hooks/domains/github/use-task-ci-options";
 import { MultiPRCIPopover } from "@/components/github/multi-pr-ci-popover";
 import {
   isPRAwaitingReview,
   isPRReadyToMerge,
+  isPRWaitingOnBranchProtection,
   pickDefaultPR,
 } from "@/components/github/pr-task-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -43,8 +46,17 @@ type ChipStatus =
   | "conflict"
   | "blocked"
   | "behind"
+  | "waiting"
   | "in_progress"
   | "neutral";
+type AutomationFlags = {
+  autoFix: boolean;
+  autoMerge: boolean;
+};
+
+function hasUnknownOrInProgressChecks(pr: TaskPR): boolean {
+  return pr.checks_total <= 0 || pr.checks_passing < pr.checks_total;
+}
 
 function chipStatus(pr: TaskPR): ChipStatus {
   if (pr.review_state === "changes_requested" || pr.checks_state === "failure") return "failed";
@@ -58,12 +70,16 @@ function chipStatus(pr: TaskPR): ChipStatus {
   // in-progress, not passed. Without this order, the chip flips to green the
   // moment CI finishes and ignores the human gate. isPRAwaitingReview also
   // covers approved PRs where branch protection requires more reviewers.
-  if (pr.checks_state === "pending" || pr.review_state === "pending") return "in_progress";
+  if (
+    (pr.checks_state === "pending" && hasUnknownOrInProgressChecks(pr)) ||
+    pr.review_state === "pending"
+  ) {
+    return "in_progress";
+  }
   // Mirror getPRStatusColor priority: ready-to-merge beats awaiting-review so
   // the chip and icon never disagree on a (theoretical) clean+approved+pending PR.
   if (isPRAwaitingReview(pr) && !isPRReadyToMerge(pr)) return "in_progress";
-  // Blocked-by-branch-protection that isn't just an outstanding review (those
-  // are caught above) is a real gate — amber, not the green "passed" check.
+  if (isPRWaitingOnBranchProtection(pr)) return "waiting";
   if (pr.mergeable_state === "blocked") return "blocked";
   if (pr.checks_state === "success") return "passed";
   return "neutral";
@@ -77,6 +93,7 @@ const CHIP_STATUS_RANK: Record<ChipStatus, number> = {
   blocked: 4,
   behind: 3,
   in_progress: 2,
+  waiting: 1.5,
   passed: 1,
   neutral: 0,
 };
@@ -113,6 +130,59 @@ function useChipTriggerGuard() {
   return { ref, onPointerDownOutside };
 }
 
+function useChipPopoverInteractions() {
+  const [open, setOpen] = useState(false);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearOpen = useCallback(() => {
+    if (openTimer.current) {
+      clearTimeout(openTimer.current);
+      openTimer.current = null;
+    }
+  }, []);
+  const clearClose = useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+
+  const handleEnter = useCallback(() => {
+    if (open || openTimer.current) return;
+    clearClose();
+    openTimer.current = setTimeout(() => setOpen(true), HOVER_OPEN_DELAY_MS);
+  }, [clearClose, open]);
+
+  const handleLeave = useCallback(() => {
+    clearOpen();
+    closeTimer.current = setTimeout(() => setOpen(false), HOVER_CLOSE_DELAY_MS);
+  }, [clearOpen]);
+
+  const onOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) {
+        setOpen(true);
+        return;
+      }
+      clearOpen();
+      clearClose();
+      setOpen(false);
+    },
+    [clearClose, clearOpen],
+  );
+
+  useEffect(
+    () => () => {
+      clearOpen();
+      clearClose();
+    },
+    [clearOpen, clearClose],
+  );
+
+  return { open, onOpenChange, handleEnter, handleLeave };
+}
+
 /**
  * Compact CI indicator for the chat status bar — a "CI" prefix icon plus a
  * status glyph that mirrors the popover's bucket colors:
@@ -133,6 +203,11 @@ function useChipTriggerGuard() {
  */
 export function PRStatusChip({ taskId }: { taskId: string | null }) {
   const { prs } = useTaskPR(taskId);
+  const { options: automationOptions } = useTaskCIAutomationOptions(taskId);
+  const automationFlags: AutomationFlags = {
+    autoFix: Boolean(automationOptions?.auto_fix_enabled),
+    autoMerge: Boolean(automationOptions?.auto_merge_enabled),
+  };
   // Defensive Array.isArray: a partial hydration can briefly seed the store
   // with a non-array value (same guard as PRTaskIcon).
   // Only open PRs are worth a CI chip — terminal PRs (merged/closed) are
@@ -148,8 +223,9 @@ export function PRStatusChip({ taskId }: { taskId: string | null }) {
   // task warm when the popover opens.
   usePRFeedbackBackgroundSync(pickDefaultPR(openPRs));
   if (openPRs.length === 0) return null;
-  if (openPRs.length === 1) return <PRStatusChipInner pr={openPRs[0]} />;
-  return <PRStatusChipMultiInner prs={openPRs} />;
+  if (openPRs.length === 1)
+    return <PRStatusChipInner pr={openPRs[0]} automation={automationFlags} />;
+  return <PRStatusChipMultiInner prs={openPRs} automation={automationFlags} />;
 }
 
 type ChipButtonAttrs = {
@@ -162,52 +238,113 @@ type ChipButtonAttrs = {
   className: string;
 };
 
-function chipButtonAttrs(pr: TaskPR, status: ChipStatus): ChipButtonAttrs {
+function automationAriaSuffix(automation: AutomationFlags): string {
+  const flags = [
+    automation.autoFix ? "auto-fix enabled" : null,
+    automation.autoMerge ? "auto-merge enabled" : null,
+  ].filter(Boolean);
+  return flags.length > 0 ? `, ${flags.join(", ")}` : "";
+}
+
+function chipButtonAttrs(
+  pr: TaskPR,
+  status: ChipStatus,
+  automation: AutomationFlags,
+): ChipButtonAttrs {
   return {
     "data-testid": "pr-status-chip",
     "data-pr-number": pr.pr_number,
     "data-pr-state": pr.state,
     "data-status": status,
     "data-pr-ready-to-merge": isPRReadyToMerge(pr) ? "true" : "false",
-    "aria-label": `Pull request #${pr.pr_number} CI status`,
+    "aria-label": `Pull request #${pr.pr_number} CI status${automationAriaSuffix(automation)}`,
     className: CHIP_BUTTON_CLASS,
   };
 }
 
-function PRStatusChipInner({ pr }: { pr: TaskPR }) {
-  const isMobile = useIsMobile();
-  if (isMobile) return <PRStatusChipDrawer pr={pr} />;
-  return <PRStatusChipHoverCard pr={pr} />;
+function AutomationFlagBadges({ automation }: { automation: AutomationFlags }) {
+  if (!automation.autoFix && !automation.autoMerge) return null;
+  return (
+    <>
+      {automation.autoFix && (
+        <span
+          data-testid="pr-status-auto-fix-chip"
+          className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[9px] font-medium leading-none text-emerald-500"
+        >
+          Auto-fix
+        </span>
+      )}
+      {automation.autoMerge && (
+        <span
+          data-testid="pr-status-auto-merge-chip"
+          className="rounded-sm bg-sky-500/15 px-1 py-0.5 text-[9px] font-medium leading-none text-sky-500"
+        >
+          Auto-merge
+        </span>
+      )}
+    </>
+  );
 }
 
-function PRStatusChipHoverCard({ pr }: { pr: TaskPR }) {
+function PRStatusChipInner({ pr, automation }: { pr: TaskPR; automation: AutomationFlags }) {
+  const isMobile = useIsMobile();
+  if (isMobile) return <PRStatusChipDrawer pr={pr} automation={automation} />;
+  return <PRStatusChipHoverCard pr={pr} automation={automation} />;
+}
+
+function PRStatusChipHoverCard({ pr, automation }: { pr: TaskPR; automation: AutomationFlags }) {
   const status = chipStatus(pr);
   const { ref, onPointerDownOutside } = useChipTriggerGuard();
+  const { open, onOpenChange, handleEnter, handleLeave } = useChipPopoverInteractions();
   return (
-    <HoverCard openDelay={HOVER_OPEN_DELAY_MS} closeDelay={HOVER_CLOSE_DELAY_MS}>
-      <HoverCardTrigger asChild>
-        <button ref={ref} type="button" {...chipButtonAttrs(pr, status)}>
-          <IconChecklist className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-          <ChipStatusGlyph status={status} />
-        </button>
-      </HoverCardTrigger>
-      <HoverCardContent
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <span
+        className="inline-flex"
+        onMouseOver={handleEnter}
+        onMouseEnter={handleEnter}
+        onMouseMove={handleEnter}
+        onPointerOver={handleEnter}
+        onPointerEnter={handleEnter}
+        onPointerMove={handleEnter}
+        onMouseLeave={handleLeave}
+        onPointerLeave={handleLeave}
+        onFocus={handleEnter}
+        onBlur={handleLeave}
+      >
+        <PopoverAnchor asChild>
+          <button ref={ref} type="button" {...chipButtonAttrs(pr, status, automation)}>
+            <IconChecklist className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <ChipStatusGlyph status={status} />
+            <AutomationFlagBadges automation={automation} />
+          </button>
+        </PopoverAnchor>
+      </span>
+      <PopoverContent
         side="top"
         align="start"
         sideOffset={8}
         className={`w-80 p-2.5 ${PR_CI_DESKTOP_POPOVER_SCROLL_CLASS}`}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
         onPointerDownOutside={onPointerDownOutside}
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <PRCIPopover pr={pr} enabled={true} />
-      </HoverCardContent>
-    </HoverCard>
+        <PRCIPopover pr={pr} enabled={open} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
-function PRStatusChipMultiInner({ prs }: { prs: TaskPR[] }) {
+function PRStatusChipMultiInner({
+  prs,
+  automation,
+}: {
+  prs: TaskPR[];
+  automation: AutomationFlags;
+}) {
   const isMobile = useIsMobile();
-  if (isMobile) return <PRStatusChipMultiDrawer prs={prs} />;
-  return <PRStatusChipMultiHoverCard prs={prs} />;
+  if (isMobile) return <PRStatusChipMultiDrawer prs={prs} automation={automation} />;
+  return <PRStatusChipMultiHoverCard prs={prs} automation={automation} />;
 }
 
 type MultiChipButtonAttrs = {
@@ -218,50 +355,93 @@ type MultiChipButtonAttrs = {
   className: string;
 };
 
-function multiChipButtonAttrs(prs: TaskPR[], status: ChipStatus): MultiChipButtonAttrs {
+function multiChipButtonAttrs(
+  prs: TaskPR[],
+  status: ChipStatus,
+  automation: AutomationFlags,
+): MultiChipButtonAttrs {
   return {
     "data-testid": "pr-status-chip",
     "data-pr-count": prs.length,
     "data-status": status,
-    "aria-label": `${prs.length} pull requests CI status`,
+    "aria-label": `${prs.length} pull requests CI status${automationAriaSuffix(automation)}`,
     className: CHIP_BUTTON_CLASS,
   };
 }
 
-function MultiChipGlyph({ prs, status }: { prs: TaskPR[]; status: ChipStatus }) {
+function MultiChipGlyph({
+  prs,
+  status,
+  automation,
+}: {
+  prs: TaskPR[];
+  status: ChipStatus;
+  automation: AutomationFlags;
+}) {
   return (
     <>
       <IconChecklist className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
       <ChipStatusGlyph status={status} />
       <span className="text-[9px] font-semibold leading-none tabular-nums">{prs.length}</span>
+      <AutomationFlagBadges automation={automation} />
     </>
   );
 }
 
-function PRStatusChipMultiHoverCard({ prs }: { prs: TaskPR[] }) {
+function PRStatusChipMultiHoverCard({
+  prs,
+  automation,
+}: {
+  prs: TaskPR[];
+  automation: AutomationFlags;
+}) {
   const status = aggregateChipStatus(prs);
   const { ref, onPointerDownOutside } = useChipTriggerGuard();
+  const { open, onOpenChange, handleEnter, handleLeave } = useChipPopoverInteractions();
   return (
-    <HoverCard openDelay={HOVER_OPEN_DELAY_MS} closeDelay={HOVER_CLOSE_DELAY_MS}>
-      <HoverCardTrigger asChild>
-        <button ref={ref} type="button" {...multiChipButtonAttrs(prs, status)}>
-          <MultiChipGlyph prs={prs} status={status} />
-        </button>
-      </HoverCardTrigger>
-      <HoverCardContent
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <span
+        className="inline-flex"
+        onMouseOver={handleEnter}
+        onMouseEnter={handleEnter}
+        onMouseMove={handleEnter}
+        onPointerOver={handleEnter}
+        onPointerEnter={handleEnter}
+        onPointerMove={handleEnter}
+        onMouseLeave={handleLeave}
+        onPointerLeave={handleLeave}
+        onFocus={handleEnter}
+        onBlur={handleLeave}
+      >
+        <PopoverAnchor asChild>
+          <button ref={ref} type="button" {...multiChipButtonAttrs(prs, status, automation)}>
+            <MultiChipGlyph prs={prs} status={status} automation={automation} />
+          </button>
+        </PopoverAnchor>
+      </span>
+      <PopoverContent
         side="top"
         align="start"
         sideOffset={8}
         className={`w-96 p-2.5 ${PR_CI_DESKTOP_POPOVER_SCROLL_CLASS}`}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
         onPointerDownOutside={onPointerDownOutside}
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <MultiPRCIPopover prs={prs} enabled={true} />
-      </HoverCardContent>
-    </HoverCard>
+        <MultiPRCIPopover prs={prs} enabled={open} />
+      </PopoverContent>
+    </Popover>
   );
 }
 
-function PRStatusChipMultiDrawer({ prs }: { prs: TaskPR[] }) {
+function PRStatusChipMultiDrawer({
+  prs,
+  automation,
+}: {
+  prs: TaskPR[];
+  automation: AutomationFlags;
+}) {
   const status = aggregateChipStatus(prs);
   const [open, setOpen] = useState(false);
   return (
@@ -271,9 +451,9 @@ function PRStatusChipMultiDrawer({ prs }: { prs: TaskPR[] }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        {...multiChipButtonAttrs(prs, status)}
+        {...multiChipButtonAttrs(prs, status, automation)}
       >
-        <MultiChipGlyph prs={prs} status={status} />
+        <MultiChipGlyph prs={prs} status={status} automation={automation} />
       </button>
       <DrawerContent data-testid="pr-status-chip-drawer" className="max-h-[80vh] flex flex-col">
         <DrawerHeader className="flex flex-row items-center justify-between border-b py-2">
@@ -301,7 +481,7 @@ function PRStatusChipMultiDrawer({ prs }: { prs: TaskPR[] }) {
   );
 }
 
-function PRStatusChipDrawer({ pr }: { pr: TaskPR }) {
+function PRStatusChipDrawer({ pr, automation }: { pr: TaskPR; automation: AutomationFlags }) {
   const status = chipStatus(pr);
   const [open, setOpen] = useState(false);
   return (
@@ -311,10 +491,11 @@ function PRStatusChipDrawer({ pr }: { pr: TaskPR }) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        {...chipButtonAttrs(pr, status)}
+        {...chipButtonAttrs(pr, status, automation)}
       >
         <IconChecklist className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <ChipStatusGlyph status={status} />
+        <AutomationFlagBadges automation={automation} />
       </button>
       <DrawerContent data-testid="pr-status-chip-drawer" className="max-h-[80vh] flex flex-col">
         <DrawerHeader className="flex flex-row items-center justify-between border-b py-2">
@@ -353,6 +534,8 @@ function ChipStatusGlyph({ status }: { status: ChipStatus }) {
     case "behind":
     case "blocked":
       return <IconAlertTriangleFilled className="h-3.5 w-3.5 text-yellow-500" aria-hidden="true" />;
+    case "waiting":
+      return <IconClock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />;
     case "in_progress":
       // CI runs take minutes, so slow the spin to ~3s/rotation — the default
       // animate-spin (1s) feels frantic for a long-running task.

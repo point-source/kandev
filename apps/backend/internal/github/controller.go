@@ -1,6 +1,8 @@
 package github
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,7 +14,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/events"
+	"github.com/kandev/kandev/internal/events/bus"
 )
+
+const jsonNullLiteral = "null"
 
 // Controller handles HTTP endpoints for GitHub integration.
 type Controller struct {
@@ -35,6 +41,8 @@ func (c *Controller) RegisterHTTPRoutes(router *gin.Engine) {
 	api.GET("/task-prs", c.httpListTaskPRs)
 	api.POST("/task-prs", c.httpCreateTaskPR)
 	api.GET("/task-prs/:taskId", c.httpGetTaskPR)
+	api.GET("/tasks/:taskId/ci-options", c.httpGetTaskCIOptions)
+	api.PATCH("/tasks/:taskId/ci-options", c.httpPatchTaskCIOptions)
 
 	api.GET("/prs/:owner/:repo/:number", c.httpGetPRFeedback)
 	api.GET("/prs/:owner/:repo/:number/info", c.httpGetPRInfo)
@@ -190,6 +198,94 @@ func (c *Controller) httpGetTaskPR(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, tp)
+}
+
+func (c *Controller) httpGetTaskCIOptions(ctx *gin.Context) {
+	resp, err := c.service.GetTaskCIOptionsResponse(ctx.Request.Context(), ctx.Param("taskId"))
+	if err != nil {
+		c.logger.Error("get task CI options failed", zap.String("task_id", ctx.Param("taskId")), zap.Error(err))
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load CI automation options"})
+		return
+	}
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func (c *Controller) httpPatchTaskCIOptions(ctx *gin.Context) {
+	patch, err := parseTaskCIOptionsPatch(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	if !patch.HasAny() {
+		resp, err := c.service.GetTaskCIOptionsResponse(ctx.Request.Context(), ctx.Param("taskId"))
+		if err != nil {
+			c.logger.Error("load task CI options failed", zap.String("task_id", ctx.Param("taskId")), zap.Error(err))
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load CI automation options"})
+			return
+		}
+		ctx.JSON(http.StatusOK, resp)
+		return
+	}
+	resp, err := c.service.UpdateTaskCIOptions(ctx.Request.Context(), ctx.Param("taskId"), patch)
+	if err != nil {
+		c.logger.Error("update task CI options failed", zap.String("task_id", ctx.Param("taskId")), zap.Error(err))
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update CI automation options"})
+		return
+	}
+	c.publishTaskCIOptionsUpdated(ctx.Request.Context(), resp)
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func parseTaskCIOptionsPatch(ctx *gin.Context) (TaskCIOptionsPatch, error) {
+	if ctx.Request.Body == nil || ctx.Request.ContentLength == 0 {
+		return TaskCIOptionsPatch{}, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(ctx.Request.Body).Decode(&raw); err != nil {
+		if errors.Is(err, io.EOF) {
+			return TaskCIOptionsPatch{}, nil
+		}
+		return TaskCIOptionsPatch{}, err
+	}
+	var patch TaskCIOptionsPatch
+	for key, value := range raw {
+		switch key {
+		case "auto_fix_enabled":
+			var enabled bool
+			if err := json.Unmarshal(value, &enabled); err != nil {
+				return TaskCIOptionsPatch{}, err
+			}
+			patch.AutoFixEnabled = &enabled
+		case "auto_merge_enabled":
+			var enabled bool
+			if err := json.Unmarshal(value, &enabled); err != nil {
+				return TaskCIOptionsPatch{}, err
+			}
+			patch.AutoMergeEnabled = &enabled
+		case "auto_fix_prompt_override":
+			if string(value) == jsonNullLiteral {
+				empty := ""
+				patch.AutoFixPromptOverride = &empty
+				continue
+			}
+			var prompt string
+			if err := json.Unmarshal(value, &prompt); err != nil {
+				return TaskCIOptionsPatch{}, err
+			}
+			patch.AutoFixPromptOverride = &prompt
+		}
+	}
+	return patch, nil
+}
+
+func (c *Controller) publishTaskCIOptionsUpdated(ctx context.Context, resp *TaskCIOptionsResponse) {
+	if c.service == nil || c.service.eventBus == nil || resp == nil {
+		return
+	}
+	event := bus.NewEvent(events.GitHubTaskCIOptionsUpdated, "github", resp)
+	if err := c.service.eventBus.Publish(ctx, events.GitHubTaskCIOptionsUpdated, event); err != nil {
+		c.logger.Debug("publish task CI options update failed", zap.String("task_id", resp.TaskID), zap.Error(err))
+	}
 }
 
 func (c *Controller) httpGetPRFeedback(ctx *gin.Context) {

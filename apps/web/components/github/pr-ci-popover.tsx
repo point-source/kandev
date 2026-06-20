@@ -26,6 +26,7 @@ import {
   type WorkflowGroup,
 } from "@/lib/github/check-buckets";
 import type { CheckRun, TaskPR } from "@/lib/types/github";
+import { PRCIAutomationControls } from "./pr-ci-automation-controls";
 import { PRMergeButton } from "./pr-merge-button";
 import { PRMergeabilityRow } from "./pr-mergeability-row";
 
@@ -80,26 +81,53 @@ export function hasNoChecksAtAll(
   );
 }
 
-function PRCIPopoverHeader({ pr }: { pr: TaskPR }) {
-  const checksUrl = `${pr.pr_url}/checks`;
+function PRPopoverTitle({
+  title,
+  onOpenDetailPanel,
+}: {
+  title: string;
+  onOpenDetailPanel?: () => void;
+}) {
+  const className = "min-w-0 truncate text-sm font-medium";
+  if (!onOpenDetailPanel) {
+    return (
+      <span data-testid="pr-popover-title" className={className} title={title}>
+        {title}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="pr-popover-title"
+      className={`${className} cursor-pointer text-left hover:underline`}
+      title={title}
+      aria-label={`Open ${title} details`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpenDetailPanel();
+      }}
+    >
+      {title}
+    </button>
+  );
+}
+
+function PRCIPopoverHeader({
+  pr,
+  onOpenDetailPanel,
+}: {
+  pr: TaskPR;
+  onOpenDetailPanel?: () => void;
+}) {
+  const title = `#${pr.pr_number} ${pr.pr_title || "Untitled PR"}`;
   return (
     <div
       data-testid="pr-popover-header"
       className="flex items-center justify-between gap-2 border-b border-border/50 pb-2"
     >
-      <div className="flex items-center gap-1.5">
-        <span className="text-sm font-medium">CI status</span>
-        <a
-          data-testid="pr-popover-external-link"
-          href={checksUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="cursor-pointer text-muted-foreground hover:text-foreground"
-          aria-label="View all checks on GitHub"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <IconExternalLink className="h-3.5 w-3.5" />
-        </a>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <PRPopoverTitle title={title} onOpenDetailPanel={onOpenDetailPanel} />
       </div>
       <a
         data-testid="pr-popover-pr-link"
@@ -529,7 +557,7 @@ export function PRCIPopover({
       className="flex flex-col gap-2"
       onClick={(e) => e.stopPropagation()}
     >
-      <PRCIPopoverHeader pr={pr} />
+      <PRCIPopoverHeader pr={pr} onOpenDetailPanel={onOpenDetailPanel} />
       {authLost ? (
         <ReconnectGitHubBlock />
       ) : (
@@ -545,20 +573,9 @@ export function PRCIPopover({
             <PRCommentsRow pr={pr} />
           </div>
           <PRMergeabilityRow pr={pr} />
+          <PRCIAutomationControls pr={pr} />
           <PRMergeButton taskPR={pr} onMerged={refetch} compact />
         </>
-      )}
-      {onOpenDetailPanel && (
-        <Button
-          data-testid="pr-popover-open-detail"
-          size="sm"
-          variant="ghost"
-          className="cursor-pointer justify-start gap-1.5 px-2"
-          onClick={onOpenDetailPanel}
-        >
-          <IconGitPullRequest className="h-3.5 w-3.5" />
-          <span>Open PR details</span>
-        </Button>
       )}
       <PRPopoverFooter lastUpdatedAt={lastUpdatedAt} />
     </div>
