@@ -7,15 +7,16 @@ name: release
 #   1. prepare           — bump version, regen CHANGELOG, open + merge release PR, push tag vX.Y.Z
 #   2. build-web         — build Vite SPA bundle (shared across arches)
 #   3. build-bundles     — assemble native bin/ tarballs for 5 platforms
+#   4. build-desktop     — package Tauri desktop installers from matching runtime bundles
 #   5. docker-{amd64,arm64} — native per-arch image builds (no QEMU), consuming
-#                          the prebuilt linux bundles from step 4
+#                          the prebuilt linux bundles from step 3
 #   6. docker-manifest   — stitch the two arch digests into the user-facing
 #                          multi-arch tags via `buildx imagetools create`
 #   7. docker-universal-{amd64,arm64} — native universal builds on top of
 #                          docker-manifest's per-arch base
 #   8. docker-universal-manifest — size-gate amd64 staging, then promote both
 #                          arches to the user-facing :universal tags
-#   9. publish-release   — create GH release with .tar.gz + .sha256 assets + auto-generated notes
+#   9. publish-release   — create GH release with runtime + desktop assets and release notes
 #  10. publish-npm       — publish kandev@X.Y.Z + @kdlbs/runtime-*@X.Y.Z to npmjs
 #  11. update-homebrew-tap — push updated Formula/kandev.rb to kdlbs/homebrew-kandev
 #
@@ -25,6 +26,9 @@ name: release
 #
 # Required secrets:
 #   HOMEBREW_TAP_DEPLOY_KEY  — SSH private key for kdlbs/homebrew-kandev deploy key
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / KEYCHAIN_PASSWORD — macOS Developer ID signing
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID or APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_P8 — macOS notarization
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD — Windows installer signing
 
 on:
   workflow_dispatch:
@@ -40,6 +44,10 @@ on:
           - major
       dry_run:
         description: "Dry run (no PR, tag, npm publish, or tap update)"
+        type: boolean
+        default: false
+      allow_unsigned_desktop:
+        description: "Allow unsigned macOS/Windows desktop artifacts for internal validation only"
         type: boolean
         default: false
 
@@ -58,6 +66,7 @@ jobs:
     outputs:
       version: ${{ steps.compute.outputs.version }}
       tag: ${{ steps.compute.outputs.tag }}
+      ref: ${{ steps.compute.outputs.ref }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -99,6 +108,8 @@ jobs:
         id: compute
         env:
           BUMP: ${{ inputs.bump }}
+          ALLOW_UNSIGNED_DESKTOP: ${{ inputs.allow_unsigned_desktop }}
+          CURRENT_REF: ${{ github.sha }}
         run: |
           set -euo pipefail
           PKG_VERSION="$(node -p "require('./apps/cli/package.json').version")"
@@ -148,6 +159,11 @@ jobs:
           echo "Next tag:                     $TAG"
           echo "version=$NEXT" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "$ALLOW_UNSIGNED_DESKTOP" = "true" ]; then
+            echo "ref=$CURRENT_REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+          fi
 
           # Sanity: tag must not already exist
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -160,7 +176,7 @@ jobs:
           fi
 
       - name: Bump version + generate CHANGELOG (in working tree)
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
         env:
           NEXT: ${{ steps.compute.outputs.version }}
           TAG: ${{ steps.compute.outputs.tag }}
@@ -172,11 +188,33 @@ jobs:
           # rewrites them to the real version in-flight before publishing,
           # once the matching @kdlbs/runtime-* tarballs exist on npm.
           (cd apps/cli && npm version --no-git-tag-version "$NEXT")
+          (cd apps/desktop && npm version --no-git-tag-version "$NEXT")
+          node <<'NODE'
+          const fs = require("node:fs");
+          const next = process.env.NEXT;
+
+          const tauriConfigPath = "apps/desktop/src-tauri/tauri.conf.json";
+          const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, "utf8"));
+          tauriConfig.version = next;
+          fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
+
+          const cargoTomlPath = "apps/desktop/src-tauri/Cargo.toml";
+          const cargoToml = fs.readFileSync(cargoTomlPath, "utf8");
+          fs.writeFileSync(cargoTomlPath, cargoToml.replace(/^version = ".*"$/m, `version = "${next}"`));
+
+          const cargoLockPath = "apps/desktop/src-tauri/Cargo.lock";
+          const cargoLock = fs.readFileSync(cargoLockPath, "utf8");
+          const packageBlock = /(\[\[package\]\]\nname = "kandev-desktop"\nversion = ")[^"]+(")/;
+          if (!packageBlock.test(cargoLock)) {
+            throw new Error("Could not find kandev-desktop package entry in Cargo.lock");
+          }
+          fs.writeFileSync(cargoLockPath, cargoLock.replace(packageBlock, `$1${next}$2`));
+          NODE
           pnpm -C apps install --no-frozen-lockfile
           git-cliff --tag "$TAG" -o CHANGELOG.md
 
       - name: Create release PR + squash-merge + tag
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT: ${{ steps.compute.outputs.version }}
@@ -189,7 +227,7 @@ jobs:
           MSG="release: $NEXT"
 
           git checkout -b "$BRANCH"
-          git add apps/cli/package.json CHANGELOG.md apps/pnpm-lock.yaml
+          git add apps/cli/package.json apps/desktop/package.json apps/desktop/src-tauri/Cargo.lock apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/tauri.conf.json CHANGELOG.md apps/pnpm-lock.yaml
           git commit -m "$MSG"
           # If a previous run pushed this branch but failed before the merge
           # landed, the remote branch still exists. Delete it so the push
@@ -231,6 +269,17 @@ jobs:
             }
           }
 
+      - name: Unsigned desktop validation summary
+        if: ${{ !inputs.dry_run && inputs.allow_unsigned_desktop }}
+        env:
+          NEXT: ${{ steps.compute.outputs.version }}
+          TAG: ${{ steps.compute.outputs.tag }}
+          REF: ${{ steps.compute.outputs.ref }}
+        run: |
+          echo "Unsigned desktop validation for $TAG / $NEXT."
+          echo "No release PR, tag, GitHub release, public container tags, npm publish, or Homebrew update will be created."
+          echo "Build jobs will check out $REF."
+
       - name: Dry-run summary
         if: ${{ inputs.dry_run }}
         env:
@@ -257,7 +306,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
       - uses: pnpm/action-setup@v5
         with:
           version: "9.15.9"
@@ -287,7 +337,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: linux-x64
             goos: linux
             goarch: amd64
@@ -316,7 +366,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: apps/backend/go.mod
@@ -389,6 +440,360 @@ jobs:
             dist/kandev-${{ matrix.platform }}.tar.gz
             dist/kandev-${{ matrix.platform }}.tar.gz.sha256
 
+  build-desktop:
+    name: Build desktop app (${{ matrix.platform }})
+    needs: [prepare, build-bundles]
+    if: ${{ !inputs.dry_run }}
+    strategy:
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-15
+            rust_target: aarch64-apple-darwin
+            tauri_bundles: dmg
+          - platform: macos-x64
+            os: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            tauri_bundles: dmg
+          - platform: linux-x64
+            os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            tauri_bundles: deb,rpm
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            tauri_bundles: deb,rpm
+          - platform: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            tauri_bundles: nsis
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: "9.15.9"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: apps/pnpm-lock.yaml
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal --target "${{ matrix.rust_target }}"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: desktop-${{ matrix.platform }}-${{ matrix.rust_target }}
+
+      - name: Install Linux desktop dependencies
+        if: startsWith(matrix.platform, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libglib2.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install dependencies
+        run: pnpm -C apps install --frozen-lockfile
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: dist/desktop-runtime
+
+      - name: Prepare desktop runtime resources
+        run: |
+          set -euo pipefail
+          mkdir -p dist/desktop-runtime-src
+          tar -xzf "dist/desktop-runtime/kandev-${{ matrix.platform }}.tar.gz" -C dist/desktop-runtime-src
+          scripts/release/prepare-desktop-runtime.sh \
+            --bundle-dir "dist/desktop-runtime-src/kandev" \
+            --platform "${{ matrix.platform }}" \
+            --output-dir "apps/desktop/src-tauri/resources/kandev"
+
+      - name: Configure macOS signing and notarization
+        if: startsWith(matrix.platform, 'macos-')
+        env:
+          ALLOW_UNSIGNED_DESKTOP: ${{ inputs.allow_unsigned_desktop }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              missing+=("$key")
+            fi
+          done
+
+          apple_id_notarization=0
+          if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+            apple_id_notarization=1
+          fi
+
+          api_key_notarization=0
+          if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] && [ -n "${APPLE_API_KEY_P8:-}" ]; then
+            api_key_notarization=1
+          fi
+
+          if [ "$apple_id_notarization" -eq 0 ] && [ "$api_key_notarization" -eq 0 ]; then
+            missing+=("APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID or APPLE_API_KEY/APPLE_API_ISSUER/APPLE_API_KEY_P8")
+          fi
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            if [ "$ALLOW_UNSIGNED_DESKTOP" = "true" ]; then
+              echo "::warning::Unsigned desktop artifacts are internal validation only; missing macOS signing inputs: ${missing[*]}"
+              exit 0
+            fi
+            echo "::error::Public macOS desktop releases require signing and notarization inputs: ${missing[*]}" >&2
+            exit 1
+          fi
+
+          certificate_path="$RUNNER_TEMP/kandev-developer-id.p12"
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["RUNNER_TEMP"], "kandev-developer-id.p12").write_bytes(
+              base64.b64decode(os.environ["APPLE_CERTIFICATE"])
+          )
+          PY
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import "$certificate_path" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          cert_info="$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -n 1 || true)"
+          if [ -z "$cert_info" ]; then
+            cert_info="$(security find-identity -v -p codesigning build.keychain | head -n 1 || true)"
+          fi
+          if [ -z "$cert_info" ]; then
+            echo "::error::No code signing identity found in build.keychain" >&2
+            exit 1
+          fi
+          cert_id="$(echo "$cert_info" | awk -F'"' '{print $2}')"
+          echo "APPLE_SIGNING_IDENTITY=$cert_id" >> "$GITHUB_ENV"
+
+          if [ "$api_key_notarization" -eq 1 ]; then
+            private_keys_dir="$RUNNER_TEMP/private_keys"
+            mkdir -p "$private_keys_dir"
+            printf '%s\n' "$APPLE_API_KEY_P8" > "$private_keys_dir/AuthKey_${APPLE_API_KEY}.p8"
+            echo "APPLE_API_KEY_PATH=$private_keys_dir/AuthKey_${APPLE_API_KEY}.p8" >> "$GITHUB_ENV"
+          fi
+
+      - name: Sign macOS desktop runtime binaries
+        if: startsWith(matrix.platform, 'macos-') && !inputs.allow_unsigned_desktop
+        run: |
+          set -euo pipefail
+          runtime_bin="apps/desktop/src-tauri/resources/kandev/bin"
+          for binary in kandev agentctl; do
+            path="$runtime_bin/$binary"
+            if [ ! -f "$path" ]; then
+              echo "::error::Missing macOS runtime binary at $path" >&2
+              exit 1
+            fi
+            codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$path"
+            codesign --verify --strict --verbose=2 "$path"
+          done
+
+      - name: Sign Windows desktop runtime binaries
+        if: matrix.platform == 'windows-x64' && !inputs.allow_unsigned_desktop
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          WINDOWS_SIGNTOOL_PATH: ${{ secrets.WINDOWS_SIGNTOOL_PATH }}
+        run: |
+          $runtimeBin = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/resources/kandev/bin"
+          foreach ($binary in @("kandev.exe", "agentctl.exe")) {
+            $path = Join-Path $runtimeBin $binary
+            if (!(Test-Path -LiteralPath $path)) {
+              Write-Error "Missing Windows runtime binary at $path"
+              exit 1
+            }
+            & "$env:GITHUB_WORKSPACE/apps/desktop/src-tauri/windows-sign.ps1" -Path $path
+          }
+
+      - name: Build Tauri desktop app
+        env:
+          CI: "true"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          ALLOW_UNSIGNED_DESKTOP: ${{ inputs.allow_unsigned_desktop }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          WINDOWS_SIGNTOOL_PATH: ${{ secrets.WINDOWS_SIGNTOOL_PATH }}
+        run: |
+          set -euo pipefail
+          pnpm -C apps --filter @kandev/desktop build:vite
+          cd apps/desktop
+          pnpm tauri build \
+            --features desktop-runtime \
+            --target "${{ matrix.rust_target }}" \
+            --bundles "${{ matrix.tauri_bundles }}"
+
+      - name: Sign Windows desktop artifacts
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        env:
+          ALLOW_UNSIGNED_DESKTOP: ${{ inputs.allow_unsigned_desktop }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          WINDOWS_SIGNTOOL_PATH: ${{ secrets.WINDOWS_SIGNTOOL_PATH }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) { $missing += "WINDOWS_CERTIFICATE" }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) { $missing += "WINDOWS_CERTIFICATE_PASSWORD" }
+
+          if ($missing.Count -gt 0) {
+            if ($env:ALLOW_UNSIGNED_DESKTOP -eq "true") {
+              Write-Warning "Unsigned desktop artifacts are internal validation only; missing Windows signing inputs: $($missing -join ', ')"
+              exit 0
+            }
+            Write-Error "Public Windows desktop releases require signing inputs: $($missing -join ', ')"
+            exit 1
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "kandev-code-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+
+          $bundleDir = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          if (!(Test-Path $bundleDir)) {
+            $bundleDir = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/release/bundle"
+          }
+          if (!(Test-Path $bundleDir)) {
+            Write-Error "Missing Tauri bundle directory"
+            exit 1
+          }
+
+          $timestampUrl = if ([string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) { "https://timestamp.digicert.com" } else { $env:WINDOWS_TIMESTAMP_URL }
+          $signTool = if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNTOOL_PATH)) { "signtool" } else { $env:WINDOWS_SIGNTOOL_PATH }
+          $artifacts = @(Get-ChildItem -Path $bundleDir -Recurse -File -Include *.exe, *.msi)
+          if ($artifacts.Count -eq 0) {
+            Write-Error "No Windows installer artifacts found under $bundleDir"
+            exit 1
+          }
+
+          function Invoke-SignTool {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string[]]$Arguments,
+              [Parameter(Mandatory = $true)]
+              [string]$Description
+            )
+
+            & $signTool @Arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Description failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          # signtool sign is the default Windows signing mechanism for CI artifacts.
+          try {
+            foreach ($artifact in $artifacts) {
+              $signArguments = @(
+                "sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $timestampUrl,
+                "/f", $certificatePath,
+                "/p", $env:WINDOWS_CERTIFICATE_PASSWORD,
+                $artifact.FullName
+              )
+              $verifyArguments = @("verify", "/pa", $artifact.FullName)
+
+              Invoke-SignTool `
+                -Description "signtool sign $($artifact.Name)" `
+                -Arguments $signArguments
+              Invoke-SignTool `
+                -Description "signtool verify $($artifact.Name)" `
+                -Arguments $verifyArguments
+            }
+          } finally {
+            if (Test-Path -LiteralPath $certificatePath) {
+              Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Collect desktop artifacts
+        run: |
+          set -euo pipefail
+          out_dir="$GITHUB_WORKSPACE/dist/desktop-artifacts"
+          mkdir -p "$out_dir"
+
+          bundle_dir="apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          if [ ! -d "$bundle_dir" ]; then
+            bundle_dir="apps/desktop/src-tauri/target/release/bundle"
+          fi
+          if [ ! -d "$bundle_dir" ]; then
+            echo "Missing Tauri bundle directory" >&2
+            exit 1
+          fi
+
+          found=0
+          while IFS= read -r -d '' artifact; do
+            base="$(basename "$artifact")"
+            dest="$out_dir/kandev-desktop-${{ matrix.platform }}-$base"
+            cp "$artifact" "$dest"
+            (cd "$out_dir" && shasum -a 256 "$(basename "$dest")" > "$(basename "$dest").sha256")
+            found=$((found + 1))
+          done < <(find "$bundle_dir" -type f \( \
+            -name '*.dmg' -o \
+            -name '*.deb' -o \
+            -name '*.rpm' -o \
+            -name '*.msi' -o \
+            -name '*.exe' -o \
+            -name '*.AppImage' \
+          \) -print0)
+
+          if [ "$found" -eq 0 ]; then
+            echo "No desktop artifacts found under $bundle_dir" >&2
+            exit 1
+          fi
+
+          scripts/release/verify-desktop-assets.sh "$out_dir" "${{ matrix.platform }}"
+          ls -lh "$out_dir"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: dist/desktop-artifacts/*
+
   # ---------------------------------------------------------------------------
   # Docker base image — split per arch onto native runners, then stitched into
   # a multi-arch manifest list. Each arch consumes the matching linux bundle
@@ -398,7 +803,7 @@ jobs:
   docker-amd64:
     name: Build & push container image (amd64)
     needs: [prepare, build-bundles]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -469,7 +874,7 @@ jobs:
   docker-arm64:
     name: Build & push container image (arm64)
     needs: [prepare, build-bundles]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -528,7 +933,7 @@ jobs:
   docker-manifest:
     name: Assemble multi-arch base manifest
     needs: [prepare, docker-amd64, docker-arm64]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -582,7 +987,7 @@ jobs:
   docker-universal-amd64:
     name: Build & push universal image (amd64)
     needs: [prepare, docker-manifest]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -634,7 +1039,7 @@ jobs:
   docker-universal-arm64:
     name: Build & push universal image (arm64)
     needs: [prepare, docker-manifest]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -685,7 +1090,7 @@ jobs:
     # docker-universal-manifest is included in publish-release's `needs` so
     # its size gate (and any per-arch build failure) blocks the release.
     needs: [prepare, docker-universal-amd64, docker-universal-arm64]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -741,8 +1146,8 @@ jobs:
 
   publish-release:
     name: Publish GitHub release
-    needs: [prepare, build-bundles, docker-universal-manifest]
-    if: ${{ !inputs.dry_run }}
+    needs: [prepare, build-bundles, build-desktop, docker-universal-manifest]
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # softprops/action-gh-release creates the release
@@ -767,6 +1172,12 @@ jobs:
           path: dist/release-assets
           merge-multiple: true
 
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: desktop-*
+          path: dist/release-assets
+          merge-multiple: true
+
       - name: Verify release assets
         run: |
           set -euo pipefail
@@ -783,6 +1194,7 @@ jobs:
               exit 1
             fi
           done
+          scripts/release/verify-desktop-assets.sh dist/release-assets
           ls -lh dist/release-assets
 
       - name: Publish release
@@ -794,11 +1206,12 @@ jobs:
           files: |
             dist/release-assets/kandev-*.tar.gz
             dist/release-assets/kandev-*.tar.gz.sha256
+            dist/release-assets/kandev-desktop-*
 
   publish-npm:
     name: Publish npm packages
     needs: [prepare, publish-release]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write    # Required for OIDC trusted publishing
@@ -833,7 +1246,7 @@ jobs:
   update-homebrew-tap:
     name: Update Homebrew tap
     needs: [prepare, publish-release]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -5,18 +5,22 @@ on:
     branches: [main]
     paths:
       - "apps/backend/**"
+      - "apps/desktop/**"
       - "apps/web/**"
       - "apps/packages/**"
       - "apps/pnpm-lock.yaml"
+      - "apps/pnpm-workspace.yaml"
       - ".github/workflows/e2e-tests.yml"
       - "!**/*.md"
   pull_request:
     branches: [main]
     paths:
       - "apps/backend/**"
+      - "apps/desktop/**"
       - "apps/web/**"
       - "apps/packages/**"
       - "apps/pnpm-lock.yaml"
+      - "apps/pnpm-workspace.yaml"
       - ".github/workflows/e2e-tests.yml"
       - "!**/*.md"
   # Manual trigger for verifying CI on draft PRs and ad-hoc reruns. The
@@ -50,6 +54,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -133,6 +139,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -223,6 +231,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Verify Docker is available
         run: docker info
@@ -357,9 +367,65 @@ jobs:
           path: apps/web/e2e/test-results/
           retention-days: 7
 
+  desktop-e2e:
+    name: Desktop E2E Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: "9.15.9"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: apps/pnpm-lock.yaml
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: desktop-e2e
+
+      - name: Install desktop system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libglib2.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xvfb
+
+      - name: Install dependencies
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+
+      - name: Run desktop smoke
+        working-directory: apps
+        run: pnpm --filter @kandev/desktop e2e
+
   e2e-report:
     name: Merge E2E Reports
-    needs: [e2e, e2e-containers]
+    needs: [e2e, e2e-containers, desktop-e2e]
     if: always()
     runs-on: ubuntu-latest
     # Pre-baked image bundles Node 24, pnpm 9.15.9, and the Playwright CLI.
@@ -374,6 +440,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -413,3 +481,24 @@ jobs:
           name: playwright-report
           path: apps/web/playwright-report/
           retention-days: 14
+
+      - name: Verify required E2E jobs passed
+        if: always()
+        env:
+          E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_CONTAINERS_RESULT: ${{ needs['e2e-containers'].result }}
+          DESKTOP_E2E_RESULT: ${{ needs['desktop-e2e'].result }}
+        run: |
+          set -euo pipefail
+          if [ "$E2E_RESULT" != "success" ]; then
+            echo "e2e finished with result: $E2E_RESULT" >&2
+            exit 1
+          fi
+          if [ "$E2E_CONTAINERS_RESULT" != "success" ]; then
+            echo "e2e-containers finished with result: $E2E_CONTAINERS_RESULT" >&2
+            exit 1
+          fi
+          if [ "$DESKTOP_E2E_RESULT" != "success" ]; then
+            echo "desktop-e2e finished with result: $DESKTOP_E2E_RESULT" >&2
+            exit 1
+          fi

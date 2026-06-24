@@ -181,3 +181,133 @@ describe("release npm publishing", () => {
     expect(script).toContain("treated as idempotent success");
   });
 });
+
+describe("release desktop artifacts", () => {
+  const desktopPlatforms = ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64", "windows-x64"];
+
+  function releaseWorkflow(): string {
+    return readRepoFile(".github/workflows/release.yml");
+  }
+
+  it("builds desktop artifacts for every supported runtime platform", () => {
+    const workflow = releaseWorkflow();
+
+    expect(workflow).toMatch(/\n  build-desktop:\n/);
+    expect(workflow).toContain("needs: [prepare, build-bundles]");
+    expect(workflow).toContain("scripts/release/prepare-desktop-runtime.sh");
+    expect(workflow).toContain('--platform "${{ matrix.platform }}"');
+    expect(workflow).toContain(
+      'rustup toolchain install stable --profile minimal --target "${{ matrix.rust_target }}"',
+    );
+    expect(workflow).toContain("Swatinem/rust-cache@v2");
+
+    for (const platform of desktopPlatforms) {
+      expect(workflow, `release.yml must include desktop platform ${platform}`).toContain(
+        `platform: ${platform}`,
+      );
+    }
+  });
+
+  it("publishes desktop artifacts while leaving npm and Homebrew tied to runtime tarballs", () => {
+    const workflow = releaseWorkflow();
+    const publishNpmScript = readRepoFile("scripts/release/publish-npm.sh");
+    const homebrewScript = readRepoFile("scripts/release/update-homebrew-tap.sh");
+
+    expect(workflow).toContain(
+      "needs: [prepare, build-bundles, build-desktop, docker-universal-manifest]",
+    );
+    expect(workflow).toContain("pattern: desktop-*");
+    expect(workflow).toContain("scripts/release/verify-desktop-assets.sh");
+    expect(workflow).toContain("dist/release-assets/kandev-desktop-*");
+    expect(workflow).toContain('shasum -a 256 "$(basename "$dest")"');
+
+    expect(publishNpmScript).toContain('asset="kandev-${platform}.tar.gz"');
+    expect(publishNpmScript).not.toContain("kandev-desktop-");
+    expect(homebrewScript).toContain('local sha_file="kandev-${platform}.tar.gz.sha256"');
+    expect(homebrewScript).not.toContain("kandev-desktop-");
+  });
+
+  it("bumps desktop package and Tauri versions during release preparation", () => {
+    const workflow = releaseWorkflow();
+
+    expect(workflow).toContain('(cd apps/desktop && npm version --no-git-tag-version "$NEXT")');
+    expect(workflow).toContain("tauriConfig.version = next");
+    expect(workflow).toContain('cargoToml.replace(/^version = ".*"$/m, `version = "${next}"`)');
+    expect(workflow).toContain('name = "kandev-desktop"');
+    expect(workflow).toContain("apps/desktop/src-tauri/tauri.conf.json");
+    expect(workflow).toContain("apps/desktop/src-tauri/Cargo.toml");
+    expect(workflow).toContain("apps/desktop/src-tauri/Cargo.lock");
+  });
+
+  it("pins linux x64 desktop release builds to Ubuntu 22.04", () => {
+    const workflow = releaseWorkflow();
+
+    expect(workflow).toContain(`- os: ubuntu-22.04
+            platform: linux-x64
+            goos: linux
+            goarch: amd64`);
+    expect(workflow).toContain(`- platform: linux-x64
+            os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            tauri_bundles: deb,rpm`);
+  });
+
+  it("fails public macOS and Windows desktop builds closed when signing secrets are absent", () => {
+    const workflow = releaseWorkflow();
+    const signingDocs = readRepoFile("docs/desktop-tauri-signing.md");
+    const tauriConfig = readRepoFile("apps/desktop/src-tauri/tauri.conf.json");
+    const windowsSignScript = readRepoFile("apps/desktop/src-tauri/windows-sign.ps1");
+
+    expect(workflow).toContain("allow_unsigned_desktop");
+    expect(workflow).toContain("Unsigned desktop artifacts are internal validation only");
+    expect(workflow).toContain("ref: ${{ needs.prepare.outputs.ref }}");
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("Unsigned desktop validation summary");
+    expect(workflow).toContain("No release PR, tag, GitHub release, public container tags");
+    expect(workflow).toContain("if: ${{ !inputs.dry_run && !inputs.allow_unsigned_desktop }}");
+    expect(workflow).toContain("docker-amd64:");
+    expect(workflow).toContain("docker-universal-manifest:");
+
+    for (const key of [
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "KEYCHAIN_PASSWORD",
+      "APPLE_SIGNING_IDENTITY",
+      "APPLE_API_KEY_P8",
+      "APPLE_API_KEY_PATH",
+      "APPLE_TEAM_ID",
+    ]) {
+      expect(workflow, `release.yml must wire ${key}`).toContain(key);
+    }
+
+    for (const key of ["WINDOWS_CERTIFICATE", "WINDOWS_CERTIFICATE_PASSWORD", "signtool sign"]) {
+      expect(workflow, `release.yml must wire ${key}`).toContain(key);
+    }
+    expect(workflow).toContain("Invoke-SignTool");
+    expect(workflow).toContain("$LASTEXITCODE -ne 0");
+    expect(workflow).toContain("Sign macOS desktop runtime binaries");
+    expect(workflow).toContain("resources/kandev/bin");
+    expect(workflow).toContain("for binary in kandev agentctl; do");
+    expect(workflow).toContain(
+      'codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY"',
+    );
+    expect(workflow).toContain("codesign --verify --strict");
+    expect(workflow).toContain("Sign Windows desktop runtime binaries");
+    expect(workflow).toContain('foreach ($binary in @("kandev.exe", "agentctl.exe"))');
+    expect(workflow).toContain("Remove-Item -LiteralPath $certificatePath");
+
+    expect(tauriConfig).toContain('"publisher": "Kandev"');
+    expect(tauriConfig).toContain('"timestampUrl"');
+    expect(tauriConfig).toContain('"timestampUrl": "https://timestamp.digicert.com"');
+    expect(tauriConfig).toContain('"signCommand"');
+    expect(tauriConfig).toContain("windows-sign.ps1");
+    expect(tauriConfig).not.toContain('"csp": null');
+    expect(windowsSignScript).toContain('"https://timestamp.digicert.com"');
+    expect(windowsSignScript).toContain("Remove-Item -LiteralPath $certificatePath");
+    expect(signingDocs).toContain("Public recommended desktop releases require signing");
+    expect(signingDocs).toContain("allow_unsigned_desktop");
+    expect(signingDocs).toContain("does not publish a GitHub release");
+    expect(signingDocs).toContain("public container tags");
+    expect(signingDocs).toContain("Ubuntu 22.04");
+  });
+});
