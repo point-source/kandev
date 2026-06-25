@@ -21,6 +21,10 @@ import (
 	"github.com/kandev/kandev/internal/task/repository"
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 	"github.com/kandev/kandev/internal/task/service"
+	workflowcontroller "github.com/kandev/kandev/internal/workflow/controller"
+	workflowmodels "github.com/kandev/kandev/internal/workflow/models"
+	workflowrepo "github.com/kandev/kandev/internal/workflow/repository"
+	workflowservice "github.com/kandev/kandev/internal/workflow/service"
 	"github.com/kandev/kandev/internal/worktree"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	ws "github.com/kandev/kandev/pkg/websocket"
@@ -62,6 +66,45 @@ func newTestTaskService(t *testing.T) (*service.Service, *sqliterepo.Repository)
 		Reviews:      repo,
 	}, eventBus, log, service.RepositoryDiscoveryConfig{})
 	return svc, repo
+}
+
+func newTestTaskServiceWithWorkflow(t *testing.T) (*service.Service, *sqliterepo.Repository, *workflowcontroller.Controller, *workflowrepo.Repository) {
+	t.Helper()
+	dbConn, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	sqlxDB := sqlx.NewDb(dbConn, "sqlite3")
+	t.Cleanup(func() {
+		_ = sqlxDB.Close()
+	})
+	repo, cleanup, err := repository.Provide(sqlxDB, sqlxDB, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = cleanup()
+	})
+	workflowRepo, err := workflowrepo.NewWithDB(sqlxDB, sqlxDB, testLogger(t))
+	require.NoError(t, err)
+	_, err = worktree.NewSQLiteStore(sqlxDB, sqlxDB)
+	require.NoError(t, err)
+
+	log, _ := logger.NewLogger(logger.LoggingConfig{Level: "error", Format: "json"})
+	eventBus := bus.NewMemoryEventBus(log)
+	t.Cleanup(func() { eventBus.Close() })
+	svc := service.NewService(service.Repos{
+		Workspaces:   repo,
+		Tasks:        repo,
+		TaskRepos:    repo,
+		Workflows:    repo,
+		Messages:     repo,
+		Turns:        repo,
+		Sessions:     repo,
+		GitSnapshots: repo,
+		RepoEntities: repo,
+		Executors:    repo,
+		Environments: repo,
+		Reviews:      repo,
+	}, eventBus, log, service.RepositoryDiscoveryConfig{})
+	workflowSvc := workflowservice.NewService(workflowRepo, log)
+	return svc, repo, workflowcontroller.NewController(workflowSvc), workflowRepo
 }
 
 func seedMCPHandlerSession(t *testing.T, repo *sqliterepo.Repository, taskID, sessionID string, state models.TaskSessionState) {
@@ -264,21 +307,231 @@ func TestHandleCreateTask_TopLevel_MissingWorkflowID(t *testing.T) {
 	assertWSError(t, resp, ws.ErrorCodeValidation)
 }
 
+func TestHandleCreateTask_StartAgentRequiresResolvableAgentProfile(t *testing.T) {
+	svc, _ := newTestTaskService(t)
+	ctx := context.Background()
+	workspaces, err := svc.ListWorkspaces(ctx)
+	require.NoError(t, err)
+	require.Len(t, workspaces, 1)
+	workflows, err := svc.ListWorkflows(ctx, workspaces[0].ID, false)
+	require.NoError(t, err)
+	require.Len(t, workflows, 1)
+
+	h := &Handlers{
+		taskSvc:         svc,
+		sessionLauncher: newMockSessionLauncher(),
+		logger:          testLogger(t).WithFields(),
+	}
+	msg := makeWSMessage(t, ws.ActionMCPCreateTask, map[string]interface{}{
+		"workspace_id": workspaces[0].ID,
+		"workflow_id":  workflows[0].ID,
+		"title":        "Invalid auto-start task",
+		"description":  "This should not be persisted without a profile.",
+	})
+
+	resp, err := h.handleCreateTask(ctx, msg)
+	require.NoError(t, err)
+	assertWSError(t, resp, ws.ErrorCodeValidation)
+
+	tasks, err := svc.ListTasks(ctx, workflows[0].ID)
+	require.NoError(t, err)
+	assert.Empty(t, tasks, "failed auto-start preflight must not leave a broken task behind")
+}
+
+func TestHandleCreateTask_StartAgentUsesWorkspaceDefaultAgentProfile(t *testing.T) {
+	svc, _ := newTestTaskService(t)
+	ctx := context.Background()
+	workspaces, err := svc.ListWorkspaces(ctx)
+	require.NoError(t, err)
+	require.Len(t, workspaces, 1)
+	workflows, err := svc.ListWorkflows(ctx, workspaces[0].ID, false)
+	require.NoError(t, err)
+	require.Len(t, workflows, 1)
+
+	defaultProfileID := "workspace-default-profile"
+	_, err = svc.UpdateWorkspace(ctx, workspaces[0].ID, &service.UpdateWorkspaceRequest{
+		DefaultAgentProfileID: &defaultProfileID,
+	})
+	require.NoError(t, err)
+
+	launcher := newMockSessionLauncher()
+	h := &Handlers{
+		taskSvc:         svc,
+		sessionLauncher: launcher,
+		logger:          testLogger(t).WithFields(),
+	}
+	msg := makeWSMessage(t, ws.ActionMCPCreateTask, map[string]interface{}{
+		"workspace_id": workspaces[0].ID,
+		"workflow_id":  workflows[0].ID,
+		"title":        "Valid auto-start task",
+		"description":  "This should launch with the workspace default profile.",
+	})
+
+	resp, err := h.handleCreateTask(ctx, msg)
+	require.NoError(t, err)
+	require.Equalf(t, ws.MessageTypeResponse, resp.Type, "create_task should succeed; payload: %s", string(resp.Payload))
+
+	select {
+	case <-launcher.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("LaunchSession was not called within timeout")
+	}
+	req := launcher.getRequest()
+	assert.Equal(t, defaultProfileID, req.AgentProfileID)
+}
+
+func TestResolveMCPAutoStartConfig_UsesWorkflowStepAgentProfile(t *testing.T) {
+	svc, _, workflowCtrl, workflowRepo := newTestTaskServiceWithWorkflow(t)
+	ctx := context.Background()
+	workspace, workflow := defaultWorkspaceAndWorkflow(t, ctx, svc)
+	step := seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "Implement",
+		Position:        1,
+		AgentProfileID:  "step-profile",
+		AllowManualMove: true,
+	})
+	h := &Handlers{taskSvc: svc, workflowCtrl: workflowCtrl, logger: testLogger(t).WithFields()}
+
+	config := h.resolveMCPAutoStartConfig(ctx, &models.Task{
+		WorkspaceID:    workspace.ID,
+		WorkflowID:     workflow.ID,
+		WorkflowStepID: step.ID,
+	}, "", "", "")
+
+	assert.Equal(t, "step-profile", config.AgentProfileID)
+}
+
+func TestResolveMCPAutoStartConfig_UsesLowestPositionStepAgentProfileWhenNoStartStep(t *testing.T) {
+	svc, _, workflowCtrl, workflowRepo := newTestTaskServiceWithWorkflow(t)
+	ctx := context.Background()
+	workspace, workflow := defaultWorkspaceAndWorkflow(t, ctx, svc)
+	seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "Later",
+		Position:        10,
+		AgentProfileID:  "later-profile",
+		AllowManualMove: true,
+	})
+	seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "First",
+		Position:        2,
+		AgentProfileID:  "first-profile",
+		AllowManualMove: true,
+	})
+	h := &Handlers{taskSvc: svc, workflowCtrl: workflowCtrl, logger: testLogger(t).WithFields()}
+
+	config := h.resolveMCPAutoStartConfig(ctx, &models.Task{
+		WorkspaceID: workspace.ID,
+		WorkflowID:  workflow.ID,
+	}, "", "", "")
+
+	assert.Equal(t, "first-profile", config.AgentProfileID)
+}
+
+func TestStartStepAgentProfile_UsesLowestPositionWhenNoStartStep(t *testing.T) {
+	profileID := startStepAgentProfile([]*workflowmodels.WorkflowStep{
+		{Position: 10, AgentProfileID: "later-profile"},
+		nil,
+		{Position: 2, AgentProfileID: "first-profile"},
+	})
+
+	assert.Equal(t, "first-profile", profileID)
+}
+
+func TestResolveMCPAutoStartConfig_UsesMarkedStartStepAgentProfile(t *testing.T) {
+	svc, _, workflowCtrl, workflowRepo := newTestTaskServiceWithWorkflow(t)
+	ctx := context.Background()
+	workspace, workflow := defaultWorkspaceAndWorkflow(t, ctx, svc)
+	seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "First",
+		Position:        1,
+		AgentProfileID:  "first-profile",
+		AllowManualMove: true,
+	})
+	seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "Start Here",
+		Position:        2,
+		IsStartStep:     true,
+		AgentProfileID:  "start-profile",
+		AllowManualMove: true,
+	})
+	h := &Handlers{taskSvc: svc, workflowCtrl: workflowCtrl, logger: testLogger(t).WithFields()}
+
+	config := h.resolveMCPAutoStartConfig(ctx, &models.Task{
+		WorkspaceID: workspace.ID,
+		WorkflowID:  workflow.ID,
+	}, "", "", "")
+
+	assert.Equal(t, "start-profile", config.AgentProfileID)
+}
+
+func TestResolveMCPAutoStartConfig_FallsBackToWorkflowAgentProfile(t *testing.T) {
+	svc, _, workflowCtrl, workflowRepo := newTestTaskServiceWithWorkflow(t)
+	ctx := context.Background()
+	workspace, workflow := defaultWorkspaceAndWorkflow(t, ctx, svc)
+	workflowProfileID := "workflow-profile"
+	_, err := svc.UpdateWorkflow(ctx, workflow.ID, &service.UpdateWorkflowRequest{
+		AgentProfileID: &workflowProfileID,
+	})
+	require.NoError(t, err)
+	seedWorkflowStep(t, ctx, workflowRepo, &workflowmodels.WorkflowStep{
+		WorkflowID:      workflow.ID,
+		Name:            "Unassigned",
+		Position:        1,
+		AllowManualMove: true,
+	})
+	h := &Handlers{taskSvc: svc, workflowCtrl: workflowCtrl, logger: testLogger(t).WithFields()}
+
+	config := h.resolveMCPAutoStartConfig(ctx, &models.Task{
+		WorkspaceID: workspace.ID,
+		WorkflowID:  workflow.ID,
+	}, "", "", "")
+
+	assert.Equal(t, workflowProfileID, config.AgentProfileID)
+}
+
+func defaultWorkspaceAndWorkflow(t *testing.T, ctx context.Context, svc *service.Service) (*models.Workspace, *models.Workflow) {
+	t.Helper()
+	workspaces, err := svc.ListWorkspaces(ctx)
+	require.NoError(t, err)
+	require.Len(t, workspaces, 1)
+	workflow, err := svc.CreateWorkflow(ctx, &service.CreateWorkflowRequest{
+		WorkspaceID: workspaces[0].ID,
+		Name:        "Workflow under test",
+	})
+	require.NoError(t, err)
+	return workspaces[0], workflow
+}
+
+func seedWorkflowStep(t *testing.T, ctx context.Context, repo *workflowrepo.Repository, step *workflowmodels.WorkflowStep) *workflowmodels.WorkflowStep {
+	t.Helper()
+	require.NoError(t, repo.CreateStep(ctx, step))
+	return step
+}
+
 // mockSessionLauncher captures LaunchSession calls for testing autoStartTask.
 type mockSessionLauncher struct {
-	mu     sync.Mutex
-	req    *orchestrator.LaunchSessionRequest
-	called chan struct{}
+	mu      sync.Mutex
+	req     *orchestrator.LaunchSessionRequest
+	called  chan struct{}
+	inspect func(context.Context)
 }
 
 func newMockSessionLauncher() *mockSessionLauncher {
 	return &mockSessionLauncher{called: make(chan struct{})}
 }
 
-func (m *mockSessionLauncher) LaunchSession(_ context.Context, req *orchestrator.LaunchSessionRequest) (*orchestrator.LaunchSessionResponse, error) {
+func (m *mockSessionLauncher) LaunchSession(ctx context.Context, req *orchestrator.LaunchSessionRequest) (*orchestrator.LaunchSessionResponse, error) {
 	m.mu.Lock()
 	m.req = req
 	m.mu.Unlock()
+	if m.inspect != nil {
+		m.inspect(ctx)
+	}
 	close(m.called)
 	return &orchestrator.LaunchSessionResponse{
 		Success:   true,
@@ -316,8 +569,9 @@ func TestAutoStartTask_DefaultsToWorktreeExecutor(t *testing.T) {
 	}
 
 	task := &models.Task{
-		ID:          "task-1",
-		WorkspaceID: "ws-1",
+		ID:             "task-1",
+		WorkspaceID:    "ws-1",
+		WorkflowStepID: "step-1",
 	}
 
 	// Call with agent profile but no executor info
@@ -333,6 +587,7 @@ func TestAutoStartTask_DefaultsToWorktreeExecutor(t *testing.T) {
 	assert.Equal(t, models.ExecutorIDWorktree, req.ExecutorID, "should default to exec-worktree")
 	assert.Equal(t, "", req.ExecutorProfileID)
 	assert.Equal(t, "agent-profile-1", req.AgentProfileID)
+	assert.Equal(t, "step-1", req.WorkflowStepID)
 }
 
 func TestAutoStartTask_ExplicitExecutorProfilePreserved(t *testing.T) {
@@ -360,6 +615,45 @@ func TestAutoStartTask_ExplicitExecutorProfilePreserved(t *testing.T) {
 	req := launcher.getRequest()
 	assert.Equal(t, "exec-profile-docker", req.ExecutorProfileID, "explicit executor profile should be preserved")
 	assert.Equal(t, "", req.ExecutorID, "executorID should be empty when profile is set")
+}
+
+func TestLaunchAutoStartTask_PreservesContextValuesWithoutCallerCancellation(t *testing.T) {
+	type contextKey string
+
+	launcher := newMockSessionLauncher()
+	log := testLogger(t)
+	h := &Handlers{
+		sessionLauncher: launcher,
+		logger:          log.WithFields(),
+	}
+
+	key := contextKey("request-id")
+	var capturedValue any
+	var capturedErr error
+	launcher.inspect = func(ctx context.Context) {
+		capturedValue = ctx.Value(key)
+		capturedErr = ctx.Err()
+	}
+
+	parentCtx, cancel := context.WithCancel(context.WithValue(context.Background(), key, "request-1"))
+	cancel()
+
+	h.launchAutoStartTask(parentCtx, &models.Task{
+		ID:          "task-1",
+		WorkspaceID: "ws-1",
+	}, mcpAutoStartConfig{
+		AgentProfileID: "agent-profile-1",
+		ExecutorID:     models.ExecutorIDWorktree,
+	})
+
+	select {
+	case <-launcher.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("LaunchSession was not called within timeout")
+	}
+
+	assert.Equal(t, "request-1", capturedValue)
+	assert.NoError(t, capturedErr)
 }
 
 func TestResolveTaskRepositories_ExplicitRepos(t *testing.T) {
