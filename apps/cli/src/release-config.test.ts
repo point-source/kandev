@@ -19,6 +19,10 @@ function extractDockerPnpmVersion(dockerfile: string): string | undefined {
   return dockerfile.match(/^ARG PNPM_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/m)?.[1];
 }
 
+function extractDockerNodeMajor(dockerfile: string): string | undefined {
+  return dockerfile.match(/^ARG NODE_MAJOR=([0-9]+)$/m)?.[1];
+}
+
 function extractPackageManagerPnpmVersion(packageJSON: string): string {
   const packageManager = (JSON.parse(packageJSON) as { packageManager?: string }).packageManager;
   const version = packageManager?.match(/^pnpm@([0-9]+\.[0-9]+\.[0-9]+)$/)?.[1];
@@ -145,18 +149,48 @@ function assertWorkflowPnpmVersions(file: string, expectedVersion: string): numb
   return versions.length;
 }
 
-describe("release package manager version", () => {
-  it("pins pnpm consistently for Docker and GitHub Actions", () => {
+describe("release runtime tooling configuration", () => {
+  it("pins runtime tooling consistently across Docker and GitHub Actions", () => {
     const packagePnpmVersion = extractPackageManagerPnpmVersion(readRepoFile("apps/package.json"));
     const dockerfile = readRepoFile("Dockerfile");
+    const universalDockerfile = readRepoFile("Dockerfile.universal");
     const dockerPnpmVersion = extractDockerPnpmVersion(dockerfile);
+    const universalDockerPnpmVersion = extractDockerPnpmVersion(universalDockerfile);
+    const dockerNodeMajor = extractDockerNodeMajor(dockerfile);
 
     expect(dockerfile).not.toContain("pnpm@latest");
+    expect(dockerNodeMajor, "Dockerfile: NODE_MAJOR must stay on the release Node line").toBe("24");
+    expect(dockerfile).toContain("AS apt-keys");
+    expect(dockerfile).toContain(
+      "COPY --from=apt-keys /nodesource.gpg /usr/share/keyrings/nodesource.gpg",
+    );
+    expect(dockerfile).toContain(
+      "COPY --from=apt-keys /microsoft.gpg /usr/share/keyrings/microsoft.gpg",
+    );
+    expect(dockerfile).toContain("https://deb.nodesource.com/node_${NODE_MAJOR}.x");
+    expect(dockerfile).toContain("/etc/apt/sources.list.d/azure-cli.sources");
+    expect(dockerfile).not.toContain("InstallAzureCLIDeb");
+    expect(dockerfile).not.toContain("        gnupg \\");
+    expect(dockerfile).toMatch(
+      /rm -f[\s\\]+\/etc\/apt\/sources\.list\.d\/nodesource\.list[\s\\]+\/etc\/apt\/sources\.list\.d\/azure-cli\.sources[\s\\]+\/usr\/share\/keyrings\/nodesource\.gpg[\s\\]+\/usr\/share\/keyrings\/microsoft\.gpg/,
+    );
+    expect(dockerfile).toMatch(/\bnodejs\b/);
+    expect(dockerfile).toMatch(/\bazure-cli\b/);
     if (dockerPnpmVersion !== undefined) {
       expect(dockerPnpmVersion, "Dockerfile: PNPM_VERSION must match apps/package.json").toBe(
         packagePnpmVersion,
       );
     }
+    expect(
+      universalDockerPnpmVersion,
+      "Dockerfile.universal: PNPM_VERSION must match apps/package.json",
+    ).toBe(packagePnpmVersion);
+    expect(universalDockerfile).not.toContain("pnpm@latest");
+    expect(universalDockerfile).not.toContain("corepack enable");
+    expect(universalDockerfile).not.toContain("corepack prepare");
+    expect(universalDockerfile).toContain(
+      'npm install -g --prefix /usr/local "pnpm@${PNPM_VERSION}"',
+    );
 
     const workflowSetupCount = workflowFiles().reduce(
       (count, file) => count + assertWorkflowPnpmVersions(file, packagePnpmVersion),
@@ -210,6 +244,8 @@ describe("release desktop artifacts", () => {
 
   it("publishes desktop artifacts while leaving npm and Homebrew tied to runtime tarballs", () => {
     const workflow = releaseWorkflow();
+    const checksumScript = readRepoFile("scripts/release/write-sha256.sh");
+    const verifyAssetsScript = readRepoFile("scripts/release/verify-desktop-assets.sh");
     const publishNpmScript = readRepoFile("scripts/release/publish-npm.sh");
     const homebrewScript = readRepoFile("scripts/release/update-homebrew-tap.sh");
 
@@ -219,7 +255,12 @@ describe("release desktop artifacts", () => {
     expect(workflow).toContain("pattern: desktop-*");
     expect(workflow).toContain("scripts/release/verify-desktop-assets.sh");
     expect(workflow).toContain("dist/release-assets/kandev-desktop-*");
-    expect(workflow).toContain('shasum -a 256 "$(basename "$dest")"');
+    expect(workflow).toContain('scripts/release/write-sha256.sh "$dest" "$dest.sha256"');
+    expect(workflow).not.toContain('shasum -a 256 "$(basename "$dest")"');
+    expect(checksumScript).toContain("command -v shasum");
+    expect(checksumScript).toContain("command -v sha256sum");
+    expect(verifyAssetsScript).toContain("command -v shasum");
+    expect(verifyAssetsScript).toContain("command -v sha256sum");
 
     expect(publishNpmScript).toContain('asset="kandev-${platform}.tar.gz"');
     expect(publishNpmScript).not.toContain("kandev-desktop-");
