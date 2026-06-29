@@ -691,11 +691,17 @@ func (h *Handlers) resolveMCPLaunchMetadata(ctx context.Context, task *models.Ta
 }
 
 func (h *Handlers) resolveMCPAutoStartConfigWithError(ctx context.Context, task *models.Task, agentProfileID, executorProfileID, sourceTaskID string) (mcpAutoStartConfig, error) {
-	executorID := h.inheritFromTask(ctx, task.ParentID, &agentProfileID, &executorProfileID)
+	executorID, err := h.inheritFromTask(ctx, task.ParentID, &agentProfileID, &executorProfileID)
+	if err != nil {
+		return mcpAutoStartConfig{}, fmt.Errorf("inherit from parent task %s: %w", task.ParentID, err)
+	}
 
 	// For top-level tasks, inherit from the source task (the calling agent's task).
 	if task.ParentID == "" && sourceTaskID != "" {
-		sourceExecutorID := h.inheritFromTask(ctx, sourceTaskID, &agentProfileID, &executorProfileID)
+		sourceExecutorID, err := h.inheritFromTask(ctx, sourceTaskID, &agentProfileID, &executorProfileID)
+		if err != nil {
+			return mcpAutoStartConfig{}, fmt.Errorf("inherit from source task %s: %w", sourceTaskID, err)
+		}
 		if executorID == "" {
 			executorID = sourceExecutorID
 		}
@@ -853,33 +859,77 @@ func (h *Handlers) launchAutoStartTask(ctx context.Context, task *models.Task, c
 }
 
 // inheritFromTask fills agentProfileID and executorProfileID from another task's
-// primary session or durable metadata when not explicitly provided. It returns a
-// bare ExecutorID only when no executor profile was resolved, because an
-// executor profile already encodes its executor reference.
-func (h *Handlers) inheritFromTask(ctx context.Context, taskID string, agentProfileID, executorProfileID *string) string {
+// durable launch metadata or primary session when not explicitly provided. It
+// returns a bare ExecutorID only when no executor profile was resolved, because
+// an executor profile already encodes its executor reference.
+func (h *Handlers) inheritFromTask(ctx context.Context, taskID string, agentProfileID, executorProfileID *string) (string, error) {
 	if taskID == "" || h.taskSvc == nil {
-		return ""
+		return "", nil
 	}
 
-	executorID := h.inheritFromPrimarySession(ctx, taskID, agentProfileID, executorProfileID)
-	needsMetadata := *agentProfileID == "" || *executorProfileID == "" || executorID != ""
-	if needsMetadata {
-		executorID = h.inheritFromTaskMetadata(ctx, taskID, agentProfileID, executorProfileID, executorID)
+	agentProfileExplicit := *agentProfileID != ""
+	executorProfileExplicit := *executorProfileID != ""
+	executorID := h.inheritFromTaskMetadata(ctx, taskID, agentProfileID, executorProfileID, "")
+	session, err := h.taskSvc.GetPrimarySession(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, taskrepo.ErrNoPrimarySession) {
+			return executorID, nil
+		}
+		return "", err
+	}
+	if session != nil {
+		executorID = inheritWorkflowRoutedSession(session, agentProfileID, executorProfileID, executorID, agentProfileExplicit, executorProfileExplicit)
+		sessionExecutorID := inheritFromSession(session, agentProfileID, executorProfileID, executorID == "")
+		if executorID == "" {
+			executorID = sessionExecutorID
+		}
 	}
 
 	if *executorProfileID != "" {
+		return "", nil
+	}
+	return executorID, nil
+}
+
+func inheritWorkflowRoutedSession(
+	session *models.TaskSession,
+	agentProfileID, executorProfileID *string,
+	executorID string,
+	agentProfileExplicit, executorProfileExplicit bool,
+) string {
+	if !isWorkflowSwitchedSession(session) {
+		return executorID
+	}
+	if !agentProfileExplicit && session.AgentProfileID != "" {
+		*agentProfileID = session.AgentProfileID
+	}
+	if executorProfileExplicit {
+		return executorID
+	}
+	if session.ExecutorProfileID != "" {
+		*executorProfileID = session.ExecutorProfileID
 		return ""
+	}
+	if session.ExecutorID != "" {
+		*executorProfileID = ""
+		return session.ExecutorID
 	}
 	return executorID
 }
 
-func (h *Handlers) inheritFromPrimarySession(ctx context.Context, taskID string, agentProfileID, executorProfileID *string) string {
-	session, err := h.taskSvc.GetPrimarySession(ctx, taskID)
-	if err != nil || session == nil {
-		return ""
+func isWorkflowSwitchedSession(session *models.TaskSession) bool {
+	if session == nil {
+		return false
 	}
+	return metadataString(session.Metadata, models.SessionMetaKeyCreatedBy) == models.SessionCreatedByWorkflowSwitch
+}
+
+func inheritFromSession(session *models.TaskSession, agentProfileID, executorProfileID *string, inheritExecutor bool) string {
 	if *agentProfileID == "" {
 		*agentProfileID = session.AgentProfileID
+	}
+	if !inheritExecutor {
+		return ""
 	}
 	if *executorProfileID == "" {
 		*executorProfileID = session.ExecutorProfileID
