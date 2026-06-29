@@ -7,6 +7,7 @@ import { removeLocalStorage, setLocalStorage } from "@/lib/local-storage";
 import { STORAGE_KEYS } from "@/lib/settings/constants";
 import { updateUserSettings } from "@/lib/api/domains/settings-api";
 import { createDebugLogger } from "@/lib/debug/log";
+import type { TaskCreateLastUsedState } from "@/lib/state/slices/settings/types";
 
 type TaskCreateLastUsedPatch = {
   repository_id?: string;
@@ -17,12 +18,20 @@ type TaskCreateLastUsedPatch = {
 
 let pendingLastUsed: TaskCreateLastUsedPatch = {};
 let lastUsedSync = Promise.resolve();
+let lastQueuedLastUsed: Partial<TaskCreateLastUsedState> = {};
 const PENDING_LAST_USED_SYNC_KEY = "kandev.taskCreateLastUsed.pendingSync";
 const LOCAL_STORAGE_WRITE_EVENT = "localStorage-write";
 const lastUsedDebug = createDebugLogger("task-create:last-used");
 
-export function resetTaskCreateLastUsedSync() {
+/**
+ * Clears pending in-flight last-used sync state while preserving its persisted
+ * retry payload until the matching PATCH succeeds.
+ * Pass `clearQueued` when test setup or teardown should also wipe the queued
+ * overlay that protects settings fetches from stale server values.
+ */
+export function resetTaskCreateLastUsedSync(options: { clearQueued?: boolean } = {}) {
   pendingLastUsed = {};
+  if (options.clearQueued) lastQueuedLastUsed = {};
   lastUsedDebug("pending-reset");
 }
 
@@ -52,9 +61,39 @@ function persistPendingLastUsedSync(patch: TaskCreateLastUsedPatch) {
   setLocalStorage(PENDING_LAST_USED_SYNC_KEY, patch as Record<string, string>);
 }
 
+export function readPendingTaskCreateLastUsedState(): Partial<TaskCreateLastUsedState> {
+  const pending = { ...readPendingLastUsedSync(), ...pendingLastUsed };
+  return mapTaskCreateLastUsedPatch(pending);
+}
+
+export function readQueuedTaskCreateLastUsedState(): Partial<TaskCreateLastUsedState> {
+  return lastQueuedLastUsed;
+}
+
+function mapTaskCreateLastUsedPatch(
+  pending: TaskCreateLastUsedPatch,
+): Partial<TaskCreateLastUsedState> {
+  return {
+    repositoryId: pending.repository_id,
+    branch: pending.branch,
+    agentProfileId: pending.agent_profile_id,
+    executorProfileId: pending.executor_profile_id,
+  };
+}
+
+function compactTaskCreateLastUsedState(state: Partial<TaskCreateLastUsedState>) {
+  return Object.fromEntries(
+    Object.entries(state).filter(([, value]) => value !== undefined),
+  ) as Partial<TaskCreateLastUsedState>;
+}
+
 export function syncTaskCreateLastUsed(patch: TaskCreateLastUsedPatch) {
   pendingLastUsed = { ...readPendingLastUsedSync(), ...pendingLastUsed, ...patch };
   const payload = { ...pendingLastUsed };
+  lastQueuedLastUsed = {
+    ...lastQueuedLastUsed,
+    ...compactTaskCreateLastUsedState(mapTaskCreateLastUsedPatch(payload)),
+  };
   lastUsedDebug("sync-queued", { patch, payload });
   persistPendingLastUsedSync(payload);
   lastUsedSync = lastUsedSync
@@ -63,8 +102,11 @@ export function syncTaskCreateLastUsed(patch: TaskCreateLastUsedPatch) {
       updateUserSettings({ task_create_last_used: payload })
         .then(() => {
           lastUsedDebug("sync-success", { payload });
+          const persistedPending = readPendingLastUsedSync();
           if (JSON.stringify(pendingLastUsed) === JSON.stringify(payload)) {
             pendingLastUsed = {};
+          }
+          if (JSON.stringify(persistedPending) === JSON.stringify(payload)) {
             removeLocalStorage(PENDING_LAST_USED_SYNC_KEY);
           }
         })

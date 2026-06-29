@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
   useDefaultSelectionsEffect,
-  useGitHubUrlErrorEffect,
   useRepositoryAutoSelectEffect,
   useWorkflowAgentProfileEffect,
 } from "./task-create-dialog-effects";
+import { decideAgentProfileAutopick } from "./task-create-dialog-autopick";
 import type {
   DialogFormState,
   StoreSelections,
@@ -19,11 +19,19 @@ import { STORAGE_KEYS } from "@/lib/settings/constants";
 // so the rest can be undefined behind an `as` cast and never read.
 type Fake = Pick<
   DialogFormState,
-  "selectedWorkflowId" | "setAgentProfileId" | "setWorkflowAgentProfileId"
+  | "agentProfileId"
+  | "workflowAgentProfileId"
+  | "selectedWorkflowId"
+  | "executorProfileId"
+  | "setAgentProfileId"
+  | "setWorkflowAgentProfileId"
 >;
 function makeFs(overrides: Partial<Fake> = {}): DialogFormState {
   return {
+    agentProfileId: "",
+    workflowAgentProfileId: "",
     selectedWorkflowId: null,
+    executorProfileId: "profile-1",
     setAgentProfileId: vi.fn(),
     setWorkflowAgentProfileId: vi.fn(),
     ...overrides,
@@ -69,6 +77,36 @@ function makeRepoAutoSelectFs(
 }
 
 describe("useRepositoryAutoSelectEffect", () => {
+  it("waits for store-backed settings before falling back to an empty row", async () => {
+    window.localStorage.removeItem(STORAGE_KEYS.LAST_REPOSITORY_ID);
+    const setRepositories = vi.fn();
+    const fs = makeRepoAutoSelectFs([], setRepositories);
+
+    const { rerender } = renderHook(
+      ({ loaded, lastUsedRepositoryId }) =>
+        useRepositoryAutoSelectEffect(
+          fs,
+          true,
+          "ws-1",
+          [makeRepository("repo-1"), makeRepository("repo-2")],
+          {
+            lastUsedRepositoryId,
+            userSettingsLoaded: loaded,
+          },
+        ),
+      { initialProps: { loaded: false, lastUsedRepositoryId: null as string | null } },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(setRepositories).not.toHaveBeenCalled();
+
+    rerender({ loaded: true, lastUsedRepositoryId: "repo-2" });
+
+    await waitFor(() => expect(setRepositories).toHaveBeenCalled());
+    const updater = setRepositories.mock.calls[0]![0] as (prev: TaskRepoRow[]) => TaskRepoRow[];
+    expect(updater([])).toEqual([{ key: "row-0", repositoryId: "repo-2", branch: "" }]);
+  });
+
   it("fills an untouched placeholder row from store-backed settings when localStorage is not primed", async () => {
     window.localStorage.removeItem(STORAGE_KEYS.LAST_REPOSITORY_ID);
     const setRepositories = vi.fn();
@@ -80,7 +118,7 @@ describe("useRepositoryAutoSelectEffect", () => {
         true,
         "ws-1",
         [makeRepository("repo-1"), makeRepository("repo-2")],
-        "repo-2",
+        { lastUsedRepositoryId: "repo-2" },
       ),
     );
 
@@ -103,7 +141,7 @@ describe("useRepositoryAutoSelectEffect", () => {
         true,
         "ws-1",
         [makeRepository("repo-1"), makeRepository("repo-2")],
-        "repo-1",
+        { lastUsedRepositoryId: "repo-1" },
       ),
     );
 
@@ -244,6 +282,57 @@ describe("useWorkflowAgentProfileEffect", () => {
   });
 });
 
+describe("useWorkflowAgentProfileEffect — settings fallback readiness", () => {
+  it("clears stale workflow agents before deferring last-used restore", async () => {
+    const claude = makeProfile("claude");
+    const cursor = makeProfile("cursor");
+    const workflows = [{ id: "wf-1" /* no agent_profile_id */ }];
+    const fsBefore = makeFs({ selectedWorkflowId: "wf-1", executorProfileId: "" });
+
+    const { rerender } = renderHook(
+      ({ fs, compatible }) =>
+        useWorkflowAgentProfileEffect(fs, workflows, [claude, cursor], compatible, {
+          lastUsedAgentProfileId: claude.id,
+        }),
+      { initialProps: { fs: fsBefore, compatible: [claude, cursor] } },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fsBefore.setAgentProfileId).toHaveBeenCalledWith("");
+    expect(fsBefore.setAgentProfileId).not.toHaveBeenCalledWith(claude.id);
+
+    const fsAfter = makeFs({ selectedWorkflowId: "wf-1", executorProfileId: "profile-1" });
+    rerender({ fs: fsAfter, compatible: [cursor] });
+
+    await waitFor(() => expect(fsAfter.setAgentProfileId).toHaveBeenCalledWith(""));
+    expect(fsAfter.setAgentProfileId).not.toHaveBeenCalledWith(claude.id);
+  });
+
+  it("defers workflow last-used restore until auth compatibility is ready", async () => {
+    const claude = makeProfile("claude");
+    const workflows = [{ id: "wf-1" /* no agent_profile_id */ }];
+    const fsBefore = makeFs({ selectedWorkflowId: "wf-1", executorProfileId: "profile-1" });
+
+    const { rerender } = renderHook(
+      ({ fs, authLoaded }) =>
+        useWorkflowAgentProfileEffect(fs, workflows, [claude], [claude], {
+          lastUsedAgentProfileId: claude.id,
+          authLoaded,
+        }),
+      { initialProps: { fs: fsBefore, authLoaded: false } },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fsBefore.setAgentProfileId).toHaveBeenCalledWith("");
+    expect(fsBefore.setAgentProfileId).not.toHaveBeenCalledWith(claude.id);
+
+    const fsAfter = makeFs({ selectedWorkflowId: "wf-1", executorProfileId: "profile-1" });
+    rerender({ fs: fsAfter, authLoaded: true });
+
+    await waitFor(() => expect(fsAfter.setAgentProfileId).toHaveBeenCalledWith(claude.id));
+  });
+});
+
 type DefaultSelFake = Pick<
   DialogFormState,
   | "agentProfileId"
@@ -292,6 +381,69 @@ function makeSel(overrides: Partial<StoreSelections> = {}): StoreSelections {
     ...overrides,
   };
 }
+
+const WORKTREE_EXECUTOR_ID = "exec-worktree";
+const WORKTREE_PROFILE_B = "profile-b";
+const LOCAL_EXECUTOR_ID = "exec-local";
+const LOCAL_PROFILE_ID = "profile-local";
+
+function makeWorktreeExecutor(): StoreSelections["executors"][number] {
+  return {
+    id: WORKTREE_EXECUTOR_ID,
+    type: "worktree",
+    profiles: [
+      { id: "profile-a", executor_id: WORKTREE_EXECUTOR_ID, name: "A" },
+      { id: WORKTREE_PROFILE_B, executor_id: WORKTREE_EXECUTOR_ID, name: "B" },
+    ],
+  } as unknown as StoreSelections["executors"][number];
+}
+
+function makeLocalExecutor(): StoreSelections["executors"][number] {
+  return {
+    id: LOCAL_EXECUTOR_ID,
+    type: "local",
+    profiles: [{ id: LOCAL_PROFILE_ID, executor_id: LOCAL_EXECUTOR_ID, name: "Local" }],
+  } as unknown as StoreSelections["executors"][number];
+}
+
+describe("decideAgentProfileAutopick — user settings deferral", () => {
+  it("defers agent auto-pick until user settings have loaded or settled", () => {
+    const cursor = makeProfile("cursor");
+    const deferred = decideAgentProfileAutopick({
+      open: true,
+      agentProfileId: "",
+      workflowAgentProfileId: "",
+      workflowHasAgent: false,
+      agentProfiles: [cursor],
+      compatibleAgentProfiles: [cursor],
+      authLoaded: true,
+      executorProfileId: "",
+      hasExecutors: false,
+      lastAgentProfileId: null,
+      userSettingsLoaded: false,
+      defaultAgentProfileId: null,
+    });
+
+    expect(deferred).toEqual({ kind: "defer", reason: "user-settings-not-loaded" });
+
+    const picked = decideAgentProfileAutopick({
+      open: true,
+      agentProfileId: "",
+      workflowAgentProfileId: "",
+      workflowHasAgent: false,
+      agentProfiles: [cursor],
+      compatibleAgentProfiles: [cursor],
+      authLoaded: true,
+      executorProfileId: "",
+      hasExecutors: false,
+      lastAgentProfileId: null,
+      userSettingsLoaded: true,
+      defaultAgentProfileId: null,
+    });
+
+    expect(picked).toEqual({ kind: "pick", source: "first", id: cursor.id });
+  });
+});
 
 describe("useDefaultSelectionsEffect — executor-aware agent restoration", () => {
   it("restores lastId when it is compatible with the current executor", async () => {
@@ -409,6 +561,104 @@ describe("useDefaultSelectionsEffect — executor-aware agent restoration", () =
   });
 });
 
+describe("useDefaultSelectionsEffect — executor profile restoration", () => {
+  it("defers executor profile fallback until user settings have loaded or settled", async () => {
+    window.localStorage.removeItem(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID);
+    const fs = makeDefaultSelFs({ executorProfileId: "", executorId: "" });
+    const worktreeExecutor = makeWorktreeExecutor();
+    const selBefore = makeSel({
+      executors: [worktreeExecutor],
+      userSettingsLoaded: false,
+    } as Partial<StoreSelections>);
+
+    const { rerender } = renderHook(({ sel }) => useDefaultSelectionsEffect(fs, true, sel, []), {
+      initialProps: { sel: selBefore },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fs.setExecutorId).not.toHaveBeenCalled();
+    expect(fs.setExecutorProfileId).not.toHaveBeenCalled();
+
+    const selAfter = makeSel({
+      executors: [worktreeExecutor],
+      userSettingsLoaded: true,
+    } as Partial<StoreSelections>);
+    rerender({ sel: selAfter });
+
+    await waitFor(() => expect(fs.setExecutorProfileId).toHaveBeenCalledWith("profile-a"));
+  });
+
+  it("keeps deferring when cached executor profile is ineligible for the source mode", async () => {
+    window.localStorage.setItem(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID, JSON.stringify("profile-a"));
+    const fs = makeDefaultSelFs({ executorProfileId: "", executorId: "", noRepository: true });
+    const sel = makeSel({
+      executors: [makeWorktreeExecutor(), makeLocalExecutor()],
+      userSettingsLoaded: false,
+    } as Partial<StoreSelections>);
+
+    renderHook(() => useDefaultSelectionsEffect(fs, true, sel, []));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fs.setExecutorProfileId).not.toHaveBeenCalled();
+  });
+
+  it("restores executor profile from store-backed settings when localStorage is not primed", async () => {
+    window.localStorage.removeItem(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID);
+    const fs = makeDefaultSelFs({ executorProfileId: "", executorId: "" });
+    const worktreeExecutor = makeWorktreeExecutor();
+    const sel = makeSel({
+      executors: [worktreeExecutor],
+      lastUsedExecutorProfileId: WORKTREE_PROFILE_B,
+      userSettingsLoaded: true,
+    } as Partial<StoreSelections>);
+
+    renderHook(() => useDefaultSelectionsEffect(fs, true, sel, []));
+
+    await waitFor(() => expect(fs.setExecutorProfileId).toHaveBeenCalledWith(WORKTREE_PROFILE_B));
+  });
+
+  it("does not pick a fallback executor id while a valid last-used profile is restoring", async () => {
+    window.localStorage.removeItem(STORAGE_KEYS.LAST_EXECUTOR_PROFILE_ID);
+    const localExecutor = makeLocalExecutor();
+    const worktreeExecutor = makeWorktreeExecutor();
+    const sel = makeSel({
+      executors: [localExecutor, worktreeExecutor],
+      workspaceDefaults: { default_executor_id: LOCAL_EXECUTOR_ID },
+      lastUsedExecutorProfileId: WORKTREE_PROFILE_B,
+      userSettingsLoaded: true,
+    } as Partial<StoreSelections>);
+
+    const setExecutorId = vi.fn();
+    const setExecutorProfileId = vi.fn();
+    const { rerender } = renderHook(
+      ({ formState }) => useDefaultSelectionsEffect(formState, true, sel, []),
+      {
+        initialProps: {
+          formState: makeDefaultSelFs({
+            executorProfileId: "",
+            executorId: "",
+            setExecutorId,
+            setExecutorProfileId,
+          }),
+        },
+      },
+    );
+
+    await waitFor(() => expect(setExecutorProfileId).toHaveBeenCalledWith(WORKTREE_PROFILE_B));
+    rerender({
+      formState: makeDefaultSelFs({
+        executorProfileId: WORKTREE_PROFILE_B,
+        executorId: "",
+        setExecutorId,
+        setExecutorProfileId,
+      }),
+    });
+
+    await waitFor(() => expect(setExecutorId).toHaveBeenCalledWith(WORKTREE_EXECUTOR_ID));
+    expect(setExecutorId).not.toHaveBeenCalledWith(LOCAL_EXECUTOR_ID);
+  });
+});
+
 describe("useDefaultSelectionsEffect — auth-spec load race", () => {
   it("defers auto-pick while executorProfileId is empty even when authLoaded (regression for race that restored an incompatible lastId)", async () => {
     // The other half of the executor-aware autopick race: `authLoaded` flips
@@ -490,68 +740,5 @@ describe("useDefaultSelectionsEffect — auth-spec load race", () => {
     rerender({ sel: selAfter });
     await waitFor(() => expect(fs.setAgentProfileId).toHaveBeenCalledWith(cursor.id));
     expect(fs.setAgentProfileId).not.toHaveBeenCalledWith(claude.id);
-  });
-});
-type UrlErrorFake = {
-  useRemote?: boolean;
-  remoteRepos?: Array<{ key: string; url: string; branch: string; source: "paste" | "picker" }>;
-  setGitHubUrlError?: ReturnType<typeof vi.fn>;
-};
-function makeUrlErrorFs(overrides: UrlErrorFake = {}): DialogFormState {
-  const remoteRepos = overrides.remoteRepos ?? [
-    { key: "remote-0", url: "", branch: "", source: "paste" as const },
-  ];
-  return {
-    useRemote: overrides.useRemote ?? true,
-    setGitHubUrlError: overrides.setGitHubUrlError ?? vi.fn(),
-    remoteRepos,
-  } as unknown as DialogFormState;
-}
-
-describe("useGitHubUrlErrorEffect", () => {
-  it("surfaces 'Invalid GitHub URL' for an unparseable first-row URL", () => {
-    const setGitHubUrlError = vi.fn();
-    const fs = makeUrlErrorFs({
-      remoteRepos: [{ key: "remote-0", url: "not a url", branch: "", source: "paste" }],
-      setGitHubUrlError,
-    });
-    renderHook(() => useGitHubUrlErrorEffect(fs, true));
-    expect(setGitHubUrlError).toHaveBeenCalledWith(expect.stringContaining("Invalid GitHub URL"));
-  });
-
-  it("clears the error for a valid repo URL", () => {
-    const setGitHubUrlError = vi.fn();
-    const fs = makeUrlErrorFs({
-      remoteRepos: [
-        { key: "remote-0", url: "https://github.com/acme/site", branch: "", source: "paste" },
-      ],
-      setGitHubUrlError,
-    });
-    renderHook(() => useGitHubUrlErrorEffect(fs, true));
-    expect(setGitHubUrlError).toHaveBeenLastCalledWith(null);
-  });
-
-  it("clears the error for an empty URL (rows the user hasn't completed)", () => {
-    const setGitHubUrlError = vi.fn();
-    const fs = makeUrlErrorFs({
-      remoteRepos: [{ key: "remote-0", url: "", branch: "", source: "paste" }],
-      setGitHubUrlError,
-    });
-    renderHook(() => useGitHubUrlErrorEffect(fs, true));
-    expect(setGitHubUrlError).toHaveBeenCalledWith(null);
-  });
-
-  it("clears the error when useRemote is false (stale error from a prior Remote-mode pass)", () => {
-    // Regression: the early return on !useRemote used to skip clearing the
-    // error, so a banner produced while the user was in Remote mode would
-    // stick around after they switched back to workspace mode.
-    const setGitHubUrlError = vi.fn();
-    const fs = makeUrlErrorFs({
-      useRemote: false,
-      remoteRepos: [{ key: "remote-0", url: "not a url", branch: "", source: "paste" }],
-      setGitHubUrlError,
-    });
-    renderHook(() => useGitHubUrlErrorEffect(fs, true));
-    expect(setGitHubUrlError).toHaveBeenCalledWith(null);
   });
 });
