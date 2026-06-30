@@ -494,6 +494,16 @@ type TaskStateChangeFunc func(ctx context.Context, taskID string, state v1.TaskS
 // publish events (e.g. WebSocket notifications) alongside the DB update.
 type SessionStateChangeFunc func(ctx context.Context, taskID, sessionID string, state models.TaskSessionState, errorMessage string) error
 
+// SessionStartingFunc is called when the executor has prepared/resumed an
+// execution and needs to mark the session STARTING while preserving other
+// session-row updates such as metadata. promoteTask controls whether the
+// callback should also move the parent task to IN_PROGRESS immediately.
+type SessionStartingFunc func(ctx context.Context, taskID string, session *models.TaskSession, promoteTask bool) error
+
+// TaskReviewStateReconcileFunc is called when runtime work stopped and the
+// parent task should move to REVIEW only if no session is still STARTING/RUNNING.
+type TaskReviewStateReconcileFunc func(ctx context.Context, taskID, completedSessionID string)
+
 // AgentStartFailedFunc is called when the agent process fails to start.
 // It receives the task/session/execution IDs and the error. fromResume is true
 // when the failure occurred during a background session resume (rather than a
@@ -540,6 +550,16 @@ type Executor struct {
 	// Set by the orchestrator to route through updateTaskSessionState which
 	// updates the DB and publishes WebSocket events.
 	onSessionStateChange SessionStateChangeFunc
+
+	// Callback for STARTING writes that carry full session-row changes. Set by
+	// the orchestrator so launch/resume/model-switch transitions serialize with
+	// runtime task-state reconciliation.
+	onSessionStarting SessionStartingFunc
+
+	// Callback for REVIEW reconciliation after runtime start failures. Set by the
+	// orchestrator so failed-start writes share the same serialized guard as
+	// normal turn completion.
+	onTaskReviewStateReconcile TaskReviewStateReconcileFunc
 
 	// Callback for agent process start failures. When set, the executor
 	// delegates failure handling to this callback, allowing the orchestrator
@@ -631,6 +651,17 @@ func (e *Executor) SetOnTaskStateChange(fn TaskStateChangeFunc) {
 // which updates the DB and publishes WebSocket events to the frontend.
 func (e *Executor) SetOnSessionStateChange(fn SessionStateChangeFunc) {
 	e.onSessionStateChange = fn
+}
+
+// SetOnSessionStarting sets a callback for full session-row STARTING updates.
+func (e *Executor) SetOnSessionStarting(fn SessionStartingFunc) {
+	e.onSessionStarting = fn
+}
+
+// SetOnTaskReviewStateReconcile sets the guarded task REVIEW reconciliation
+// callback used after resume/start failures.
+func (e *Executor) SetOnTaskReviewStateReconcile(fn TaskReviewStateReconcileFunc) {
+	e.onTaskReviewStateReconcile = fn
 }
 
 // SetRepoCloner sets the cloner used to clone provider-backed repositories on launch.

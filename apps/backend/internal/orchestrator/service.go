@@ -92,6 +92,7 @@ type MessageCreator interface {
 type TurnService interface {
 	StartTurn(ctx context.Context, sessionID string) (*models.Turn, error)
 	CompleteTurn(ctx context.Context, turnID string) error
+	GetTurn(ctx context.Context, turnID string) (*models.Turn, error)
 	GetActiveTurn(ctx context.Context, sessionID string) (*models.Turn, error)
 	UpdateTurn(ctx context.Context, turn *models.Turn) error
 	// AbandonOpenTurns buries any open turns for a session by setting
@@ -364,6 +365,19 @@ type Service struct {
 	// Active turns map: sessionID -> turnID
 	activeTurns sync.Map
 
+	// taskRuntimeStateMu serializes task-state flips derived from session
+	// runtime state. Without it, a completion/cancel path can check for active
+	// sibling sessions just before another handler marks one RUNNING, then
+	// clobber the task back to REVIEW while work is active.
+	taskRuntimeStateMu sync.Mutex
+
+	// completedExecutions records execution IDs that have reached a terminal
+	// agent lifecycle event. Buffered stream/tool events for these executions
+	// must not wake their session back to RUNNING after the terminal path makes
+	// it promptable again. Entries expire after a short grace window so the
+	// guard does not grow without bound in long-running backend processes.
+	completedExecutions sync.Map
+
 	// Session reset flags: sessionID -> true while resetAgentContext is restarting process.
 	// Used to suppress stale ready events and avoid draining queued prompts mid-reset.
 	resetInProgressSessions sync.Map
@@ -478,6 +492,12 @@ func NewService(
 	exec.SetOnSessionStateChange(func(ctx context.Context, taskID, sessionID string, state models.TaskSessionState, errorMessage string) error {
 		s.updateTaskSessionState(ctx, taskID, sessionID, state, errorMessage, true)
 		return nil
+	})
+	exec.SetOnSessionStarting(func(ctx context.Context, taskID string, session *models.TaskSession, promoteTask bool) error {
+		return s.setSessionStarting(ctx, taskID, session, promoteTask)
+	})
+	exec.SetOnTaskReviewStateReconcile(func(ctx context.Context, taskID, completedSessionID string) {
+		s.writeTaskReviewState(ctx, taskID, completedSessionID)
 	})
 	exec.SetOnLaunchFailed(s.handleSessionLaunchFailed)
 	exec.SetOnAgentStartFailed(s.handleAgentStartFailed)
