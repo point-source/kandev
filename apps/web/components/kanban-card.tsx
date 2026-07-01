@@ -131,18 +131,17 @@ function useKanbanCardMenus({
     }
   };
 
-  // Sort into board order so a backward range selection isn't scrambled when the
-  // bulk move assigns sequential positions in request order.
-  const selectedTaskIds = sortByDisplayOrder(
-    isSelected && selectedIds?.size ? [...selectedIds] : [task.id],
-  );
+  const selectedTaskIds = isSelected && selectedIds?.size ? [...selectedIds] : [task.id];
+  // Sort into board order lazily (only when a move actually fires) so a backward
+  // range selection isn't scrambled — and we don't pay it on every card render.
+  const orderedSelectedIds = () => sortByDisplayOrder(selectedTaskIds);
   const moveSelectedToStep = (stepId: string) => {
     if (selectedTaskIds.length === 1 && selectedTaskIds[0] === task.id && onMove) {
       onMove(task, stepId);
       return;
     }
     if (!moveTargets.currentWorkflowId) return;
-    runMoveTasks(selectedTaskIds, moveTargets.currentWorkflowId, stepId);
+    runMoveTasks(orderedSelectedIds(), moveTargets.currentWorkflowId, stepId);
   };
 
   const menuBase = {
@@ -172,7 +171,7 @@ function useKanbanCardMenus({
       ...menuBase,
       onMoveToStep: moveSelectedToStep,
       onSendToWorkflow: (workflowId, stepId) => {
-        runMoveTasks(selectedTaskIds, workflowId, stepId);
+        runMoveTasks(orderedSelectedIds(), workflowId, stepId);
       },
     }),
     showDeleteConfirm,
@@ -270,18 +269,20 @@ export function dispatchKanbanCardClick(
     isMultiSelectMode?: boolean;
   },
 ): void {
-  if (e.metaKey || e.ctrlKey) {
+  // Only intercept a modifier click when the matching handler is wired, so a
+  // card rendered without selection handlers still opens on Cmd/Shift click.
+  if ((e.metaKey || e.ctrlKey) && handlers.onToggleSelect) {
     e.preventDefault();
-    handlers.onToggleSelect?.(taskId);
+    handlers.onToggleSelect(taskId);
     return;
   }
-  if (e.shiftKey) {
+  if (e.shiftKey && handlers.onRangeSelect) {
     e.preventDefault();
-    handlers.onRangeSelect?.(taskId);
+    handlers.onRangeSelect(taskId);
     return;
   }
-  if (handlers.isMultiSelectMode) {
-    handlers.onToggleSelect?.(taskId);
+  if (handlers.isMultiSelectMode && handlers.onToggleSelect) {
+    handlers.onToggleSelect(taskId);
     return;
   }
   handlers.onClick?.(task);
