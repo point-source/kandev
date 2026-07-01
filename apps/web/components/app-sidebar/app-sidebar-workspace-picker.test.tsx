@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { makeQueryClient } from "@/lib/query/client";
+import { qk } from "@/lib/query/keys";
 
 const navigationMock = vi.hoisted(() => ({ push: vi.fn() }));
 
@@ -52,6 +55,17 @@ vi.mock("@/components/state-provider", () => ({
 
 import { AppSidebarWorkspacePicker } from "./app-sidebar-workspace-picker";
 
+function renderPicker() {
+  const queryClient = makeQueryClient();
+  queryClient.setQueryData(qk.features(), { office: storeState.features.office });
+  queryClient.setQueryData(qk.workspaces.all(), storeState.workspaces.items);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AppSidebarWorkspacePicker />
+    </QueryClientProvider>,
+  );
+}
+
 describe("AppSidebarWorkspacePicker — Add workspace routing", () => {
   beforeEach(() => {
     navigationMock.push = vi.fn();
@@ -66,7 +80,7 @@ describe("AppSidebarWorkspacePicker — Add workspace routing", () => {
 
   it("routes to the office setup wizard when the office feature is enabled", () => {
     storeState.features.office = true;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByText("New office workspace"));
 
@@ -75,7 +89,7 @@ describe("AppSidebarWorkspacePicker — Add workspace routing", () => {
 
   it("routes to the settings workspaces page for a new kanban workspace", () => {
     storeState.features.office = true;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByText("New kanban workspace"));
 
@@ -84,7 +98,7 @@ describe("AppSidebarWorkspacePicker — Add workspace routing", () => {
 
   it("keeps the legacy add-workspace route when the office feature is disabled", () => {
     storeState.features.office = false;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByText("Add workspace"));
 
@@ -123,7 +137,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
 
   it("does nothing when selecting the already active workspace", () => {
     storeState.features.office = false;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(KANBAN_WORKSPACE_ITEM));
 
@@ -134,7 +148,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
 
   it("writes the active office workspace cookie and updates the store on office select", () => {
     storeState.features.office = false;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(OFFICE_WORKSPACE_ITEM));
 
@@ -147,7 +161,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
     storeState.features.office = true;
     storeState.workspaces.activeId = "w2";
     cookieWrites = ["office-active-workspace=w2; path=/"];
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(KANBAN_WORKSPACE_ITEM));
 
@@ -159,7 +173,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
 
   it("navigates to the office workspace when the office feature is enabled", () => {
     storeState.features.office = true;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(OFFICE_WORKSPACE_ITEM));
 
@@ -170,7 +184,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
   it("navigates to the kanban board when an office user selects a kanban workspace", () => {
     storeState.features.office = true;
     storeState.workspaces.activeId = "w2";
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(KANBAN_WORKSPACE_ITEM));
 
@@ -181,7 +195,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
 
   it("labels workspace types in the menu without using trigger space", () => {
     storeState.workspaces.activeId = "w1";
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     expect(screen.getByTestId("sidebar-workspace-trigger").textContent).not.toContain("Kanban");
     expect(screen.getByTestId(KANBAN_WORKSPACE_ITEM).textContent).toContain("Kanban");
@@ -190,7 +204,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
 
   it("routes to the active kanban workspace home when office routing is enabled", () => {
     storeState.features.office = true;
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(KANBAN_WORKSPACE_ITEM));
 
@@ -202,7 +216,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
   it("does not route when selecting the active office workspace", () => {
     storeState.features.office = true;
     storeState.workspaces.activeId = "w2";
-    render(<AppSidebarWorkspacePicker />);
+    renderPicker();
 
     fireEvent.click(screen.getByTestId(OFFICE_WORKSPACE_ITEM));
 

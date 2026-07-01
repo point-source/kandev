@@ -94,6 +94,7 @@ Subscription quota tracking and per-agent cheap-model profile routing.
 | [comment-markdown](ui/comment-markdown.md) | shipped |
 | [empty-turn-notice](ui/empty-turn-notice.md) | shipped |
 | [slash-command-composer](ui/slash-command-composer.md) | shipped |
+| [tanstack-query-server-state](ui/tanstack-query-server-state.md) | done |
 
 ## system-page/ — operational diagnostics & maintenance UI
 
