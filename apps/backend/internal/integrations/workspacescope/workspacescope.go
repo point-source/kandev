@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -11,6 +12,28 @@ import (
 // FallbackWorkspaceID is used only in isolated tests or malformed databases
 // where integration config exists before the workspaces table is available.
 const FallbackWorkspaceID = "default"
+
+// CachedResolver memoizes the default workspace used by legacy integration
+// methods that predate explicit workspace IDs. New request paths should pass a
+// workspace ID and bypass this fallback entirely.
+type CachedResolver struct {
+	mu          sync.Mutex
+	workspaceID string
+}
+
+func (r *CachedResolver) Resolve(db *sqlx.DB) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.workspaceID != "" {
+		return r.workspaceID, nil
+	}
+	workspaceID, err := ResolveMigrationTarget(db)
+	if err != nil {
+		return "", err
+	}
+	r.workspaceID = workspaceID
+	return workspaceID, nil
+}
 
 // ResolveMigrationTarget returns the workspace that should receive an upgraded
 // singleton integration config. It prefers the workspace stored in user

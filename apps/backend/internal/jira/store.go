@@ -19,6 +19,8 @@ type Store struct {
 	db *sqlx.DB
 	ro *sqlx.DB
 
+	defaultWorkspace workspacescope.CachedResolver
+
 	// migratedToWorkspace records the workspace_id that received a legacy
 	// singleton row during initSchema. Provider reads this to migrate the
 	// singleton secret to the workspace-scoped key. Empty when no migration ran.
@@ -513,7 +515,7 @@ func (s *Store) UpdateAuthHealthForWorkspace(ctx context.Context, workspaceID st
 }
 
 func (s *Store) defaultWorkspaceID() (string, error) {
-	return workspacescope.ResolveMigrationTarget(s.db)
+	return s.defaultWorkspace.Resolve(s.db)
 }
 
 func (s *Store) resolveWorkspaceID(workspaceID string) (string, error) {
