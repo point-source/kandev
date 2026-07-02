@@ -168,6 +168,7 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	now := time.Now().UTC()
+	checkedAt := now.Add(-5 * time.Minute).Truncate(time.Second)
 	if _, err := db.Exec(`
 		CREATE TABLE workspaces (
 			id TEXT PRIMARY KEY,
@@ -203,9 +204,9 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 			VALUES ('default-user', 'default@kandev.local', '{"workspace_id":"ws-active"}', ?, ?);
 		INSERT INTO slack_configs (
 			id, auth_method, command_prefix, utility_agent_id, poll_interval_seconds,
-			slack_team_id, slack_user_id, last_seen_ts, last_ok, created_at, updated_at
-		) VALUES ('singleton', 'cookie', '!kandev', 'ua-active', 60, 'T-active', 'U-active', '200.0', 1, ?, ?);
-	`, now.Add(-time.Hour), now.Add(-time.Hour), now, now, now, now, now, now); err != nil {
+			slack_team_id, slack_user_id, last_seen_ts, last_checked_at, last_ok, last_error, created_at, updated_at
+		) VALUES ('singleton', 'cookie', '!kandev', 'ua-active', 60, 'T-active', 'U-active', '200.0', ?, 1, 'healthy', ?, ?);
+	`, now.Add(-time.Hour), now.Add(-time.Hour), now, now, now, now, checkedAt, now, now); err != nil {
 		t.Fatalf("seed singleton schema: %v", err)
 	}
 
@@ -225,6 +226,12 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 	}
 	if cfg.SlackTeamID != "T-active" || cfg.SlackUserID != "U-active" || cfg.LastSeenTS != "200.0" {
 		t.Errorf("unexpected migrated runtime state: %+v", cfg)
+	}
+	if !cfg.LastOk || cfg.LastError != "healthy" {
+		t.Errorf("unexpected migrated health state: %+v", cfg)
+	}
+	if cfg.LastCheckedAt == nil || !cfg.LastCheckedAt.Equal(checkedAt) {
+		t.Errorf("expected last_checked_at=%v, got %v", checkedAt, cfg.LastCheckedAt)
 	}
 }
 

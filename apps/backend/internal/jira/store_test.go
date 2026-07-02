@@ -125,6 +125,7 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	now := time.Now().UTC()
+	checkedAt := now.Add(-5 * time.Minute).Truncate(time.Second)
 	if _, err := db.Exec(`
 		CREATE TABLE workspaces (
 			id TEXT PRIMARY KEY,
@@ -156,9 +157,9 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 		INSERT INTO users (id, email, settings, created_at, updated_at)
 			VALUES ('default-user', 'default@kandev.local', '{"workspace_id":"ws-active"}', ?, ?);
 		INSERT INTO jira_configs
-			(id, site_url, email, auth_method, default_project_key, last_ok, created_at, updated_at)
-			VALUES ('singleton', 'https://acme.atlassian.net', 'user@example.com', ?, 'ENG', 1, ?, ?);
-	`, now.Add(-time.Hour), now.Add(-time.Hour), now, now, now, now, AuthMethodAPIToken, now, now); err != nil {
+			(id, site_url, email, auth_method, default_project_key, last_checked_at, last_ok, last_error, created_at, updated_at)
+			VALUES ('singleton', 'https://acme.atlassian.net', 'user@example.com', ?, 'ENG', ?, 1, 'healthy', ?, ?);
+	`, now.Add(-time.Hour), now.Add(-time.Hour), now, now, now, now, AuthMethodAPIToken, checkedAt, now, now); err != nil {
 		t.Fatalf("seed singleton schema: %v", err)
 	}
 
@@ -178,6 +179,15 @@ func TestStore_MigrateSingletonConfigToActiveWorkspace(t *testing.T) {
 	}
 	if cfg.SiteURL != "https://acme.atlassian.net" || cfg.DefaultProjectKey != "ENG" {
 		t.Errorf("unexpected migrated config: %+v", cfg)
+	}
+	if cfg.Email != "user@example.com" || cfg.AuthMethod != AuthMethodAPIToken {
+		t.Errorf("unexpected migrated auth fields: %+v", cfg)
+	}
+	if !cfg.LastOk || cfg.LastError != "healthy" {
+		t.Errorf("unexpected migrated health state: %+v", cfg)
+	}
+	if cfg.LastCheckedAt == nil || !cfg.LastCheckedAt.Equal(checkedAt) {
+		t.Errorf("expected last_checked_at=%v, got %v", checkedAt, cfg.LastCheckedAt)
 	}
 }
 

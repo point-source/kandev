@@ -18,19 +18,21 @@ const FallbackWorkspaceID = "default"
 // workspace ID and bypass this fallback entirely.
 type CachedResolver struct {
 	mu          sync.Mutex
+	db          *sqlx.DB
 	workspaceID string
 }
 
 func (r *CachedResolver) Resolve(db *sqlx.DB) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.workspaceID != "" {
+	if r.workspaceID != "" && r.db == db {
 		return r.workspaceID, nil
 	}
 	workspaceID, err := ResolveMigrationTarget(db)
 	if err != nil {
 		return "", err
 	}
+	r.db = db
 	r.workspaceID = workspaceID
 	return workspaceID, nil
 }
