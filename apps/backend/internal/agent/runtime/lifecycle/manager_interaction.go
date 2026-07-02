@@ -1017,16 +1017,21 @@ func (m *Manager) RecoverAgentPromptStream(ctx context.Context, sessionID string
 		return fmt.Errorf("agent stream not connected")
 	}
 	if execution.Status == v1.AgentStatusFailed && execution.sessionInitialized && execution.ACPSessionID != "" {
-		status, err := execution.agentctl.GetStatus(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to verify agent status after stream recovery: %w", err)
-		}
-		if !status.IsAgentRunning() {
-			return fmt.Errorf("agent process is not running after stream recovery: %s", status.AgentStatus)
-		}
-		if err := m.markBootReadyFromFailed(ctx, execution.ID); err != nil {
-			return err
-		}
+		return m.restoreRecoveredFailedExecution(ctx, execution)
+	}
+	return nil
+}
+
+func (m *Manager) restoreRecoveredFailedExecution(ctx context.Context, execution *AgentExecution) error {
+	status, err := execution.agentctl.GetStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to verify agent status after stream recovery: %w", err)
+	}
+	if !status.IsAgentRunning() {
+		return fmt.Errorf("agent process is not running after stream recovery: %s", status.AgentStatus)
+	}
+	if err := m.markBootReadyFromFailed(ctx, execution.ID); err != nil {
+		return err
 	}
 	return nil
 }
