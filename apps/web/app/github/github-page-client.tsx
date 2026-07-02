@@ -197,12 +197,7 @@ function useResolvedQueryPresets(workspaceId: string | null = null) {
   return { pr, issue };
 }
 
-function useInitialSidebarSelection(
-  workspaceId: string | null,
-  resolvedPrPresets: PresetOption[],
-  setQueryImmediate: (query: string) => void,
-  setRepoFilter: (repo: string) => void,
-) {
+function useInitialSidebarSelection(workspaceId: string | null, resolvedPrPresets: PresetOption[]) {
   const userSelectedRef = useRef(false);
   const [selection, setSelection] = useState<SidebarSelection>(() => ({
     kind: "pr",
@@ -218,9 +213,7 @@ function useInitialSidebarSelection(
     if (userSelectedRef.current) return;
     const first = resolvedPrPresets[0];
     setSelection({ kind: "pr", source: "preset", id: first?.value ?? "" });
-    setQueryImmediate(first?.filter ?? "");
-    setRepoFilter("");
-  }, [workspaceId, resolvedPrPresets, setQueryImmediate, setRepoFilter]);
+  }, [workspaceId, resolvedPrPresets]);
 
   const setUserSelection = useCallback((next: SidebarSelection) => {
     userSelectedRef.current = true;
@@ -296,8 +289,6 @@ function useGitHubPageState(workspaceId: string | null) {
   const { selection, setProgrammaticSelection, setUserSelection } = useInitialSidebarSelection(
     workspaceId,
     resolvedPrPresets,
-    setQueryImmediate,
-    setRepoFilter,
   );
 
   const presets = selection.kind === "pr" ? resolvedPrPresets : resolvedIssuePresets;

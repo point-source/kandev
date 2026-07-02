@@ -81,14 +81,19 @@ function useWatchActions(workspaceId?: string | null) {
 
   const handleDelete = useCallback(
     async (id: string) => {
+      const watch = watches.find((item) => item.id === id);
+      if (!watch) {
+        toast({ description: "Review watch not found", variant: "error" });
+        return;
+      }
       try {
-        await remove(id);
+        await remove(id, watch.workspace_id);
         toast({ description: "Review watch deleted", variant: "success" });
       } catch {
         toast({ description: "Failed to delete review watch", variant: "error" });
       }
     },
-    [remove, toast],
+    [remove, toast, watches],
   );
 
   const handleTrigger = useCallback(
@@ -119,7 +124,7 @@ function useWatchActions(workspaceId?: string | null) {
   const handleToggleEnabled = useCallback(
     async (watch: ReviewWatch) => {
       try {
-        await update(watch.id, { enabled: !watch.enabled });
+        await update(watch.id, watch.workspace_id, { enabled: !watch.enabled });
         toast({
           description: watch.enabled ? "Watch paused" : "Watch enabled",
           variant: "success",
@@ -176,14 +181,19 @@ function useIssueWatchActions(workspaceId?: string | null) {
 
   const handleDelete = useCallback(
     async (id: string) => {
+      const watch = watches.find((item) => item.id === id);
+      if (!watch) {
+        toast({ description: "Issue watch not found", variant: "error" });
+        return;
+      }
       try {
-        await remove(id);
+        await remove(id, watch.workspace_id);
         toast({ description: "Issue watch deleted", variant: "success" });
       } catch {
         toast({ description: "Failed to delete issue watch", variant: "error" });
       }
     },
-    [remove, toast],
+    [remove, toast, watches],
   );
 
   const handleTrigger = useCallback(
@@ -214,7 +224,7 @@ function useIssueWatchActions(workspaceId?: string | null) {
   const handleToggleEnabled = useCallback(
     async (watch: IssueWatch) => {
       try {
-        await update(watch.id, { enabled: !watch.enabled });
+        await update(watch.id, watch.workspace_id, { enabled: !watch.enabled });
         toast({
           description: watch.enabled ? "Watch paused" : "Watch enabled",
           variant: "success",
@@ -350,7 +360,10 @@ function ReviewWatchSection({ workspaceId }: { workspaceId: string }) {
         description="Automatically create tasks for PRs that need your review."
         action={
           <div className="flex items-center gap-2">
-            <CleanupNowButton label="Clean up merged" run={cleanupMergedReviewTasks} />
+            <CleanupNowButton
+              label="Clean up merged"
+              run={() => cleanupMergedReviewTasks(workspaceId)}
+            />
             <Button
               size="sm"
               onClick={() => {
@@ -388,7 +401,9 @@ function ReviewWatchSection({ workspaceId }: { workspaceId: string }) {
           toast({ description: "Review watch created", variant: "success" });
         }}
         onUpdate={async (id, req) => {
-          await update(id, req);
+          const watch = watches.find((item) => item.id === id);
+          if (!watch) throw new Error("review watch not found");
+          await update(id, watch.workspace_id, req);
           toast({ description: "Review watch updated", variant: "success" });
         }}
       />
@@ -436,7 +451,10 @@ function IssueWatchSection({ workspaceId }: { workspaceId: string }) {
         description="Automatically create tasks for GitHub issues matching your criteria."
         action={
           <div className="flex items-center gap-2">
-            <CleanupNowButton label="Clean up closed" run={cleanupClosedIssueTasks} />
+            <CleanupNowButton
+              label="Clean up closed"
+              run={() => cleanupClosedIssueTasks(workspaceId)}
+            />
             <Button
               size="sm"
               onClick={() => {
@@ -474,7 +492,9 @@ function IssueWatchSection({ workspaceId }: { workspaceId: string }) {
           toast({ description: "Issue watch created", variant: "success" });
         }}
         onUpdate={async (id, req) => {
-          await issueActions.update(id, req);
+          const watch = issueActions.watches.find((item) => item.id === id);
+          if (!watch) throw new Error("issue watch not found");
+          await issueActions.update(id, watch.workspace_id, req);
           toast({ description: "Issue watch updated", variant: "success" });
         }}
       />

@@ -112,6 +112,29 @@ func TestService_SearchUserPRsPagedForWorkspace_AppendsScopeToQuery(t *testing.T
 	}
 }
 
+func TestService_SearchUserPRsPagedForWorkspace_OrgScopeIncludesPersonalOwner(t *testing.T) {
+	client := &capturingSearchClient{MockClient: NewMockClient()}
+	client.AddPR(&PR{RepoOwner: "octo", RepoName: "personal", Number: 1, Title: "in scope"})
+	store := newTestStore(t)
+	svc := NewService(client, AuthMethodPAT, nil, store, nil, testLogger(t))
+	ctx := context.Background()
+
+	if err := svc.UpsertWorkspaceSettings(ctx, &WorkspaceSettings{
+		WorkspaceID:   "ws-1",
+		RepoScopeMode: RepoScopeModeOrgs,
+		RepoScopeOrgs: []string{"octo"},
+	}); err != nil {
+		t.Fatalf("save workspace settings: %v", err)
+	}
+
+	if _, err := svc.SearchUserPRsPagedForWorkspace(ctx, "ws-1", "", "is:open", 1, 25); err != nil {
+		t.Fatalf("search scoped prs: %v", err)
+	}
+	if !strings.Contains(client.customQuery, "(org:octo OR user:octo)") {
+		t.Fatalf("org scope did not include personal-owner qualifier: %q", client.customQuery)
+	}
+}
+
 func TestService_SearchUserPRsPagedForWorkspace_EmptyRepoScopeFailsClosed(t *testing.T) {
 	client := NewMockClient()
 	client.AddPR(&PR{RepoOwner: "kdlbs", RepoName: "kandev", Number: 1, Title: "hidden"})
@@ -232,6 +255,22 @@ func TestService_UpdateWorkspaceSettings_RejectsUnknownRepoScopeMode(t *testing.
 	_, err := svc.UpdateWorkspaceSettings(context.Background(), &UpdateWorkspaceSettingsRequest{
 		WorkspaceID:   "ws-1",
 		RepoScopeMode: &mode,
+	})
+	if !errors.Is(err, ErrWorkspaceSettingsValidation) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestService_UpdateWorkspaceSettings_RejectsConflictingScopePatch(t *testing.T) {
+	store := newTestStore(t)
+	svc := NewService(NewMockClient(), AuthMethodPAT, nil, store, nil, testLogger(t))
+	mode := RepoScopeModeAll
+	orgs := []string{"octo"}
+
+	_, err := svc.UpdateWorkspaceSettings(context.Background(), &UpdateWorkspaceSettingsRequest{
+		WorkspaceID:   "ws-1",
+		RepoScopeMode: &mode,
+		RepoScopeOrgs: &orgs,
 	})
 	if !errors.Is(err, ErrWorkspaceSettingsValidation) {
 		t.Fatalf("expected validation error, got %v", err)

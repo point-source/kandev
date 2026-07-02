@@ -1343,6 +1343,7 @@ export class ApiClient {
 
   async updateReviewWatch(
     watchId: string,
+    workspaceId: string,
     patch: {
       enabled?: boolean;
       cleanup_policy?: "auto" | "always" | "never";
@@ -1350,11 +1351,18 @@ export class ApiClient {
       repos?: Array<{ owner: string; name: string }>;
     },
   ): Promise<void> {
-    await this.request("PUT", `/api/v1/github/watches/review/${watchId}`, patch);
+    await this.request(
+      "PUT",
+      `/api/v1/github/watches/review/${watchId}?workspace_id=${encodeURIComponent(workspaceId)}`,
+      patch,
+    );
   }
 
-  async deleteReviewWatch(watchId: string): Promise<void> {
-    await this.request("DELETE", `/api/v1/github/watches/review/${watchId}`);
+  async deleteReviewWatch(watchId: string, workspaceId: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/v1/github/watches/review/${watchId}?workspace_id=${encodeURIComponent(workspaceId)}`,
+    );
   }
 
   async triggerReviewWatch(

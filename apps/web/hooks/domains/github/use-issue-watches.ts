@@ -38,17 +38,16 @@ export function useIssueWatches(workspaceId?: string | null) {
     const scopeKey = workspaceId ?? "__all__";
     if ((loaded || loading) && loadedScopeRef.current === scopeKey) return;
     let cancelled = false;
+    loadedScopeRef.current = scopeKey;
     setIssueWatchesLoading(true);
     listIssueWatches(workspaceId ?? undefined, { cache: "no-store" })
       .then((response) => {
         if (cancelled) return;
         setIssueWatches(response?.watches ?? []);
-        loadedScopeRef.current = scopeKey;
       })
       .catch(() => {
         if (cancelled) return;
         setIssueWatches([]);
-        loadedScopeRef.current = scopeKey;
       })
       .finally(() => {
         if (cancelled) return;
@@ -69,8 +68,8 @@ export function useIssueWatches(workspaceId?: string | null) {
   );
 
   const update = useCallback(
-    async (id: string, req: UpdateIssueWatchRequest) => {
-      const watch = await updateIssueWatch(id, req);
+    async (id: string, watchWorkspaceId: string, req: UpdateIssueWatchRequest) => {
+      const watch = await updateIssueWatch(id, watchWorkspaceId, req);
       updateWatch(watch);
       return watch;
     },
@@ -78,8 +77,8 @@ export function useIssueWatches(workspaceId?: string | null) {
   );
 
   const remove = useCallback(
-    async (id: string) => {
-      await deleteIssueWatch(id);
+    async (id: string, watchWorkspaceId: string) => {
+      await deleteIssueWatch(id, watchWorkspaceId);
       removeWatch(id);
     },
     [removeWatch],

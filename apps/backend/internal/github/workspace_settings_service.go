@@ -221,10 +221,11 @@ func workspaceScopeQualifiers(settings *WorkspaceSettings) []string {
 	}
 	switch settings.RepoScopeMode {
 	case RepoScopeModeOrgs:
-		qualifiers := make([]string, 0, len(settings.RepoScopeOrgs))
+		qualifiers := make([]string, 0, len(settings.RepoScopeOrgs)*2)
 		for _, org := range settings.RepoScopeOrgs {
 			if org = strings.TrimSpace(org); org != "" {
 				qualifiers = append(qualifiers, "org:"+org)
+				qualifiers = append(qualifiers, "user:"+org)
 			}
 		}
 		return qualifiers

@@ -260,17 +260,24 @@ export async function createReviewWatch(
 
 export async function updateReviewWatch(
   id: string,
+  workspaceId: string,
   payload: UpdateReviewWatchRequest,
   options?: ApiRequestOptions,
 ) {
-  return fetchJson<ReviewWatch>(`/api/v1/github/watches/review/${id}`, {
+  const params = new URLSearchParams({ workspace_id: workspaceId });
+  return fetchJson<ReviewWatch>(`/api/v1/github/watches/review/${id}?${params}`, {
     ...options,
     init: { method: "PUT", body: JSON.stringify(payload), ...(options?.init ?? {}) },
   });
 }
 
-export async function deleteReviewWatch(id: string, options?: ApiRequestOptions) {
-  return fetchJson<{ success: boolean }>(`/api/v1/github/watches/review/${id}`, {
+export async function deleteReviewWatch(
+  id: string,
+  workspaceId: string,
+  options?: ApiRequestOptions,
+) {
+  const params = new URLSearchParams({ workspace_id: workspaceId });
+  return fetchJson<{ success: boolean }>(`/api/v1/github/watches/review/${id}?${params}`, {
     ...options,
     init: { method: "DELETE", ...(options?.init ?? {}) },
   });
@@ -489,17 +496,24 @@ export async function createIssueWatch(
 
 export async function updateIssueWatch(
   id: string,
+  workspaceId: string,
   payload: UpdateIssueWatchRequest,
   options?: ApiRequestOptions,
 ) {
-  return fetchJson<IssueWatch>(`/api/v1/github/watches/issue/${id}`, {
+  const params = new URLSearchParams({ workspace_id: workspaceId });
+  return fetchJson<IssueWatch>(`/api/v1/github/watches/issue/${id}?${params}`, {
     ...options,
     init: { method: "PUT", body: JSON.stringify(payload), ...(options?.init ?? {}) },
   });
 }
 
-export async function deleteIssueWatch(id: string, options?: ApiRequestOptions) {
-  return fetchJson<{ deleted: boolean }>(`/api/v1/github/watches/issue/${id}`, {
+export async function deleteIssueWatch(
+  id: string,
+  workspaceId: string,
+  options?: ApiRequestOptions,
+) {
+  const params = new URLSearchParams({ workspace_id: workspaceId });
+  return fetchJson<{ deleted: boolean }>(`/api/v1/github/watches/issue/${id}?${params}`, {
     ...options,
     init: { method: "DELETE", ...(options?.init ?? {}) },
   });
@@ -565,15 +579,17 @@ export async function triggerAllIssueWatches(workspaceId: string, options?: ApiR
 // Manual cleanup sweeps. The poller runs these every 5min per watch, but a
 // user with a pile of legacy merged-PR tasks (created before the cleanup
 // policy was in place) can invoke them on demand from the settings page.
-export async function cleanupMergedReviewTasks(options?: ApiRequestOptions) {
-  return fetchJson<CleanupTasksResponse>("/api/v1/github/cleanup/review-tasks", {
+export async function cleanupMergedReviewTasks(workspaceId?: string, options?: ApiRequestOptions) {
+  const query = workspaceId ? `?${new URLSearchParams({ workspace_id: workspaceId })}` : "";
+  return fetchJson<CleanupTasksResponse>(`/api/v1/github/cleanup/review-tasks${query}`, {
     ...options,
     init: { method: "POST", ...(options?.init ?? {}) },
   });
 }
 
-export async function cleanupClosedIssueTasks(options?: ApiRequestOptions) {
-  return fetchJson<CleanupTasksResponse>("/api/v1/github/cleanup/issue-tasks", {
+export async function cleanupClosedIssueTasks(workspaceId?: string, options?: ApiRequestOptions) {
+  const query = workspaceId ? `?${new URLSearchParams({ workspace_id: workspaceId })}` : "";
+  return fetchJson<CleanupTasksResponse>(`/api/v1/github/cleanup/issue-tasks${query}`, {
     ...options,
     init: { method: "POST", ...(options?.init ?? {}) },
   });

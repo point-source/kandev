@@ -618,6 +618,9 @@ func (c *Controller) httpCreateReviewWatch(ctx *gin.Context) {
 
 func (c *Controller) httpUpdateReviewWatch(ctx *gin.Context) {
 	id := ctx.Param("id")
+	if !c.requireReviewWatchInWorkspace(ctx, id) {
+		return
+	}
 	var req UpdateReviewWatchRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -632,6 +635,9 @@ func (c *Controller) httpUpdateReviewWatch(ctx *gin.Context) {
 
 func (c *Controller) httpDeleteReviewWatch(ctx *gin.Context) {
 	id := ctx.Param("id")
+	if !c.requireReviewWatchInWorkspace(ctx, id) {
+		return
+	}
 	if err := c.service.DeleteReviewWatch(ctx.Request.Context(), id); err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -997,6 +1003,9 @@ func (c *Controller) httpCreateIssueWatch(ctx *gin.Context) {
 
 func (c *Controller) httpUpdateIssueWatch(ctx *gin.Context) {
 	id := ctx.Param("id")
+	if !c.requireIssueWatchInWorkspace(ctx, id) {
+		return
+	}
 	var req UpdateIssueWatchRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
@@ -1016,6 +1025,9 @@ func (c *Controller) httpUpdateIssueWatch(ctx *gin.Context) {
 
 func (c *Controller) httpDeleteIssueWatch(ctx *gin.Context) {
 	id := ctx.Param("id")
+	if !c.requireIssueWatchInWorkspace(ctx, id) {
+		return
+	}
 	if err := c.service.DeleteIssueWatch(ctx.Request.Context(), id); err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1129,7 +1141,16 @@ func (c *Controller) httpResetActionPresets(ctx *gin.Context) {
 // watch lived in a workspace they no longer have open. A future
 // multi-tenant rollout would add an optional workspace_id query param.
 func (c *Controller) httpCleanupReviewTasks(ctx *gin.Context) {
-	deleted, err := c.service.CleanupAllReviewTasks(ctx.Request.Context())
+	workspaceID := ctx.Query("workspace_id")
+	var (
+		deleted int
+		err     error
+	)
+	if workspaceID == "" {
+		deleted, err = c.service.CleanupAllReviewTasks(ctx.Request.Context())
+	} else {
+		deleted, err = c.service.CleanupReviewTasksForWorkspace(ctx.Request.Context(), workspaceID)
+	}
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1139,7 +1160,16 @@ func (c *Controller) httpCleanupReviewTasks(ctx *gin.Context) {
 
 // httpCleanupIssueTasks mirrors httpCleanupReviewTasks for issue watches.
 func (c *Controller) httpCleanupIssueTasks(ctx *gin.Context) {
-	deleted, err := c.service.CleanupAllIssueTasks(ctx.Request.Context())
+	workspaceID := ctx.Query("workspace_id")
+	var (
+		deleted int
+		err     error
+	)
+	if workspaceID == "" {
+		deleted, err = c.service.CleanupAllIssueTasks(ctx.Request.Context())
+	} else {
+		deleted, err = c.service.CleanupIssueTasksForWorkspace(ctx.Request.Context(), workspaceID)
+	}
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

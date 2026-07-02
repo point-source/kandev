@@ -2173,6 +2173,9 @@ func (p *workspaceSettingsPatch) add(set string, arg any) {
 }
 
 func appendWorkspaceScopePatch(patch *workspaceSettingsPatch, req *UpdateWorkspaceSettingsRequest) error {
+	if err := validateWorkspaceScopePatch(req); err != nil {
+		return err
+	}
 	if req.RepoScopeMode != nil {
 		if err := appendWorkspaceScopeModePatch(patch, *req.RepoScopeMode); err != nil {
 			return err
@@ -2191,6 +2194,23 @@ func appendWorkspaceScopePatch(patch *workspaceSettingsPatch, req *UpdateWorkspa
 			return err
 		}
 		patch.add("repo_scope_repos = ?", string(raw))
+	}
+	return nil
+}
+
+func validateWorkspaceScopePatch(req *UpdateWorkspaceSettingsRequest) error {
+	if req.RepoScopeMode == nil {
+		return nil
+	}
+	mode := normalizeRepoScopeMode(*req.RepoScopeMode)
+	if mode == RepoScopeModeAll && (req.RepoScopeOrgs != nil || req.RepoScopeRepos != nil) {
+		return fmt.Errorf("%w: repo_scope_mode all cannot be patched with repo scope filters", ErrWorkspaceSettingsValidation)
+	}
+	if mode == RepoScopeModeOrgs && req.RepoScopeRepos != nil {
+		return fmt.Errorf("%w: repo_scope_mode orgs cannot be patched with repo_scope_repos", ErrWorkspaceSettingsValidation)
+	}
+	if mode == RepoScopeModeRepos && req.RepoScopeOrgs != nil {
+		return fmt.Errorf("%w: repo_scope_mode repos cannot be patched with repo_scope_orgs", ErrWorkspaceSettingsValidation)
 	}
 	return nil
 }

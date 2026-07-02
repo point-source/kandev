@@ -34,17 +34,16 @@ export function useReviewWatches(workspaceId?: string | null) {
     const scopeKey = workspaceId ?? "__all__";
     if ((loaded || loading) && loadedScopeRef.current === scopeKey) return;
     let cancelled = false;
+    loadedScopeRef.current = scopeKey;
     setReviewWatchesLoading(true);
     listReviewWatches(workspaceId ?? undefined, { cache: "no-store" })
       .then((response) => {
         if (cancelled) return;
         setReviewWatches(response?.watches ?? []);
-        loadedScopeRef.current = scopeKey;
       })
       .catch(() => {
         if (cancelled) return;
         setReviewWatches([]);
-        loadedScopeRef.current = scopeKey;
       })
       .finally(() => {
         if (cancelled) return;
@@ -65,8 +64,8 @@ export function useReviewWatches(workspaceId?: string | null) {
   );
 
   const update = useCallback(
-    async (id: string, req: UpdateReviewWatchRequest) => {
-      const watch = await updateReviewWatch(id, req);
+    async (id: string, watchWorkspaceId: string, req: UpdateReviewWatchRequest) => {
+      const watch = await updateReviewWatch(id, watchWorkspaceId, req);
       updateWatch(watch);
       return watch;
     },
@@ -74,8 +73,8 @@ export function useReviewWatches(workspaceId?: string | null) {
   );
 
   const remove = useCallback(
-    async (id: string) => {
-      await deleteReviewWatch(id);
+    async (id: string, watchWorkspaceId: string) => {
+      await deleteReviewWatch(id, watchWorkspaceId);
       removeWatch(id);
     },
     [removeWatch],

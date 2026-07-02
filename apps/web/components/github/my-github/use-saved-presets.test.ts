@@ -226,4 +226,16 @@ describe("useSavedPresets", () => {
     expect(created).toBeNull();
     expect(updateGitHubWorkspaceSettings).not.toHaveBeenCalled();
   });
+
+  it("does not remove while workspace presets are still loading", () => {
+    vi.mocked(fetchGitHubWorkspaceSettings).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useSavedPresets(WORKSPACE_ID));
+
+    act(() => {
+      result.current.remove("p_1");
+    });
+
+    expect(updateGitHubWorkspaceSettings).not.toHaveBeenCalled();
+  });
 });
