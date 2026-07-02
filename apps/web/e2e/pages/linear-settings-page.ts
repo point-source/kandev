@@ -6,6 +6,7 @@ export class LinearSettingsPage {
   readonly saveButton: Locator;
   readonly deleteButton: Locator;
   readonly statusBanner: Locator;
+  readonly workspaceTrigger: Locator;
 
   constructor(private page: Page) {
     this.secretInput = page.getByTestId("linear-secret-input");
@@ -13,6 +14,9 @@ export class LinearSettingsPage {
     this.saveButton = page.getByTestId("linear-save-button");
     this.deleteButton = page.getByTestId("linear-delete-button");
     this.statusBanner = page.getByTestId("integration-auth-status-banner");
+    this.workspaceTrigger = page
+      .getByTestId("workspace-scoped-selector")
+      .getByTitle("Switch Workspace");
   }
 
   async goto() {

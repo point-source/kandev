@@ -14,6 +14,7 @@ export type JiraAuthMethod = "api_token" | "pat" | "session_cookie";
 export type JiraInstanceType = "cloud" | "server";
 
 export interface JiraConfig {
+  workspaceId?: string;
   siteUrl: string;
   email: string;
   authMethod: JiraAuthMethod;

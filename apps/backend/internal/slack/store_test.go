@@ -205,12 +205,12 @@ func TestStore_LegacyPerWorkspaceMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if got := store.MigratedFromWorkspace(); got != "ws-new" {
-		t.Errorf("expected migration to promote ws-new (most recently updated), got %q", got)
+	if got := store.MigratedFromWorkspace(); got != "" {
+		t.Errorf("expected no singleton migration, got %q", got)
 	}
-	cfg, err := store.GetConfig(context.Background())
+	cfg, err := store.GetConfigForWorkspace(context.Background(), "ws-new")
 	if err != nil || cfg == nil {
-		t.Fatalf("get post-migration: cfg=%v err=%v", cfg, err)
+		t.Fatalf("get workspace config: cfg=%v err=%v", cfg, err)
 	}
 	if cfg.UtilityAgentID != "ua-new" || cfg.CommandPrefix != "!kandev" || cfg.PollIntervalSeconds != 60 {
 		t.Errorf("expected ws-new fields preserved, got %+v", cfg)

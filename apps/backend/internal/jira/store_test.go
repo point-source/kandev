@@ -213,18 +213,18 @@ func TestStore_MigrateLegacyPerWorkspaceTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if got := store.MigratedFromWorkspace(); got != "ws-new" {
-		t.Errorf("expected migration source ws-new, got %q", got)
+	if got := store.MigratedFromWorkspace(); got != "" {
+		t.Errorf("expected no singleton migration, got %q", got)
 	}
-	cfg, err := store.GetConfig(context.Background())
+	cfg, err := store.GetConfigForWorkspace(context.Background(), "ws-new")
 	if err != nil {
-		t.Fatalf("get singleton: %v", err)
+		t.Fatalf("get workspace config: %v", err)
 	}
 	if cfg == nil {
-		t.Fatal("expected singleton row after migration")
+		t.Fatal("expected workspace row after schema init")
 	}
 	if cfg.SiteURL != "https://new.atlassian.net" {
-		t.Errorf("expected newest row promoted, got SiteURL=%q", cfg.SiteURL)
+		t.Errorf("expected workspace row preserved, got SiteURL=%q", cfg.SiteURL)
 	}
 }
 
@@ -312,15 +312,15 @@ func TestStore_MigrateLegacyPerWorkspaceTable_PreHealthColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore on pre-health-columns schema: %v", err)
 	}
-	if got := store.MigratedFromWorkspace(); got != "ws-1" {
-		t.Errorf("expected migration source ws-1, got %q", got)
+	if got := store.MigratedFromWorkspace(); got != "" {
+		t.Errorf("expected no singleton migration, got %q", got)
 	}
-	cfg, err := store.GetConfig(context.Background())
+	cfg, err := store.GetConfigForWorkspace(context.Background(), "ws-1")
 	if err != nil {
-		t.Fatalf("get singleton: %v", err)
+		t.Fatalf("get workspace config: %v", err)
 	}
 	if cfg == nil {
-		t.Fatal("expected singleton row after migration")
+		t.Fatal("expected workspace row after schema init")
 	}
 	if cfg.SiteURL != "https://acme.atlassian.net" {
 		t.Errorf("expected SiteURL preserved, got %q", cfg.SiteURL)

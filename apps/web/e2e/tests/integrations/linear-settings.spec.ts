@@ -45,6 +45,27 @@ test.describe("Linear settings", () => {
     await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
   });
 
+  test("workspace selector scopes the saved credentials form", async ({ testPage, apiClient }) => {
+    const other = await apiClient.createWorkspace("Linear Secondary Workspace");
+    await apiClient.mockLinearSetTeams([{ id: "team-1", key: "ENG", name: "Engineering" }]);
+
+    const settings = new LinearSettingsPage(testPage);
+    await settings.goto();
+
+    await settings.secretInput.fill("lin_api_default");
+    await settings.saveButton.click();
+    await expect(settings.deleteButton).toBeVisible();
+    await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
+
+    await settings.workspaceTrigger.click();
+    await testPage.getByRole("menuitem", { name: new RegExp(other.name) }).click();
+
+    await expect(settings.secretInput).toHaveValue("");
+    await expect(settings.saveButton).toBeDisabled();
+    await expect(settings.deleteButton).toHaveCount(0);
+    await expect(testPage.getByText(/leave blank to keep the current value/i)).toHaveCount(0);
+  });
+
   test("test connection surfaces inline success and failure", async ({ testPage, apiClient }) => {
     const settings = new LinearSettingsPage(testPage);
     await settings.goto();

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -51,7 +52,7 @@ func (c *Controller) RegisterHTTPRoutes(router *gin.Engine) {
 // --- HTTP handlers ---
 
 func (c *Controller) httpGetConfig(ctx *gin.Context) {
-	cfg, err := c.service.GetConfig(ctx.Request.Context())
+	cfg, err := c.service.GetConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx))
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -69,7 +70,7 @@ func (c *Controller) httpSetConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	cfg, err := c.service.SetConfig(ctx.Request.Context(), &req)
+	cfg, err := c.service.SetConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), &req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrInvalidConfig) {
@@ -82,7 +83,7 @@ func (c *Controller) httpSetConfig(ctx *gin.Context) {
 }
 
 func (c *Controller) httpDeleteConfig(ctx *gin.Context) {
-	if err := c.service.DeleteConfig(ctx.Request.Context()); err != nil {
+	if err := c.service.DeleteConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx)); err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -95,7 +96,7 @@ func (c *Controller) httpTestConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	result, err := c.service.TestConnection(ctx.Request.Context(), &req)
+	result, err := c.service.TestConnectionForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), &req)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -104,7 +105,12 @@ func (c *Controller) httpTestConfig(ctx *gin.Context) {
 }
 
 func (c *Controller) httpListProjects(ctx *gin.Context) {
-	projects, err := c.service.ListProjects(ctx.Request.Context())
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	projects, err := client.ListProjects(ctx.Request.Context())
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -126,7 +132,7 @@ func (c *Controller) httpSearchTickets(ctx *gin.Context) {
 	jql := ctx.Query("jql")
 	pageToken := ctx.Query("page_token")
 	maxResults, _ := strconv.Atoi(ctx.Query("max_results"))
-	result, err := c.service.SearchTickets(ctx.Request.Context(), jql, pageToken, maxResults)
+	result, err := c.service.SearchTicketsForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), jql, pageToken, maxResults)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -136,7 +142,12 @@ func (c *Controller) httpSearchTickets(ctx *gin.Context) {
 
 func (c *Controller) httpGetTicket(ctx *gin.Context) {
 	key := ctx.Param("key")
-	ticket, err := c.service.GetTicket(ctx.Request.Context(), key)
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	ticket, err := client.GetTicket(ctx.Request.Context(), key)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -153,11 +164,20 @@ func (c *Controller) httpDoTransition(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "transitionId required"})
 		return
 	}
-	if err := c.service.DoTransition(ctx.Request.Context(), key, req.TransitionID); err != nil {
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	if err := client.DoTransition(ctx.Request.Context(), key, req.TransitionID); err != nil {
 		c.writeClientError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, gin.H{"transitioned": true})
+}
+
+func (c *Controller) workspaceID(ctx *gin.Context) string {
+	return strings.TrimSpace(ctx.Query("workspace_id"))
 }
 
 // --- Issue watch HTTP handlers ---

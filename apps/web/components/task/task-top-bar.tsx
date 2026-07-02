@@ -128,8 +128,8 @@ function IssueTrackerButtons({
   workspaceId: string | null | undefined;
   taskTitle: string | null | undefined;
 }) {
-  const jiraAvailable = useJiraAvailable();
-  const linearAvailable = useLinearAvailable();
+  const jiraAvailable = useJiraAvailable(workspaceId);
+  const linearAvailable = useLinearAvailable(workspaceId);
   const jiraKey = extractJiraKey(taskTitle);
   const linearKey = extractLinearKey(taskTitle);
 

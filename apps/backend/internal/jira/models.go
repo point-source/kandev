@@ -34,10 +34,11 @@ const (
 	InstanceTypeServer = "server"
 )
 
-// JiraConfig is the install-wide configuration for the Jira integration. The
-// secret value (API token, PAT, or session cookie) is stored separately in the
-// encrypted secret store under SecretKey.
+// JiraConfig is the workspace-scoped configuration for the Jira integration.
+// The secret value (API token, PAT, or session cookie) is stored separately in
+// the encrypted secret store.
 type JiraConfig struct {
+	WorkspaceID       string `json:"workspaceId,omitempty" db:"workspace_id"`
 	SiteURL           string `json:"siteUrl" db:"site_url"`
 	Email             string `json:"email" db:"email"`
 	AuthMethod        string `json:"authMethod" db:"auth_method"`
@@ -146,15 +147,18 @@ type SearchResult struct {
 	NextPageToken string       `json:"nextPageToken,omitempty"`
 }
 
-// SecretKey is the secret-store key used for the install-wide Jira token.
-// Centralised so that the service, store and provider migration agree.
+// SecretKey is the legacy secret-store key used for the old install-wide Jira
+// token. New workspace-scoped configs use SecretKeyForWorkspace.
 const SecretKey = "jira:singleton:token"
 
-// LegacySecretKeyForWorkspace returns the pre-singleton per-workspace secret
-// key. Only used by the one-shot startup migration in provider.go to copy an
-// existing token over to SecretKey.
-func LegacySecretKeyForWorkspace(workspaceID string) string {
+// SecretKeyForWorkspace returns the workspace-scoped Jira secret key.
+func SecretKeyForWorkspace(workspaceID string) string {
 	return "jira:" + workspaceID + ":token"
+}
+
+// LegacySecretKeyForWorkspace is kept for older tests/callers.
+func LegacySecretKeyForWorkspace(workspaceID string) string {
+	return SecretKeyForWorkspace(workspaceID)
 }
 
 // DefaultIssueWatchPollInterval is the polling cadence assigned to a watcher

@@ -55,13 +55,16 @@ function NotConfiguredNotice() {
   );
 }
 
-async function loadUserProjects(): Promise<JiraProject[]> {
+async function loadUserProjects(workspaceId: string): Promise<JiraProject[]> {
   const [{ projects: all }, search] = await Promise.all([
-    listJiraProjects(),
-    searchJiraTickets({
-      jql: "(assignee = currentUser() OR reporter = currentUser()) ORDER BY updated DESC",
-      maxResults: 100,
-    }),
+    listJiraProjects({ workspaceId }),
+    searchJiraTickets(
+      {
+        jql: "(assignee = currentUser() OR reporter = currentUser()) ORDER BY updated DESC",
+        maxResults: 100,
+      },
+      { workspaceId },
+    ),
   ]);
   const userKeys = new Set(search.tickets.map((t) => t.projectKey));
   return (all ?? []).filter((p) => userKeys.has(p.key));
@@ -81,14 +84,14 @@ function useJiraPageData(workspaceId?: string) {
         return;
       }
       try {
-        const cfg = await getJiraConfig();
+        const cfg = await getJiraConfig({ workspaceId });
         if (cancelled) return;
         const ok = !!cfg && cfg.hasSecret;
         setConfigured(ok);
         setDefaultProjectKey(cfg?.defaultProjectKey ?? "");
         if (ok) {
           try {
-            const list = await loadUserProjects();
+            const list = await loadUserProjects(workspaceId);
             if (!cancelled) setProjects(list);
           } catch {
             // Non-fatal: pill will just show empty list. Users can still filter by other dims.

@@ -56,7 +56,7 @@ func (c *Controller) RegisterHTTPRoutes(router *gin.Engine) {
 // --- HTTP handlers ---
 
 func (c *Controller) httpGetConfig(ctx *gin.Context) {
-	cfg, err := c.service.GetConfig(ctx.Request.Context())
+	cfg, err := c.service.GetConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx))
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -74,7 +74,7 @@ func (c *Controller) httpSetConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	cfg, err := c.service.SetConfig(ctx.Request.Context(), &req)
+	cfg, err := c.service.SetConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), &req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrInvalidConfig) {
@@ -87,7 +87,7 @@ func (c *Controller) httpSetConfig(ctx *gin.Context) {
 }
 
 func (c *Controller) httpDeleteConfig(ctx *gin.Context) {
-	if err := c.service.DeleteConfig(ctx.Request.Context()); err != nil {
+	if err := c.service.DeleteConfigForWorkspace(ctx.Request.Context(), c.workspaceID(ctx)); err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -100,7 +100,7 @@ func (c *Controller) httpTestConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	result, err := c.service.TestConnection(ctx.Request.Context(), &req)
+	result, err := c.service.TestConnectionForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), &req)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -109,7 +109,12 @@ func (c *Controller) httpTestConfig(ctx *gin.Context) {
 }
 
 func (c *Controller) httpListTeams(ctx *gin.Context) {
-	teams, err := c.service.ListTeams(ctx.Request.Context())
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	teams, err := client.ListTeams(ctx.Request.Context())
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -123,7 +128,12 @@ func (c *Controller) httpListStates(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": teamKeyRequired})
 		return
 	}
-	states, err := c.service.ListStates(ctx.Request.Context(), teamKey)
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	states, err := client.ListStates(ctx.Request.Context(), teamKey)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -137,7 +147,12 @@ func (c *Controller) httpListLabels(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": teamKeyRequired})
 		return
 	}
-	labels, err := c.service.ListLabels(ctx.Request.Context(), teamKey)
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	labels, err := client.ListLabels(ctx.Request.Context(), teamKey)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -151,7 +166,12 @@ func (c *Controller) httpListUsers(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": teamKeyRequired})
 		return
 	}
-	users, err := c.service.ListUsers(ctx.Request.Context(), teamKey)
+	client, err := c.service.clientFor(ctx.Request.Context(), c.workspaceID(ctx))
+	if err != nil {
+		c.writeClientError(ctx, err)
+		return
+	}
+	users, err := client.ListUsers(ctx.Request.Context(), teamKey)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
@@ -178,12 +198,16 @@ func (c *Controller) httpSearchIssues(ctx *gin.Context) {
 	}
 	pageToken := ctx.Query("page_token")
 	maxResults, _ := strconv.Atoi(ctx.Query("max_results"))
-	result, err := c.service.SearchIssues(ctx.Request.Context(), filter, pageToken, maxResults)
+	result, err := c.service.SearchIssuesForWorkspace(ctx.Request.Context(), c.workspaceID(ctx), filter, pageToken, maxResults)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
 	}
 	ctx.JSON(http.StatusOK, result)
+}
+
+func (c *Controller) workspaceID(ctx *gin.Context) string {
+	return strings.TrimSpace(ctx.Query("workspace_id"))
 }
 
 // parseSearchNumericFilters parses priority + estimate query params onto the

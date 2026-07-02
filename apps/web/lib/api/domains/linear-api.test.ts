@@ -72,6 +72,12 @@ describe("getLinearConfig", () => {
     expect(lastCall().url).toBe(CONFIG_URL);
   });
 
+  it("scopes config reads to a workspace when provided", async () => {
+    fetchSpy.mockResolvedValueOnce(noContent());
+    await getLinearConfig({ workspaceId: "ws-123" });
+    expect(lastCall().url).toBe(`${CONFIG_URL}?workspace_id=ws-123`);
+  });
+
   it("returns the parsed config on 200", async () => {
     fetchSpy.mockResolvedValueOnce(
       jsonResponse({
@@ -133,6 +139,12 @@ describe("listLinearTeams + listLinearStates", () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse({ states: [] }));
     await listLinearStates("ENG");
     expect(lastCall().url).toBe(`${BASE}/states?team_key=ENG`);
+  });
+
+  it("keeps existing query params when appending workspace_id", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ states: [] }));
+    await listLinearStates("ENG", { workspaceId: "ws-123" });
+    expect(lastCall().url).toBe(`${BASE}/states?team_key=ENG&workspace_id=ws-123`);
   });
 });
 

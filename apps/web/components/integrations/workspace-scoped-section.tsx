@@ -47,7 +47,7 @@ export function WorkspaceScopedSection({
   return (
     <div className="space-y-3">
       {showSelector && (
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex items-center gap-3 text-sm" data-testid="workspace-scoped-selector">
           <span className="text-muted-foreground">{label}</span>
           <WorkspaceSwitcher
             workspaces={workspaces}
