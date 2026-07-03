@@ -1,11 +1,20 @@
+import { act } from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentProfile } from "@/lib/state/slices/office/types";
 import { agentProfileId, workspaceId } from "@/lib/types/ids";
+import { listAgentProfiles } from "@/lib/api/domains/office-api";
 
 const routerMock = vi.hoisted(() => ({
   push: vi.fn(),
 }));
+
+const defaultWorkspaceId = workspaceId("workspace-1");
+const staleWorkspaceId = workspaceId("old-workspace");
+const defaultAgentId = "claude";
+const defaultAgentDisplayName = "Claude";
+const defaultAgentModel = "claude-sonnet-4-5";
+const timestamp = "2026-01-01T00:00:00Z";
 
 const state = {
   appSidebar: {
@@ -15,12 +24,17 @@ const state = {
   },
   office: {
     agentProfiles: [] as AgentProfile[],
-    inboxItems: [],
+    projects: [] as Array<unknown>,
+    inboxItems: [] as Array<unknown>,
+    inboxCount: 0,
   },
   workspaces: {
-    activeId: "workspace-1" as string | null,
+    activeId: defaultWorkspaceId as string | null,
   },
   setOfficeAgentProfiles: vi.fn(),
+  setProjects: vi.fn(),
+  setInboxItems: vi.fn(),
+  setInboxCount: vi.fn(),
   toggleAppSidebarSection: vi.fn(),
   setAppSidebarCollapsed: vi.fn(),
   sessions: {
@@ -30,6 +44,35 @@ const state = {
     items: {},
   },
 };
+
+const noAgentsText = "No agents yet";
+const createAgentProfile = ({
+  id,
+  workspace,
+  name,
+}: {
+  id: string;
+  workspace: string;
+  name: string;
+}): AgentProfile =>
+  ({
+    id: agentProfileId(id),
+    workspaceId: workspaceId(workspace),
+    name,
+    role: "worker",
+    status: "idle",
+    budgetMonthlyCents: 0,
+    maxConcurrentSessions: 1,
+    agentId: defaultAgentId,
+    agentDisplayName: defaultAgentDisplayName,
+    model: defaultAgentModel,
+    allowIndexing: false,
+    autoApprove: false,
+    cliFlags: [],
+    cliPassthrough: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }) as AgentProfile;
 
 vi.mock("@/lib/routing/client-router", () => ({
   usePathname: () => "/office",
@@ -50,6 +93,13 @@ vi.mock("@/lib/api/domains/office-api", () => ({
 
 vi.mock("@/components/state-provider", () => ({
   useAppStore: (selector: (s: typeof state) => unknown) => selector(state),
+  useAppStoreApi: () => ({
+    getState: () => ({
+      workspaces: {
+        activeId: state.workspaces.activeId,
+      },
+    }),
+  }),
 }));
 
 vi.mock("@kandev/ui/collapsible", () => ({
@@ -70,7 +120,10 @@ describe("AgentsSection", () => {
     cleanup();
     vi.clearAllMocks();
     state.office.agentProfiles = [];
-    state.workspaces.activeId = "workspace-1";
+    state.office.projects = [];
+    state.office.inboxItems = [];
+    state.office.inboxCount = 0;
+    state.workspaces.activeId = defaultWorkspaceId;
   });
 
   it("renders Agent Topology as the header action before Add agent", () => {
@@ -95,29 +148,61 @@ describe("AgentsSection", () => {
   it("does not render stale agent links when no office workspace is active", () => {
     state.workspaces.activeId = null;
     state.office.agentProfiles = [
-      {
-        id: agentProfileId("stale-agent"),
-        workspaceId: workspaceId("old-workspace"),
-        name: "Stale Agent",
-        role: "worker",
-        status: "idle",
-        budgetMonthlyCents: 0,
-        maxConcurrentSessions: 1,
-        agentId: "claude",
-        agentDisplayName: "Claude",
-        model: "claude-sonnet-4-5",
-        allowIndexing: false,
-        autoApprove: false,
-        cliFlags: [],
-        cliPassthrough: false,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
+      createAgentProfile({ id: "stale-agent", workspace: staleWorkspaceId, name: "Stale Agent" }),
     ];
 
     render(<AgentsSection collapsed={false} />);
 
     expect(screen.queryByRole("link", { name: /stale agent/i })).toBeNull();
-    expect(screen.getByText("No agents yet")).toBeTruthy();
+    expect(screen.getByText(noAgentsText)).toBeTruthy();
+  });
+
+  it("does not overwrite stale agent state when workspace changes mid-fetch", async () => {
+    let resolveAgents: (value: { agents: AgentProfile[] }) => void = () => {};
+    const pending = new Promise<{ agents: AgentProfile[] }>((resolve) => {
+      resolveAgents = resolve;
+    });
+
+    vi.mocked(listAgentProfiles).mockReturnValue(pending);
+
+    state.workspaces.activeId = staleWorkspaceId;
+    render(<AgentsSection collapsed={false} />);
+
+    state.workspaces.activeId = null;
+    const staleAgents = {
+      agents: [
+        createAgentProfile({ id: "race-agent", workspace: staleWorkspaceId, name: "Race Agent" }),
+      ],
+    };
+
+    await act(async () => {
+      resolveAgents(staleAgents);
+      await pending;
+    });
+
+    expect(state.setOfficeAgentProfiles).not.toHaveBeenCalled();
+  });
+
+  it("clears all office data when workspace becomes inactive", () => {
+    state.workspaces.activeId = defaultWorkspaceId;
+    state.office.agentProfiles = [
+      createAgentProfile({
+        id: "active-agent",
+        workspace: defaultWorkspaceId,
+        name: "Active Agent",
+      }),
+    ];
+    state.office.projects = [{ id: "project-1" }];
+    state.office.inboxItems = [{ id: "item-1" }];
+    state.office.inboxCount = 2;
+
+    const { rerender } = render(<AgentsSection collapsed={false} />);
+    state.workspaces.activeId = null;
+    rerender(<AgentsSection collapsed={false} />);
+
+    expect(state.setOfficeAgentProfiles).toHaveBeenCalledWith([]);
+    expect(state.setProjects).toHaveBeenCalledWith([]);
+    expect(state.setInboxItems).toHaveBeenCalledWith([]);
+    expect(state.setInboxCount).toHaveBeenCalledWith(0);
   });
 });
