@@ -192,7 +192,7 @@ describe("AppSidebarWorkspacePicker — workspace select", () => {
     render(<AppSidebarWorkspacePicker />);
 
     const trigger = screen.getByTestId("sidebar-workspace-trigger");
-    expect(trigger).toHaveAttribute("aria-label", "Switch workspace");
+    expect(trigger.getAttribute("aria-label")).toBe("Switch workspace");
     expect(trigger.textContent).toContain("Default Workspace");
     expect(screen.getByTestId("sidebar-workspace-trigger-chevron")).not.toBeNull();
   });

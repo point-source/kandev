@@ -419,7 +419,19 @@ func (s *Service) ListProjects(ctx context.Context) ([]JiraProject, error) {
 // used by the ticket-list status filter so users can filter by the real
 // statuses in the selected project rather than the three coarse categories.
 func (s *Service) ListProjectStatuses(ctx context.Context, projectKey string) ([]JiraStatus, error) {
-	client, err := s.clientFor(ctx)
+	workspaceID, err := s.defaultWorkspaceID()
+	if err != nil {
+		return nil, err
+	}
+	return s.ListProjectStatusesForWorkspace(ctx, workspaceID, projectKey)
+}
+
+func (s *Service) ListProjectStatusesForWorkspace(ctx context.Context, workspaceID, projectKey string) ([]JiraStatus, error) {
+	workspaceID, err := s.normalizeWorkspaceID(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := s.clientFor(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}

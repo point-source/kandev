@@ -120,7 +120,11 @@ func (c *Controller) httpListProjects(ctx *gin.Context) {
 
 func (c *Controller) httpListProjectStatuses(ctx *gin.Context) {
 	key := ctx.Param("key")
-	statuses, err := c.service.ListProjectStatuses(ctx.Request.Context(), key)
+	statuses, err := c.service.ListProjectStatusesForWorkspace(
+		ctx.Request.Context(),
+		c.workspaceID(ctx),
+		key,
+	)
 	if err != nil {
 		c.writeClientError(ctx, err)
 		return
