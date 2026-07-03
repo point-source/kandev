@@ -55,11 +55,16 @@ type CreateInstanceRequest struct {
 	AssumeMcpSse           bool              `json:"assume_mcp_sse,omitempty"`       // Assume agent supports SSE MCP servers
 	AssumeMcpHttp          bool              `json:"assume_mcp_http,omitempty"`      // Assume agent supports HTTP MCP servers
 	McpMode                string            `json:"mcp_mode,omitempty"`             // MCP tool mode: "task" (default), "config", or "office"
-	// RequiresProcessKill forces agentctl to kill the agent's process group
-	// (not just close stdin) on shutdown. Required for agents whose runtime
-	// keeps child processes (e.g. MCP servers) alive when stdin closes —
-	// notably opencode acp.
+	// RequiresProcessKill tells agentctl to skip the graceful stdin-close wait
+	// and reap the agent process group immediately. Required for agents whose
+	// runtime keeps child processes (e.g. MCP servers) alive when stdin closes
+	// — notably opencode acp.
 	RequiresProcessKill bool `json:"requires_process_kill,omitempty"`
+
+	// StripEnv lists environment variables to strip from the agent's child
+	// process environment entirely (not just set to empty). Propagated from
+	// RuntimeConfig.StripEnv by the lifecycle executors.
+	StripEnv []string `json:"strip_env,omitempty"`
 
 	// BaseBranches maps RepositoryName → base branch ref for the task's
 	// per-repo diff stats. The empty key "" applies to the root /

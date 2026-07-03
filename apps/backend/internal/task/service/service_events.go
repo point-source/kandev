@@ -31,6 +31,14 @@ func (s *Service) PublishTaskDeleted(ctx context.Context, task *models.Task) {
 
 // publishTaskEvent publishes task events to the event bus
 func (s *Service) publishTaskEvent(ctx context.Context, eventType string, task *models.Task, oldState *v1.TaskState, oldWorkflowIDs ...string) {
+	s.publishTaskEventWithExtra(ctx, eventType, task, oldState, nil, oldWorkflowIDs...)
+}
+
+// publishTaskEventWithExtra is publishTaskEvent with caller-supplied extra
+// fields merged into the payload (e.g. a deletion reason on task.deleted).
+// Caller-supplied keys must not shadow the standard task fields written below
+// (task_id, title, workflow_id, etc.); colliding keys silently overwrite them.
+func (s *Service) publishTaskEventWithExtra(ctx context.Context, eventType string, task *models.Task, oldState *v1.TaskState, extra map[string]interface{}, oldWorkflowIDs ...string) {
 	if s.eventBus == nil {
 		return
 	}
@@ -63,10 +71,11 @@ func (s *Service) publishTaskEvent(ctx context.Context, eventType string, task *
 	// carries the full per-task repository list — matching the HTTP DTO and
 	// preventing the frontend from collapsing multi-repo tasks down to the
 	// primary repo on WS updates.
-	repos := taskRepositoriesForEvent(ctx, s, task)
-	if len(repos) > 0 {
-		data["repository_id"] = repos[0].RepositoryID
+	if repos, ok := taskRepositoriesForEvent(ctx, s, task); ok {
 		data["repositories"] = serializeTaskRepositories(repos)
+		if len(repos) > 0 {
+			data["repository_id"] = repos[0].RepositoryID
+		}
 	}
 	if task.Metadata != nil {
 		data["metadata"] = task.Metadata
@@ -78,6 +87,9 @@ func (s *Service) publishTaskEvent(ctx context.Context, eventType string, task *
 	if len(oldWorkflowIDs) > 0 && oldWorkflowIDs[0] != "" && oldWorkflowIDs[0] != task.WorkflowID {
 		data["old_workflow_id"] = oldWorkflowIDs[0]
 	}
+	for k, v := range extra {
+		data[k] = v
+	}
 
 	event := bus.NewEvent(eventType, "task-service", data)
 	if err := s.eventBus.Publish(ctx, eventType, event); err != nil {
@@ -85,7 +97,28 @@ func (s *Service) publishTaskEvent(ctx context.Context, eventType string, task *
 			zap.String("event_type", eventType),
 			zap.String("task_id", task.ID),
 			zap.Error(err))
+		return
 	}
+	s.logTaskLifecycleEventPublished(eventType, task, data)
+}
+
+func (s *Service) logTaskLifecycleEventPublished(eventType string, task *models.Task, data map[string]interface{}) {
+	switch eventType {
+	case events.TaskCreated, events.TaskUpdated, events.TaskStateChanged, events.TaskDeleted:
+	default:
+		return
+	}
+	s.logger.Debug("task lifecycle event published",
+		zap.String("event_type", eventType),
+		zap.String("task_id", task.ID),
+		zap.Any("state", data["state"]),
+		zap.Any("workflow_step_id", data["workflow_step_id"]),
+		zap.Any("primary_session_id", data["primary_session_id"]),
+		zap.Any("primary_session_state", data["primary_session_state"]),
+		zap.Any("session_count", data["session_count"]),
+		zap.Any("old_state", data["old_state"]),
+		zap.Any("new_state", data["new_state"]),
+	)
 }
 
 // addTaskSessionEventFields merges session count, primary session info, and
@@ -104,6 +137,8 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 	}
 	sessionInfo, ok := primarySessionInfoMap[taskID]
 	if !ok || sessionInfo == nil {
+		data["primary_session_id"] = nil
+		data["primary_session_state"] = nil
 		return
 	}
 	data["primary_session_id"] = sessionInfo.ID
@@ -112,6 +147,8 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 	}
 	if sessionInfo.State != "" {
 		data["primary_session_state"] = string(sessionInfo.State)
+	} else {
+		data["primary_session_state"] = nil
 	}
 	if sessionInfo.ExecutorID != "" {
 		data["primary_executor_id"] = sessionInfo.ExecutorID
@@ -135,15 +172,15 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 // position. Prefers Task.Repositories when already loaded; falls back to a
 // lookup so publishers that pass a task without eagerly loaded repositories
 // (e.g. the orchestrator's raw repo.GetTask) still emit per-repo data.
-func taskRepositoriesForEvent(ctx context.Context, s *Service, task *models.Task) []*models.TaskRepository {
+func taskRepositoriesForEvent(ctx context.Context, s *Service, task *models.Task) ([]*models.TaskRepository, bool) {
 	if len(task.Repositories) > 0 {
-		return task.Repositories
+		return task.Repositories, true
 	}
 	repos, err := s.taskRepos.ListTaskRepositories(ctx, task.ID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return repos
+	return repos, true
 }
 
 // serializeTaskRepositories returns the WS-shaped repositories array. Mirrors

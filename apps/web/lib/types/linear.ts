@@ -107,6 +107,15 @@ export interface LinearSearchFilter {
   estimateMax?: number;
 }
 
+export type LinearIssueSortBy =
+  | ""
+  | "priority"
+  | "priority_asc"
+  | "created_desc"
+  | "created_asc"
+  | "updated_desc"
+  | "updated_asc";
+
 export interface LinearSearchResult {
   issues: LinearIssue[];
   maxResults: number;
@@ -124,6 +133,14 @@ export interface LinearIssueWatch {
   workspaceId: string;
   workflowId: string;
   workflowStepId: string;
+  /**
+   * Optional repository binding. Empty string = unbound: watcher-created tasks
+   * launch in a blank scratch checkout (historical behaviour). When set, tasks
+   * launch in an isolated worktree of this repository cut from `baseBranch`.
+   */
+  repositoryId: string;
+  /** Branch the per-task worktree is cut from; empty = the repo's default. */
+  baseBranch: string;
   filter: LinearSearchFilter;
   agentProfileId: string;
   executorProfileId: string;
@@ -136,6 +153,8 @@ export interface LinearIssueWatch {
    * rejects values ≤ 0.
    */
   maxInflightTasks?: number | null;
+  /** Dispatch order for matched issues under the in-flight cap; empty = Linear default order. */
+  sortBy?: LinearIssueSortBy;
   /** Last poll timestamp, or null when the watch has never run. */
   lastPolledAt?: string | null;
   createdAt: string;
@@ -146,6 +165,10 @@ export interface CreateLinearIssueWatchInput {
   workspaceId: string;
   workflowId: string;
   workflowStepId: string;
+  /** Optional repository binding; empty/omitted = unbound (repo-less task). */
+  repositoryId?: string;
+  /** Base branch for the worktree; empty defaults to the repo's default branch. */
+  baseBranch?: string;
   filter: LinearSearchFilter;
   agentProfileId?: string;
   executorProfileId?: string;
@@ -153,6 +176,8 @@ export interface CreateLinearIssueWatchInput {
   pollIntervalSeconds?: number;
   /** Per-watch throttle cap; null = uncapped, positive int = cap. */
   maxInflightTasks?: number | null;
+  /** Dispatch order for matched issues under the in-flight cap; empty = Linear default order. */
+  sortBy?: LinearIssueSortBy;
   enabled?: boolean;
 }
 
@@ -160,6 +185,8 @@ export interface CreateLinearIssueWatchInput {
 export interface UpdateLinearIssueWatchInput {
   workflowId?: string;
   workflowStepId?: string;
+  repositoryId?: string;
+  baseBranch?: string;
   filter?: LinearSearchFilter;
   agentProfileId?: string;
   executorProfileId?: string;
@@ -168,4 +195,6 @@ export interface UpdateLinearIssueWatchInput {
   pollIntervalSeconds?: number;
   /** Per-watch throttle cap; null = uncapped, positive int = cap. */
   maxInflightTasks?: number | null;
+  /** Dispatch order for matched issues under the in-flight cap; empty = Linear default order. */
+  sortBy?: LinearIssueSortBy;
 }

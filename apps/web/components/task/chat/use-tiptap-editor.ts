@@ -23,8 +23,10 @@ import { getChatDraftContent, setChatDraftContent } from "@/lib/local-storage";
 import { getMarkdownText, textToHtml, handleEditorPaste } from "./tiptap-helpers";
 import { CodeBlockView } from "./tiptap-code-block-view";
 import { ContextMention } from "./tiptap-mention-extension";
+import { SlashCommandNode } from "./tiptap-slash-command-extension";
 import type { ContextFile } from "@/lib/state/context-files-store";
 import type { TaskMentionData } from "@/hooks/use-inline-mention";
+import type { SlashCommand } from "./slash-command-types";
 
 export type TipTapInputHandle = {
   focus: () => void;
@@ -40,6 +42,7 @@ export type TipTapInputHandle = {
 };
 
 const lowlightInstance = createLowlight(common);
+export const TIPTAP_EDITOR_TEXT_SIZE_CLASS = "text-base leading-relaxed lg:text-sm";
 
 /**
  * Custom Placeholder extension that reads the current placeholder from
@@ -118,6 +121,7 @@ type UseTipTapEditorOptions = {
   mentionSuggestion: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   slashSuggestion: any;
+  slashCommands: readonly SlashCommand[];
   /** True when a slash/@ suggestion menu is open with selectable items. Enter
    *  must defer to the suggestion plugin so the highlighted item is inserted
    *  instead of submitting the message. */
@@ -148,6 +152,8 @@ function useTipTapRefs(opts: UseTipTapEditorOptions) {
   const onPlanModeChangeRef = useRef(opts.onPlanModeChange);
   const isSuggestionMenuOpenRef = useRef(opts.isSuggestionMenuOpen);
   const getHistoryRef = useRef(opts.getHistory);
+  const slashCommandsRef = useRef(opts.slashCommands);
+  const getSlashCommandsRef = useRef(() => slashCommandsRef.current);
   const onOpenReverseSearchRef = useRef(opts.onOpenReverseSearch);
   const isReverseSearchOpenRef = useRef(opts.isReverseSearchOpen);
   const keyboardShortcuts = useAppStore((s) => s.userSettings.keyboardShortcuts);
@@ -163,6 +169,7 @@ function useTipTapRefs(opts: UseTipTapEditorOptions) {
     onPlanModeChangeRef.current = opts.onPlanModeChange;
     isSuggestionMenuOpenRef.current = opts.isSuggestionMenuOpen;
     getHistoryRef.current = opts.getHistory;
+    slashCommandsRef.current = opts.slashCommands;
     onOpenReverseSearchRef.current = opts.onOpenReverseSearch;
     isReverseSearchOpenRef.current = opts.isReverseSearchOpen;
     keyboardShortcutsRef.current = keyboardShortcuts;
@@ -178,6 +185,7 @@ function useTipTapRefs(opts: UseTipTapEditorOptions) {
     onPlanModeChangeRef,
     isSuggestionMenuOpenRef,
     getHistoryRef,
+    getSlashCommandsRef,
     onOpenReverseSearchRef,
     isReverseSearchOpenRef,
     keyboardShortcutsRef,
@@ -205,6 +213,7 @@ function buildEditorExtensions(args: {
       },
     }).configure({ lowlight: lowlightInstance }),
     DynamicPlaceholder,
+    SlashCommandNode,
     ContextMention.configure({
       suggestions: [args.mentionSuggestion, args.slashSuggestion],
     }),
@@ -224,7 +233,7 @@ function buildEditorProps(args: {
     attributes: {
       class: cn(
         "w-full h-full resize-none bg-transparent px-2 py-2 overflow-y-auto",
-        "text-sm leading-relaxed",
+        TIPTAP_EDITOR_TEXT_SIZE_CLASS,
         "placeholder:text-muted-foreground",
         "focus:outline-none",
         "disabled:cursor-not-allowed disabled:opacity-50",
@@ -263,6 +272,7 @@ export function useTipTapEditor(opts: UseTipTapEditorOptions) {
     isSuggestionMenuOpenRef: refs.isSuggestionMenuOpenRef,
     isReverseSearchOpenRef: refs.isReverseSearchOpenRef,
     getHistoryRef: refs.getHistoryRef,
+    getSlashCommandsRef: refs.getSlashCommandsRef,
     onOpenReverseSearchRef: refs.onOpenReverseSearchRef,
     onChangeRef: refs.onChangeRef,
     keyboardShortcutsRef: refs.keyboardShortcutsRef,

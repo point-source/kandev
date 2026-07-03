@@ -55,6 +55,10 @@ const (
 	agentPromptReadyInterval = 100 * time.Millisecond
 )
 
+type agentPromptStreamRecoverer interface {
+	RecoverAgentPromptStream(ctx context.Context, sessionID string) error
+}
+
 func isAgentPromptInProgressError(err error) bool {
 	return err != nil && errors.Is(err, ErrAgentPromptInProgress)
 }
@@ -144,12 +148,17 @@ func (s *Service) PrepareTaskSession(ctx context.Context, taskID string, agentPr
 
 	// Resolve agent/executor profile from task metadata if not explicitly provided
 	if agentProfileID == "" {
-		if v, ok := task.Metadata["agent_profile_id"].(string); ok && v != "" {
+		if v, ok := task.Metadata[models.MetaKeyAgentProfileID].(string); ok && v != "" {
 			agentProfileID = v
 		}
 	}
+	if executorID == "" {
+		if v, ok := task.Metadata[models.MetaKeyExecutorID].(string); ok && v != "" {
+			executorID = v
+		}
+	}
 	if executorProfileID == "" {
-		if v, ok := task.Metadata["executor_profile_id"].(string); ok && v != "" {
+		if v, ok := task.Metadata[models.MetaKeyExecutorProfileID].(string); ok && v != "" {
 			executorProfileID = v
 		}
 	}
@@ -319,8 +328,16 @@ func (s *Service) StartCreatedSession(ctx context.Context, taskID, sessionID, ag
 		}
 	}
 
-	// Transition task state: CREATED → SCHEDULING → (IN_PROGRESS via executor)
-	if err := s.taskRepo.UpdateTaskState(ctx, taskID, v1.TaskStateScheduling); err != nil {
+	// Transition task state: CREATED → SCHEDULING → (IN_PROGRESS via executor).
+	// Office tasks keep their workflow-owned status across run launches.
+	isOfficeTask, err := s.lookupOfficeTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine office task status: %w", err)
+	}
+	if isOfficeTask {
+		s.logger.Debug("skipping SCHEDULING transition for office task",
+			zap.String("task_id", taskID))
+	} else if err := s.taskRepo.UpdateTaskState(ctx, taskID, v1.TaskStateScheduling); err != nil {
 		s.logger.Warn("failed to update task state to SCHEDULING",
 			zap.String("task_id", taskID),
 			zap.Error(err))
@@ -547,6 +564,11 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		zap.Bool("auto_start", autoStart),
 		zap.Int("attachments", len(attachments)))
 
+	isOfficeTask, err := s.lookupOfficeTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine office task status: %w", err)
+	}
+
 	// Office tasks do NOT transition through SCHEDULING / IN_PROGRESS on
 	// every run. Their lifecycle status (todo / in_review / done /
 	// blocked / cancelled) reflects the *user-meaningful workflow*, not
@@ -556,7 +578,7 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 	// transition here avoids gratuitous flicker (REVIEW → SCHEDULING →
 	// IN_PROGRESS → REVIEW for a single comment-reply cycle) and matches
 	// the user's mental model.
-	if s.isOfficeTask(ctx, taskID) {
+	if isOfficeTask {
 		s.logger.Debug("skipping SCHEDULING transition for office task",
 			zap.String("task_id", taskID))
 	} else if err := s.taskRepo.UpdateTaskState(ctx, taskID, v1.TaskStateScheduling); err != nil {
@@ -581,6 +603,16 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 			zap.String("task_id", taskID),
 			zap.Error(err))
 		return nil, err
+	}
+	if executorID == "" {
+		if v, ok := task.Metadata[models.MetaKeyExecutorID].(string); ok && v != "" {
+			executorID = v
+		}
+	}
+	if executorProfileID == "" {
+		if v, ok := task.Metadata[models.MetaKeyExecutorProfileID].(string); ok && v != "" {
+			executorProfileID = v
+		}
 	}
 
 	// Override priority if provided in the request
@@ -649,7 +681,7 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 	// task, etc.) are excluded because office agents call those via the
 	// kandev CLI ($KANDEV_CLI). See docs/specs/office-agent-cli/spec.md.
 	mcpMode := ""
-	if s.isOfficeTask(ctx, taskID) {
+	if isOfficeTask {
 		mcpMode = executor.McpModeOffice
 	}
 
@@ -683,8 +715,16 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 // isOfficeTask returns true when the task has an assignee agent profile, which
 // identifies it as an office-managed task (as opposed to a kanban / quick-chat task).
 func (s *Service) isOfficeTask(ctx context.Context, taskID string) bool {
+	isOfficeTask, err := s.lookupOfficeTask(ctx, taskID)
+	return err == nil && isOfficeTask
+}
+
+func (s *Service) lookupOfficeTask(ctx context.Context, taskID string) (bool, error) {
 	dbTask, err := s.repo.GetTask(ctx, taskID)
-	return err == nil && dbTask != nil && dbTask.AssigneeAgentProfileID != ""
+	if err != nil {
+		return false, err
+	}
+	return dbTask != nil && dbTask.AssigneeAgentProfileID != "", nil
 }
 
 // prepareSessionForStart creates the session for a launch and propagates any
@@ -1207,6 +1247,7 @@ func (s *Service) advanceTaskWorkflowStep(ctx context.Context, task *models.Task
 func (s *Service) ensureSessionRunning(ctx context.Context, sessionID string, session *models.TaskSession) error {
 	// Check if agent is genuinely running (in-memory execution store, not just DB state)
 	if exec, ok := s.executor.GetExecutionBySession(sessionID); ok && exec != nil {
+		s.recoverAgentPromptStreamIfNeeded(ctx, sessionID)
 		if err := s.waitForAgentPromptReady(ctx, sessionID); err != nil {
 			return err
 		}
@@ -1270,6 +1311,21 @@ func (s *Service) ensureSessionRunning(ctx context.Context, sessionID string, se
 
 	s.logger.Debug("session resumed and ready for prompt")
 	return nil
+}
+
+func (s *Service) recoverAgentPromptStreamIfNeeded(ctx context.Context, sessionID string) {
+	if s.agentManager == nil || s.agentManager.IsAgentReadyForPrompt(ctx, sessionID) {
+		return
+	}
+	recoverer, ok := s.agentManager.(agentPromptStreamRecoverer)
+	if !ok {
+		return
+	}
+	if err := recoverer.RecoverAgentPromptStream(ctx, sessionID); err != nil {
+		s.logger.Debug("agent prompt stream recovery did not make session ready",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
 }
 
 func (s *Service) waitForAgentPromptReady(ctx context.Context, sessionID string) error {
@@ -2237,7 +2293,7 @@ func (s *Service) handlePromptError(ctx context.Context, taskID, sessionID strin
 	// in progress while it retries — so don't flap it to REVIEW here.
 	if !isTransientPromptError(err) && !errors.Is(err, lifecycle.ErrCancelEscalated) &&
 		!routingerr.IsTransientProviderError(err.Error()) {
-		_ = s.taskRepo.UpdateTaskState(ctx, taskID, v1.TaskStateReview)
+		s.writeTaskReviewState(ctx, taskID, sessionID)
 	}
 	s.completeTurnForSession(ctx, sessionID)
 	return err
@@ -2435,7 +2491,7 @@ func (s *Service) CancelAgent(ctx context.Context, sessionID string) error {
 	// cancelled turn is treated as finished work the user may want to review.
 	if session != nil {
 		s.updateTaskSessionState(ctx, session.TaskID, sessionID, models.TaskSessionStateWaitingForInput, "", true, session)
-		s.writeTaskReviewStateOnCancel(ctx, session.TaskID)
+		s.writeTaskReviewStateOnCancel(ctx, session.TaskID, sessionID)
 	}
 
 	// Record cancellation in the message history

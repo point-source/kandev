@@ -808,14 +808,57 @@ func TestStartCreatedSession_EmptyProfileFallsBackToWorkflowDefault(t *testing.T
 	}
 }
 
+func TestStartCreatedSession_OfficeTaskSkipsSchedulingState(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateCreated)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	dbTask, err := repo.GetTask(ctx, "task1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	dbTask.State = v1.TaskStateReview
+	dbTask.WorkflowStepID = "step-office"
+	dbTask.AssigneeAgentProfileID = "office-agent"
+	if err := repo.UpdateTask(ctx, dbTask); err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	taskRepo := newMockTaskRepo()
+	taskRepo.tasks["task1"] = &v1.Task{ID: "task1", Title: "Office Task", State: v1.TaskStateReview}
+	agentMgr := &mockAgentManager{repoForExecutionLookup: repo}
+	stepGetter := newMockStepGetter()
+	stepGetter.steps["step-office"] = &wfmodels.WorkflowStep{ID: "step-office", WorkflowID: "wf1"}
+	svc := createTestServiceWithScheduler(repo, stepGetter, taskRepo, agentMgr)
+	svc.messageCreator = &mockMessageCreator{}
+
+	if _, err := svc.StartCreatedSession(ctx, "task1", "session1", "profile1", "Do the work", true, false, true, nil); err != nil {
+		t.Fatalf("StartCreatedSession: %v", err)
+	}
+
+	if writes := taskRepo.stateWrites["task1"]; writes != 0 {
+		t.Fatalf("office task should not write SCHEDULING, got %d state writes", writes)
+	}
+	if got := taskRepo.tasks["task1"].State; got != v1.TaskStateReview {
+		t.Fatalf("office task state = %s, want REVIEW", got)
+	}
+}
+
 // --- recordInitialMessage ---
 
 // mockMessageCreator implements MessageCreator for testing.
 // Only CreateUserMessage is tracked; all other methods are no-op stubs.
 type mockMessageCreator struct {
-	userMessages    []mockUserMessage
-	sessionMessages []mockSessionMessage
-	userMessageErr  error
+	userMessages       []mockUserMessage
+	sessionMessages    []mockSessionMessage
+	agentMessages      []mockAgentMessage
+	agentMessageWrites int
+	agentStreamWrites  int
+	thinkingWrites     int
+	toolCallWrites     int
+	toolUpdateWrites   int
+	userMessageErr     error
 }
 
 type mockUserMessage struct {
@@ -829,6 +872,10 @@ type mockSessionMessage struct {
 	requestsInput                                   bool
 }
 
+type mockAgentMessage struct {
+	taskID, content, sessionID, turnID string
+}
+
 func (m *mockMessageCreator) CreateUserMessage(_ context.Context, taskID, content, sessionID, turnID string, metadata map[string]interface{}) error {
 	if m.userMessageErr != nil {
 		return m.userMessageErr
@@ -837,15 +884,19 @@ func (m *mockMessageCreator) CreateUserMessage(_ context.Context, taskID, conten
 	return nil
 }
 
-func (m *mockMessageCreator) CreateAgentMessage(context.Context, string, string, string, string) error {
+func (m *mockMessageCreator) CreateAgentMessage(_ context.Context, taskID, content, sessionID, turnID string) error {
+	m.agentMessages = append(m.agentMessages, mockAgentMessage{taskID, content, sessionID, turnID})
+	m.agentMessageWrites++
 	return nil
 }
 
 func (m *mockMessageCreator) CreateToolCallMessage(context.Context, string, string, string, string, string, string, string, *streams.NormalizedPayload) error {
+	m.toolCallWrites++
 	return nil
 }
 
 func (m *mockMessageCreator) UpdateToolCallMessage(context.Context, string, string, string, string, string, string, string, string, string, *streams.NormalizedPayload) error {
+	m.toolUpdateWrites++
 	return nil
 }
 
@@ -871,18 +922,22 @@ func (m *mockMessageCreator) UpdatePermissionMessage(context.Context, string, st
 }
 
 func (m *mockMessageCreator) CreateAgentMessageStreaming(context.Context, string, string, string, string, string) error {
+	m.agentStreamWrites++
 	return nil
 }
 
 func (m *mockMessageCreator) AppendAgentMessage(context.Context, string, string) error {
+	m.agentStreamWrites++
 	return nil
 }
 
 func (m *mockMessageCreator) CreateThinkingMessageStreaming(context.Context, string, string, string, string, string) error {
+	m.thinkingWrites++
 	return nil
 }
 
 func (m *mockMessageCreator) AppendThinkingMessage(context.Context, string, string) error {
+	m.thinkingWrites++
 	return nil
 }
 func (m *mockMessageCreator) InvalidateModelCache(string) {}

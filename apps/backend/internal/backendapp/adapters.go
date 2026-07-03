@@ -120,8 +120,10 @@ func (a *lifecycleAdapter) LaunchAgent(ctx context.Context, req *executor.Launch
 		WorktreeBranchPrefix: req.WorktreeBranchPrefix,
 		PullBeforeWorktree:   req.PullBeforeWorktree,
 		// Task directory mode
-		TaskDirName: req.TaskDirName,
-		RepoName:    req.RepoName,
+		TaskDirName:        req.TaskDirName,
+		RepoName:           req.RepoName,
+		BranchSlug:         req.BranchSlug,
+		BranchIdentitySlug: req.BranchIdentitySlug,
 	}
 
 	if req.RouteOverride != nil {
@@ -155,6 +157,7 @@ func (a *lifecycleAdapter) LaunchAgent(ctx context.Context, req *executor.Launch
 				RepoCleanupScript:    r.RepoCleanupScript,
 				CopyFiles:            r.CopyFiles,
 				BranchSlug:           r.BranchSlug,
+				BranchIdentitySlug:   r.BranchIdentitySlug,
 			})
 		}
 		launchReq.Repositories = specs
@@ -188,6 +191,7 @@ func (a *lifecycleAdapter) LaunchAgent(ctx context.Context, req *executor.Launch
 		for _, w := range execution.PrepareResult.Worktrees {
 			worktrees = append(worktrees, executor.RepoWorktreeResult{
 				RepositoryID:   w.RepositoryID,
+				BranchSlug:     w.BranchSlug,
 				WorktreeID:     w.WorktreeID,
 				WorktreeBranch: w.WorktreeBranch,
 				WorktreePath:   w.WorktreePath,
@@ -373,6 +377,10 @@ func (a *lifecycleAdapter) IsAgentRunningForSession(ctx context.Context, session
 // IsAgentReadyForPrompt checks if the session can accept a prompt immediately.
 func (a *lifecycleAdapter) IsAgentReadyForPrompt(ctx context.Context, sessionID string) bool {
 	return a.mgr.IsAgentReadyForPrompt(ctx, sessionID)
+}
+
+func (a *lifecycleAdapter) RecoverAgentPromptStream(ctx context.Context, sessionID string) error {
+	return a.mgr.RecoverAgentPromptStream(ctx, sessionID)
 }
 
 // IsPassthroughSession checks if the given session is running in passthrough (PTY) mode.

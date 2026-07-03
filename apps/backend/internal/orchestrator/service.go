@@ -92,6 +92,7 @@ type MessageCreator interface {
 type TurnService interface {
 	StartTurn(ctx context.Context, sessionID string) (*models.Turn, error)
 	CompleteTurn(ctx context.Context, turnID string) error
+	GetTurn(ctx context.Context, turnID string) (*models.Turn, error)
 	GetActiveTurn(ctx context.Context, sessionID string) (*models.Turn, error)
 	UpdateTurn(ctx context.Context, turn *models.Turn) error
 	// AbandonOpenTurns buries any open turns for a session by setting
@@ -132,6 +133,7 @@ type repoStore interface {
 	ListActiveTaskSessions(ctx context.Context) ([]*models.TaskSession, error)
 	ListActiveTaskSessionsByTaskID(ctx context.Context, taskID string) ([]*models.TaskSession, error)
 	CreateTaskSessionWorktree(ctx context.Context, sessionWorktree *models.TaskSessionWorktree) error
+	ListTaskSessionWorktrees(ctx context.Context, sessionID string) ([]*models.TaskSessionWorktree, error)
 	ListSessionsWithBranches(ctx context.Context) ([]models.SessionBranchInfo, error)
 	GetRepository(ctx context.Context, id string) (*models.Repository, error)
 	UpdateRepository(ctx context.Context, repository *models.Repository) error
@@ -140,6 +142,7 @@ type repoStore interface {
 	// Multi-repo task environment children
 	CreateTaskEnvironmentRepo(ctx context.Context, repo *models.TaskEnvironmentRepo) error
 	ListTaskEnvironmentRepos(ctx context.Context, envID string) ([]*models.TaskEnvironmentRepo, error)
+	UpdateTaskEnvironmentRepo(ctx context.Context, repo *models.TaskEnvironmentRepo) error
 	// Session history + plan (for context handover)
 	GetTaskPlan(ctx context.Context, taskID string) (*models.TaskPlan, error)
 }
@@ -149,6 +152,7 @@ type sessionExecutorStore interface {
 	// Session
 	GetTaskSession(ctx context.Context, id string) (*models.TaskSession, error)
 	GetActiveTaskSessionByTaskID(ctx context.Context, taskID string) (*models.TaskSession, error)
+	ListActiveTaskSessionsByTaskID(ctx context.Context, taskID string) ([]*models.TaskSession, error)
 	SetSessionPrimary(ctx context.Context, sessionID string) error
 	UpdateTaskSession(ctx context.Context, session *models.TaskSession) error
 	UpdateTaskSessionState(ctx context.Context, id string, state models.TaskSessionState, errorMessage string) error
@@ -299,6 +303,9 @@ type Service struct {
 	// dispatch pre-flight. Set via SetProfileLookup from main; nil-safe so
 	// the legacy code path (and tests without profile wiring) keep working.
 	profileLookup ProfileLookup
+	// repoChecker answers "does this bound repository still exist?" for the
+	// dispatch pre-flight. Set via SetRepositoryChecker from main; nil-safe.
+	repoChecker RepositoryChecker
 	// modelInfoLookup resolves optional model metadata from models.dev. Nil-safe;
 	// ACP context-window events remain authoritative when they include a size.
 	modelInfoMu           sync.RWMutex
@@ -358,6 +365,19 @@ type Service struct {
 
 	// Active turns map: sessionID -> turnID
 	activeTurns sync.Map
+
+	// taskRuntimeStateMu serializes task-state flips derived from session
+	// runtime state. Without it, a completion/cancel path can check for active
+	// sibling sessions just before another handler marks one RUNNING, then
+	// clobber the task back to REVIEW while work is active.
+	taskRuntimeStateMu sync.Mutex
+
+	// completedExecutions records execution IDs that have reached a terminal
+	// agent lifecycle event. Buffered stream/tool events for these executions
+	// must not wake their session back to RUNNING after the terminal path makes
+	// it promptable again. Entries expire after a short grace window so the
+	// guard does not grow without bound in long-running backend processes.
+	completedExecutions sync.Map
 
 	// Session reset flags: sessionID -> true while resetAgentContext is restarting process.
 	// Used to suppress stale ready events and avoid draining queued prompts mid-reset.
@@ -473,6 +493,12 @@ func NewService(
 	exec.SetOnSessionStateChange(func(ctx context.Context, taskID, sessionID string, state models.TaskSessionState, errorMessage string) error {
 		s.updateTaskSessionState(ctx, taskID, sessionID, state, errorMessage, true)
 		return nil
+	})
+	exec.SetOnSessionStarting(func(ctx context.Context, taskID string, session *models.TaskSession, promoteTask bool) error {
+		return s.setSessionStarting(ctx, taskID, session, promoteTask)
+	})
+	exec.SetOnTaskReviewStateReconcile(func(ctx context.Context, taskID, completedSessionID string) {
+		s.writeTaskReviewState(ctx, taskID, completedSessionID)
 	})
 	exec.SetOnLaunchFailed(s.handleSessionLaunchFailed)
 	exec.SetOnAgentStartFailed(s.handleAgentStartFailed)
@@ -1074,6 +1100,7 @@ func (s *Service) reconcileOneSessionOnStartup(ctx context.Context, running *mod
 				zap.Error(err))
 		}
 	}
+	s.abandonOpenTurnsOnStartup(ctx, sessionID, "active session reconciled to waiting")
 
 	// PRESERVE executors_running.agent_execution_id post-restart. The in-memory
 	// process is gone, but the stored ID still serves as a "this session was
@@ -1134,6 +1161,19 @@ func (s *Service) handleMissingSessionOnStartup(ctx context.Context, running *mo
 	}
 }
 
+func (s *Service) abandonOpenTurnsOnStartup(ctx context.Context, sessionID, reason string) {
+	if s.turnService == nil {
+		return
+	}
+	s.activeTurns.Delete(sessionID)
+	if err := s.turnService.AbandonOpenTurns(ctx, sessionID); err != nil {
+		s.logger.Warn("failed to abandon open turns during startup reconciliation",
+			zap.String("session_id", sessionID),
+			zap.String("reason", reason),
+			zap.Error(err))
+	}
+}
+
 func isTaskSessionNotFound(err error) bool {
 	return errors.Is(err, models.ErrTaskSessionNotFound)
 }
@@ -1148,6 +1188,7 @@ func (s *Service) handleTerminalSessionOnStartup(ctx context.Context, session *m
 			zap.String("session_id", sessionID),
 			zap.String("task_id", session.TaskID),
 			zap.String("state", string(previousState)))
+		s.abandonOpenTurnsOnStartup(ctx, sessionID, "terminal session cleanup")
 		executionID := strings.TrimSpace(running.AgentExecutionID)
 		if executionID != "" && s.agentManager != nil {
 			if err := s.agentManager.StopAgentWithReason(ctx, executionID, "startup terminal session cleanup", true); err != nil {
@@ -1174,6 +1215,7 @@ func (s *Service) handleTerminalSessionOnStartup(ctx context.Context, session *m
 // handleFailedSessionOnStartup handles a failed session during startup recovery.
 func (s *Service) handleFailedSessionOnStartup(ctx context.Context, session *models.TaskSession, running *models.ExecutorRunning) {
 	sessionID := session.ID
+	s.abandonOpenTurnsOnStartup(ctx, sessionID, "failed session cleanup")
 	// If session failed, ensure task is in REVIEW state (not stuck IN_PROGRESS)
 	if session.TaskID != "" {
 		task, taskErr := s.taskRepo.GetTask(ctx, session.TaskID)

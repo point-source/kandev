@@ -31,6 +31,7 @@ export type BackendMessageType =
   | "workflow.step.deleted"
   | "session.message.added"
   | "session.message.updated"
+  | "session.message.deleted"
   | "session.state_changed"
   | "session.waiting_for_input"
   | "session.agentctl_starting"
@@ -94,6 +95,7 @@ import type {
 import type { SecretListItem } from "@/lib/types/http-secrets";
 import type { GitEventPayload } from "@/lib/types/git-events";
 import type { GitHubRateLimitUpdate, TaskCIAutomationOptions, TaskPR } from "@/lib/types/github";
+import type { SystemMetricsSnapshot } from "./system";
 import type { FileChangeNotificationPayload } from "./workspace-files";
 import type {
   AgentCapabilitiesPayload,
@@ -144,12 +146,21 @@ export type TaskEventPayload = {
   priority?: number;
   position?: number;
   repository_id?: string;
+  repositories?: Array<{
+    id?: string;
+    repository_id: string;
+    base_branch?: string;
+    checkout_branch?: string;
+    position?: number;
+  }>;
   primary_session_id?: string | null;
   session_count?: number | null;
   review_status?: "pending" | "approved" | "changes_requested" | "rejected" | null;
   archived_at?: string | null;
   updated_at?: string;
   is_ephemeral: boolean;
+  /** Deletion reason on task.deleted (e.g. "pr_approved_by_user"). Absent otherwise. */
+  reason?: string;
 };
 
 export type AgentUpdatePayload = {
@@ -540,10 +551,7 @@ export type BackendMessageMap = OfficeBackendMessageMap & {
   "session.git.event": BackendMessage<"session.git.event", GitEventPayload>;
   "system.error": BackendMessage<"system.error", SystemErrorPayload>;
   "system.job.update": BackendMessage<"system.job.update", import("./system").SystemJob>;
-  "system.metrics.updated": BackendMessage<
-    "system.metrics.updated",
-    import("./system").SystemMetricsSnapshot
-  >;
+  "system.metrics.updated": BackendMessage<"system.metrics.updated", SystemMetricsSnapshot>;
   "workspace.created": BackendMessage<"workspace.created", WorkspacePayload>;
   "workspace.updated": BackendMessage<"workspace.updated", WorkspacePayload>;
   "workspace.deleted": BackendMessage<"workspace.deleted", WorkspacePayload>;
@@ -555,6 +563,7 @@ export type BackendMessageMap = OfficeBackendMessageMap & {
   "workflow.step.deleted": BackendMessage<"workflow.step.deleted", WorkflowStepEventPayload>;
   "session.message.added": BackendMessage<"session.message.added", MessageAddedPayload>;
   "session.message.updated": BackendMessage<"session.message.updated", MessageAddedPayload>;
+  "session.message.deleted": BackendMessage<"session.message.deleted", MessageAddedPayload>;
   "session.state_changed": BackendMessage<"session.state_changed", TaskSessionStateChangedPayload>;
   "session.waiting_for_input": BackendMessage<
     "session.waiting_for_input",

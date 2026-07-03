@@ -86,6 +86,18 @@ export interface JiraProject {
   id: string;
 }
 
+/**
+ * A workflow status defined for a project. Unlike the coarse three-bucket
+ * `JiraStatusCategory`, `name` is the project-specific status the user sees on
+ * a ticket (e.g. "In Development", "Ready for review"). The ticket-list status
+ * filter is populated from these.
+ */
+export interface JiraStatus {
+  id: string;
+  name: string;
+  statusCategory: JiraStatusCategory;
+}
+
 export interface JiraSearchResult {
   tickets: JiraTicket[];
   maxResults: number;
@@ -103,6 +115,14 @@ export interface JiraIssueWatch {
   workspaceId: string;
   workflowId: string;
   workflowStepId: string;
+  /**
+   * Optional repository binding. Empty string = unbound: watcher-created tasks
+   * launch in a blank scratch checkout (historical behaviour). When set, tasks
+   * launch in an isolated worktree of this repository cut from `baseBranch`.
+   */
+  repositoryId: string;
+  /** Branch the per-task worktree is cut from; empty = the repo's default. */
+  baseBranch: string;
   jql: string;
   agentProfileId: string;
   executorProfileId: string;
@@ -125,6 +145,10 @@ export interface CreateJiraIssueWatchInput {
   workspaceId: string;
   workflowId: string;
   workflowStepId: string;
+  /** Optional repository binding; empty/omitted = unbound (repo-less task). */
+  repositoryId?: string;
+  /** Base branch for the worktree; empty defaults to the repo's default branch. */
+  baseBranch?: string;
   jql: string;
   agentProfileId?: string;
   executorProfileId?: string;
@@ -139,6 +163,8 @@ export interface CreateJiraIssueWatchInput {
 export interface UpdateJiraIssueWatchInput {
   workflowId?: string;
   workflowStepId?: string;
+  repositoryId?: string;
+  baseBranch?: string;
   jql?: string;
   agentProfileId?: string;
   executorProfileId?: string;

@@ -84,9 +84,25 @@ type LinearIssue struct {
 	CreatorName   string                `json:"creatorName,omitempty"`
 	CreatorIcon   string                `json:"creatorIcon,omitempty"`
 	Updated       string                `json:"updated,omitempty"`
+	Created       string                `json:"created,omitempty"` // createdAt timestamp from Linear
 	URL           string                `json:"url"`
 	States        []LinearWorkflowState `json:"states"`
 }
+
+// IssueSortBy selects the order in which a watch's matched issues are published
+// (and therefore dispatched) under the per-watch in-flight cap. The empty value
+// preserves Linear's API order (updatedAt asc).
+type IssueSortBy string
+
+const (
+	SortByDefault      IssueSortBy = ""             // preserve Linear API order (updatedAt asc)
+	SortByPriorityDesc IssueSortBy = "priority"     // most important first: urgent>high>medium>low>none
+	SortByPriorityAsc  IssueSortBy = "priority_asc" // least important first
+	SortByCreatedDesc  IssueSortBy = "created_desc" // newest created first
+	SortByCreatedAsc   IssueSortBy = "created_asc"  // oldest created first
+	SortByUpdatedDesc  IssueSortBy = "updated_desc" // most recently updated first
+	SortByUpdatedAsc   IssueSortBy = "updated_asc"  // least recently updated first
+)
 
 // LinearWorkflowState is one of the team workflow states an issue can be
 // transitioned into. Unlike Jira transitions (which are edges), Linear states
@@ -188,10 +204,20 @@ const DefaultIssueWatchPollInterval = 300
 // As with Jira, Linear issues have no repository affinity — the target
 // workflow step's defaults determine where the resulting task runs.
 type IssueWatch struct {
-	ID                  string       `json:"id" db:"id"`
-	WorkspaceID         string       `json:"workspaceId" db:"workspace_id"`
-	WorkflowID          string       `json:"workflowId" db:"workflow_id"`
-	WorkflowStepID      string       `json:"workflowStepId" db:"workflow_step_id"`
+	ID             string `json:"id" db:"id"`
+	WorkspaceID    string `json:"workspaceId" db:"workspace_id"`
+	WorkflowID     string `json:"workflowId" db:"workflow_id"`
+	WorkflowStepID string `json:"workflowStepId" db:"workflow_step_id"`
+	// RepositoryID optionally binds watcher-created tasks to a repository so the
+	// agent launches in an isolated worktree of that repo instead of a blank
+	// scratch checkout. Empty = unbound, which preserves the historical
+	// repo-less behaviour. When set, the resulting task carries a single
+	// (repository_id, base_branch) pair.
+	RepositoryID string `json:"repositoryId" db:"repository_id"`
+	// BaseBranch is the branch the per-task worktree is cut from. Empty defaults
+	// to the repository's default branch (resolved at create/update time).
+	// Meaningful only when RepositoryID is set.
+	BaseBranch          string       `json:"baseBranch" db:"base_branch"`
 	Filter              SearchFilter `json:"filter"`
 	AgentProfileID      string       `json:"agentProfileId" db:"agent_profile_id"`
 	ExecutorProfileID   string       `json:"executorProfileId" db:"executor_profile_id"`
@@ -201,8 +227,10 @@ type IssueWatch struct {
 	// MaxInflightTasks caps how many open watcher-created tasks this watch can
 	// hold at once. nil = uncapped. Values <= 0 are rejected at the API layer.
 	// See docs/specs/throttle-watcher-fanout/spec.md for the open-task definition.
-	MaxInflightTasks *int       `json:"maxInflightTasks,omitempty" db:"max_inflight_tasks"`
-	LastPolledAt     *time.Time `json:"lastPolledAt,omitempty" db:"last_polled_at"`
+	MaxInflightTasks *int `json:"maxInflightTasks,omitempty" db:"max_inflight_tasks"`
+	// SortBy sets the dispatch order for matched issues; empty = Linear default order.
+	SortBy       IssueSortBy `json:"sortBy,omitempty" db:"sort_by"`
+	LastPolledAt *time.Time  `json:"lastPolledAt,omitempty" db:"last_polled_at"`
 	// LastError / LastErrorAt are stamped when the dispatch pipeline self-
 	// heals the watcher (e.g. the bound agent profile was soft-deleted).
 	// Empty for a healthy watcher.
@@ -230,10 +258,15 @@ type IssueWatchTask struct {
 // issue matching a watch that has no existing dedup row. The orchestrator
 // consumes this to create (and optionally auto-start) a Kandev task.
 type NewLinearIssueEvent struct {
-	IssueWatchID      string `json:"issueWatchId"`
-	WorkspaceID       string `json:"workspaceId"`
-	WorkflowID        string `json:"workflowId"`
-	WorkflowStepID    string `json:"workflowStepId"`
+	IssueWatchID   string `json:"issueWatchId"`
+	WorkspaceID    string `json:"workspaceId"`
+	WorkflowID     string `json:"workflowId"`
+	WorkflowStepID string `json:"workflowStepId"`
+	// RepositoryID / BaseBranch carry the watch's optional repository binding so
+	// the orchestrator source can populate IssueTaskRequest.Repositories without
+	// reloading the watch row. Empty RepositoryID = unbound (repo-less task).
+	RepositoryID      string `json:"repositoryId,omitempty"`
+	BaseBranch        string `json:"baseBranch,omitempty"`
 	AgentProfileID    string `json:"agentProfileId"`
 	ExecutorProfileID string `json:"executorProfileId"`
 	Prompt            string `json:"prompt"`
@@ -249,12 +282,15 @@ type CreateIssueWatchRequest struct {
 	WorkspaceID         string       `json:"workspaceId"`
 	WorkflowID          string       `json:"workflowId"`
 	WorkflowStepID      string       `json:"workflowStepId"`
+	RepositoryID        string       `json:"repositoryId"`
+	BaseBranch          string       `json:"baseBranch"`
 	Filter              SearchFilter `json:"filter"`
 	AgentProfileID      string       `json:"agentProfileId"`
 	ExecutorProfileID   string       `json:"executorProfileId"`
 	Prompt              string       `json:"prompt"`
 	PollIntervalSeconds int          `json:"pollIntervalSeconds"`
 	MaxInflightTasks    *int         `json:"maxInflightTasks,omitempty"`
+	SortBy              IssueSortBy  `json:"sortBy,omitempty"`
 	Enabled             *bool        `json:"enabled,omitempty"`
 }
 
@@ -265,6 +301,8 @@ type CreateIssueWatchRequest struct {
 type UpdateIssueWatchRequest struct {
 	WorkflowID          *string       `json:"workflowId,omitempty"`
 	WorkflowStepID      *string       `json:"workflowStepId,omitempty"`
+	RepositoryID        *string       `json:"repositoryId,omitempty"`
+	BaseBranch          *string       `json:"baseBranch,omitempty"`
 	Filter              *SearchFilter `json:"filter,omitempty"`
 	AgentProfileID      *string       `json:"agentProfileId,omitempty"`
 	ExecutorProfileID   *string       `json:"executorProfileId,omitempty"`
@@ -275,4 +313,7 @@ type UpdateIssueWatchRequest struct {
 	// leaves the cap unchanged (a plain *int can't tell "omitted" from
 	// "null"). Absent = unchanged, null = uncapped, positive int = cap.
 	MaxInflightTasks optional.Int `json:"maxInflightTasks"`
+	// SortBy is a pointer for tri-state PATCH semantics: nil means "omitted,
+	// leave unchanged"; a non-nil pointer (including "") sets the value.
+	SortBy *IssueSortBy `json:"sortBy,omitempty"`
 }

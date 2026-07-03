@@ -15,7 +15,8 @@ import { TaskGitHubIssueDialog } from "@/components/task/task-github-issue-dialo
 import { TaskGitHubPRDialog } from "@/components/task/task-github-pr-dialog";
 import { useTaskWorkflowMove } from "@/hooks/use-task-workflow-move";
 import { useTaskMultiSelectStore } from "@/hooks/use-task-multi-select";
-import { getRepositoryDisplayName } from "@/lib/utils";
+import { repositorySlug } from "@/lib/repository-slug";
+import { formatUserHomePath } from "@/lib/utils";
 import { repositoryId as toRepositoryId, type Repository, type TaskState } from "@/lib/types/http";
 
 export interface Task {
@@ -48,6 +49,11 @@ export interface Task {
   issueNumber?: number;
 }
 
+export type RepositoryChip = {
+  label: string;
+  path?: string;
+};
+
 export interface WorkflowStep {
   id: string;
   title: string;
@@ -62,8 +68,8 @@ export interface WorkflowStep {
 
 interface KanbanCardProps {
   task: Task;
-  /** Display names of every repository linked to the task, primary first. */
-  repositoryNames?: string[];
+  /** Display labels and hover paths of every repository linked to the task, primary first. */
+  repositoryChips?: RepositoryChip[];
   onClick?: (task: Task) => void;
   onEdit?: (task: Task) => void;
   onDelete?: (task: Task, opts?: { cascade?: boolean }) => void;
@@ -305,7 +311,7 @@ function useActiveWorkspaceRepositories() {
 
 export function KanbanCard({
   task,
-  repositoryNames,
+  repositoryChips,
   onClick,
   onEdit,
   onDelete,
@@ -365,7 +371,7 @@ export function KanbanCard({
       <KanbanCardContextMenu entries={contextMenuEntries}>
         <KanbanCardShell
           task={task}
-          repositoryNames={repositoryNames}
+          repositoryChips={repositoryChips}
           attributes={attributes}
           listeners={listeners}
           setNodeRef={setNodeRef}
@@ -407,26 +413,37 @@ export function KanbanCard({
 }
 
 /**
- * Resolves a task's linked repositories to display names. Primary first
+ * Resolves a task's linked repositories to card chip data. Primary first
  * (`task.repositoryId`), then any others ordered by `task.repositories[].position`.
  * Skips unresolved IDs (repo deleted / not yet hydrated).
  */
-export function resolveTaskRepositoryNames(task: Task, repositories: Repository[]): string[] {
+export function resolveTaskRepositoryChips(
+  task: Task,
+  repositories: Repository[],
+): RepositoryChip[] {
   const byId = new Map(repositories.map((repo) => [repo.id, repo]));
   const seen = new Set<string>();
-  const names: string[] = [];
+  const chips: RepositoryChip[] = [];
 
   const push = (id: string | undefined) => {
     if (!id || seen.has(id)) return;
     const repo = byId.get(toRepositoryId(id));
     if (!repo) return;
     seen.add(id);
-    const display = getRepositoryDisplayName(repo.local_path);
-    if (display) names.push(display);
+    const label = repositorySlug(repo);
+    if (!label) return;
+    chips.push({
+      label,
+      ...(repo.local_path ? { path: formatUserHomePath(repo.local_path) } : {}),
+    });
   };
 
   push(task.repositoryId);
   const ordered = [...(task.repositories ?? [])].sort((a, b) => a.position - b.position);
   for (const link of ordered) push(link.repository_id);
-  return names;
+  return chips;
+}
+
+export function resolveTaskRepositoryNames(task: Task, repositories: Repository[]): string[] {
+  return resolveTaskRepositoryChips(task, repositories).map((chip) => chip.label);
 }

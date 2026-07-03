@@ -4,7 +4,6 @@
 package instance
 
 import (
-	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +38,7 @@ type Instance struct {
 	manager *process.Manager
 
 	// server is the HTTP server for this instance's API (unexported)
-	server *http.Server
+	server instanceHTTPServer
 
 	// lastActivityNanos is the unix-nano timestamp of the most recently
 	// observed HTTP request on this instance's port. Used by the idle reaper
@@ -160,6 +159,10 @@ type CreateRequest struct {
 	// runtime keeps child processes alive when stdin closes (notably
 	// opencode acp, which spawns MCP server children that leak otherwise).
 	RequiresProcessKill bool `json:"requires_process_kill,omitempty"`
+
+	// StripEnv lists environment variables to strip from the agent's child
+	// process environment entirely (not just set to empty).
+	StripEnv []string `json:"strip_env,omitempty"`
 
 	// BaseBranches maps RepositoryName → base branch ref for per-repo diff
 	// stats. The empty key "" applies to the root / single-repo tracker.

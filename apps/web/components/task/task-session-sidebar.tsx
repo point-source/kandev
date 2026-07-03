@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, memo } from "react";
+import { useCallback, useMemo, useState, memo } from "react";
 import { usePathname, useRouter } from "@/lib/routing/client-router";
 import { linkToTask } from "@/lib/links";
 import type { Repository, TaskSession, TaskSessionState, TaskState } from "@/lib/types/http";
@@ -21,33 +21,23 @@ import { findTaskInSnapshots } from "@/lib/kanban/find-task";
 import { repositorySlug } from "@/lib/repository-slug";
 import { buildSwitchToSession, selectTaskWithLayout } from "./task-select-helpers";
 import { getSessionInfoForTask } from "@/lib/utils/session-info";
-import { getWebSocketClient } from "@/lib/ws/connection";
 import { useArchivedTaskState } from "./task-archived-context";
 import { useRepositories } from "@/hooks/domains/workspace/use-repositories";
 import { useWorkspacePRs } from "@/hooks/domains/github/use-task-pr";
 import { buildPendingFlags, readPendingFlags } from "./task-session-sidebar-aggregate";
 import { useGroupedSidebarView } from "./task-session-sidebar-grouped-view";
+import { useBulkGitStatusSubscription } from "./task-session-sidebar-git-status";
 import { useSidebarLinkActions } from "./task-session-sidebar-link-actions";
 import { useShallow } from "zustand/react/shallow";
 import { type AgentErrorOptions, agentErrorMessageForTask } from "@/lib/task-agent-error";
+import {
+  agentErrorAcknowledgementSessionIds,
+  stablePrimarySessionIdsKey,
+  usePersistResolvedAgentErrorAcknowledgements,
+} from "./use-agent-error-acknowledgements";
 
-/**
- * Stabilize a derived array of primary session IDs so the reference only
- * changes when the actual contents change. This prevents the bulk-subscribe
- * effect from tearing down and recreating all subscriptions on every kanban
- * snapshot update.
- */
-function useStablePrimarySessionIds(
-  allTasks: Array<{ primarySessionId?: string | null }>,
-): string[] {
-  const key = useMemo(
-    () =>
-      allTasks
-        .map((t) => t.primarySessionId)
-        .filter((id): id is string => id != null)
-        .join("\0"),
-    [allTasks],
-  );
+function useStablePrimarySessionIds(allTasks: Array<{ primarySessionId?: string | null }>) {
+  const key = useMemo(() => stablePrimarySessionIdsKey(allTasks), [allTasks]);
   return useMemo(() => (key ? key.split("\0") : []), [key]);
 }
 
@@ -216,6 +206,7 @@ function useSidebarData(workspaceId: string | null) {
   const taskPRsByTaskId = useAppStore((state) => state.taskPRs.byTaskId);
   const messagesBySession = useAppStore((state) => state.messages.bySession);
   const dismissedAgentErrors = useAppStore((state) => state.dismissedAgentErrors);
+  const acknowledgedAgentErrors = useAppStore((state) => state.acknowledgedAgentErrors);
   const archivedState = useArchivedTaskState();
 
   const selectedTaskId = useMemo(() => {
@@ -235,6 +226,16 @@ function useSidebarData(workspaceId: string | null) {
   // narrow pending-flag selector below. Derived from kanban tasks (always
   // available) rather than sessionsByTaskId (loaded on-demand).
   const primarySessionIds = useStablePrimarySessionIds(allTasks);
+  const acknowledgementSessionIds = useMemo(
+    () => agentErrorAcknowledgementSessionIds(allTasks, sessionsByTaskId),
+    [allTasks, sessionsByTaskId],
+  );
+  usePersistResolvedAgentErrorAcknowledgements({
+    sessionsById,
+    sessionIds: acknowledgementSessionIds,
+    messagesBySession,
+    dismissedAgentErrors,
+  });
   const pendingFlags = useAppStore(
     useShallow((state) => buildPendingFlags(state.messages.bySession, primarySessionIds)),
   );
@@ -259,6 +260,7 @@ function useSidebarData(workspaceId: string | null) {
       workflowNameById,
       stepTitleById,
       dismissedAgentErrors,
+      acknowledgedAgentErrors,
       messagesBySession,
     };
     const items: SidebarItem[] = allTasks.map((task) => toSidebarItem(task, mapCtx));
@@ -283,6 +285,7 @@ function useSidebarData(workspaceId: string | null) {
     taskPRsByTaskId,
     pendingFlags,
     dismissedAgentErrors,
+    acknowledgedAgentErrors,
     messagesBySession,
     archivedState,
   ]);
@@ -549,22 +552,6 @@ function useSidebarActions(store: StoreApi) {
     ...archiveActions,
     ...deleteActions,
   };
-}
-
-function useBulkGitStatusSubscription(primarySessionIds: string[]) {
-  const connectionStatus = useAppStore((state) => state.connection.status);
-  const activeSessionId = useAppStore((state) => state.tasks.activeSessionId);
-  useEffect(() => {
-    if (connectionStatus !== "connected" || primarySessionIds.length === 0) return;
-    const client = getWebSocketClient();
-    if (!client) return;
-    // Skip active session — it's already subscribed + focused by the task page hooks
-    const backgroundIds = activeSessionId
-      ? primarySessionIds.filter((id) => id !== activeSessionId)
-      : primarySessionIds;
-    const unsubscribes = backgroundIds.map((id) => client.subscribeSession(id));
-    return () => unsubscribes.forEach((u) => u());
-  }, [primarySessionIds, connectionStatus, activeSessionId]);
 }
 
 export const TaskSessionSidebar = memo(function TaskSessionSidebar({

@@ -216,10 +216,14 @@ type InstanceConfig struct {
 	// Inherited from the parent Config at instance creation time.
 	AuthToken string
 
-	// RequiresProcessKill forces the agent's process group to be killed on
-	// shutdown instead of relying on stdin close. Required for agents whose
-	// runtime keeps child processes alive when stdin closes (opencode acp).
+	// RequiresProcessKill skips the graceful stdin-close wait and reaps the
+	// agent's process group immediately. Required for agents whose runtime
+	// keeps child processes alive when stdin closes (opencode acp).
 	RequiresProcessKill bool
+
+	// StripEnv lists environment variables to strip from the agent's child
+	// process environment entirely (not just set to empty).
+	StripEnv []string
 
 	// BaseBranches maps RepositoryName → base branch ref for per-repo diff
 	// stats. The empty key "" applies to the root / single-repo tracker.
@@ -382,6 +386,9 @@ func applyOverrides(cfg *InstanceConfig, overrides *InstanceOverrides) {
 	if overrides.RequiresProcessKill {
 		cfg.RequiresProcessKill = true
 	}
+	if len(overrides.StripEnv) > 0 {
+		cfg.StripEnv = overrides.StripEnv
+	}
 	if len(overrides.BaseBranches) > 0 {
 		cfg.BaseBranches = overrides.BaseBranches
 	}
@@ -423,6 +430,7 @@ type InstanceOverrides struct {
 	AssumeMcpHttp          bool
 	McpMode                string
 	RequiresProcessKill    bool
+	StripEnv               []string
 	BaseBranches           map[string]string
 }
 

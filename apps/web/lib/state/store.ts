@@ -228,12 +228,14 @@ export type AppState = {
   quickChat: (typeof defaultUIState)["quickChat"];
   configChat: (typeof defaultUIState)["configChat"];
   sessionFailureNotification: (typeof defaultUIState)["sessionFailureNotification"];
+  taskDeletedNotification: (typeof defaultUIState)["taskDeletedNotification"];
   bottomTerminal: (typeof defaultUIState)["bottomTerminal"];
   sidebarViews: (typeof defaultUIState)["sidebarViews"];
   collapsedSubtaskParents: (typeof defaultUIState)["collapsedSubtaskParents"];
   kanbanPreviewedTaskId: (typeof defaultUIState)["kanbanPreviewedTaskId"];
   sidebarTaskPrefs: (typeof defaultUIState)["sidebarTaskPrefs"];
   appSidebar: (typeof defaultUIState)["appSidebar"];
+  acknowledgedAgentErrors: (typeof defaultUIState)["acknowledgedAgentErrors"];
   dismissedAgentErrors: (typeof defaultUIState)["dismissedAgentErrors"];
 
   // GitLab actions
@@ -380,6 +382,7 @@ export type AppState = {
   setActiveConfigChatSession: (sessionId: string) => void;
   renameConfigChatSession: (sessionId: string, name: string) => void;
   setSessionFailureNotification: (n: UISliceTypes.SessionFailureNotification | null) => void;
+  setTaskDeletedNotification: (n: UISliceTypes.TaskDeletedNotification | null) => void;
   toggleBottomTerminal: () => void;
   openBottomTerminalWithCommand: (command: string) => void;
   clearBottomTerminalCommand: () => void;
@@ -403,6 +406,7 @@ export type AppState = {
   ) => void;
   setActiveTurn: (sessionId: string, turnId: string | null) => void;
   updateMessage: (message: Message) => void;
+  removeMessage: (sessionId: string, messageId: string) => void;
   prependMessages: (
     sessionId: string,
     messages: Message[],
@@ -531,6 +535,7 @@ export type AppState = {
   toggleAppSidebarSection: UIA["toggleAppSidebarSection"];
   setAppSidebarWidth: UIA["setAppSidebarWidth"];
   toggleAppSidebarSettingsMode: UIA["toggleAppSidebarSettingsMode"];
+  acknowledgeAgentErrors: UIA["acknowledgeAgentErrors"];
   dismissAgentError: UIA["dismissAgentError"];
   // Office actions
   setOfficeAgentProfiles: (agents: AgentProfile[]) => void;

@@ -71,20 +71,48 @@ Kandev renders subagents (the `Task` tool) as cards and *wants* to nest each sub
 
 Claude is the one that works today: `claude-agent-acp` (since PR #341) sets `_meta.claudeCode.parentToolUseId` on a subagent's internal calls, and its value already equals the parent Task tool_call id — so it maps straight onto our `parent_tool_call_id`. Cursor exposes nothing to nest. OpenCode needs a kandev-side child-session merge. (Top-level `parentToolCallId` is NOT in the ACP schema — `_meta` is the spec-compliant carrier.)
 
-## Process-group kill for HTTP-server agents (`RequiresProcessKill`)
+## Process-group cleanup and `RequiresProcessKill`
 
-Most ACP agents (Claude Code, Codex, Cursor, …) exit cleanly when stdin is closed. Some agents — notably `opencode acp` — keep their HTTP server and an MCP child tree alive after stdin EOF. For those agents, closing stdin on shutdown is not enough; the process group has to be SIGKILLed so the MCP children don't re-parent to init and leak (GH issue #1247).
+All ACP agents are launched in their own process group, and shutdown must not
+report success while any process in that group is still alive. Some agents —
+notably `opencode acp` — keep their HTTP server and an MCP child tree alive after
+stdin EOF. For those agents, closing stdin on shutdown is not useful; the process
+group has to be killed immediately so the MCP children don't re-parent to init
+and leak (GH issue #1247).
 
-The signal flows agent → adapter → process manager via a single bool:
+The "skip graceful wait" signal flows agent → adapter → process manager via a
+single bool:
 
 1. `agents.RuntimeConfig.RequiresProcessKill` (set `true` on `OpenCodeACP`).
 2. The lifecycle executors copy it into `agentctl.CreateInstanceRequest.RequiresProcessKill`.
 3. `instance.Manager` stores it on `config.InstanceConfig.RequiresProcessKill`.
 4. `process.Manager.buildAdapterConfig` forwards it into `adapter.Config` → `shared.Config`.
 5. `acp.Adapter.RequiresProcessKill()` returns `cfg.RequiresProcessKill`.
-6. On shutdown, `process.Manager.killProcessGroupIfRequired` consults the adapter and, when true, sends SIGKILL to the whole pgid via `killProcessGroup` (`syscall.Kill(-pid, SIGKILL)` on Unix). If `Stop(ctx)` further times out before the process exits, `waitForProcessExit`'s `ctx.Done` branch re-runs the pgid SIGKILL (falling back to a leader-only kill if the group call errors) — belt-and-braces for any future ACP CLI that decides to ignore stdin close.
+6. On shutdown, `process.Manager.killProcessGroupIfRequired` consults the adapter and, when true, sends SIGKILL to the whole pgid via `killProcessGroup` (`syscall.Kill(-pid, SIGKILL)` on Unix).
 
-To add another agent that needs this: set `RequiresProcessKill: true` in its `Runtime()` config — that's all.
+`RequiresProcessKill: false` does **not** mean children may be left running. It
+only allows the normal graceful path first (stdin close, adapter close, process
+wait). After the command leader exits, `waitForProcessExit` still checks the
+agent process group and sends SIGTERM/SIGKILL if descendants remain. If `Stop(ctx)`
+times out, it also re-runs the pgid SIGKILL fallback.
+
+To add another agent that needs immediate kill instead of graceful stdin close:
+set `RequiresProcessKill: true` in its `Runtime()` config.
+
+## Env stripping for credential-mode agents (`StripEnv`)
+
+Some agents check environment variables to decide their credential mode. For example, `devin acp` checks `ACP_BACKEND`: when set (any value, including empty), it requires protocol-level `authenticate` and refuses local credentials; when unset, it falls back to reading `~/.local/share/devin/credentials.toml` directly. Kandev (which may inherit `ACP_BACKEND` from Windsurf Next) needs the fall-back path, so the variable must be **absent** from the child environment — not just empty.
+
+The strip list flows agent → instance config → process manager via a single slice, mirroring `RequiresProcessKill`:
+
+1. `agents.RuntimeConfig.StripEnv` (set `[]string{"ACP_BACKEND"}` on `DevinACP`).
+2. The lifecycle executors copy it into `agentctl.CreateInstanceRequest.StripEnv`.
+3. `instance.Manager` stores it on `config.InstanceConfig.StripEnv`.
+4. `process.Manager.buildAdapterConfig` iterates the list and calls `utility.RemoveEnvEntry` on `m.cfg.AgentEnv` before that env is used to spawn child processes.
+
+For the one-shot probe/inference path, the strip list is derived from `Runtime().StripEnv` via the shared `agents.StripEnvFor` helper — it is not an independent field on `InferenceConfig`. The derived value is propagated through `InferenceConfigDTO.StripEnv` and applied by `utility.sanitizeEnvForAgent` before spawning the ephemeral subprocess.
+
+To add another agent that needs env vars stripped: set `StripEnv: []string{"VAR_NAME"}` in its `Runtime()` — that's all.
 
 ## Idle-instance reaper (`KANDEV_ACP_IDLE_TIMEOUT`)
 

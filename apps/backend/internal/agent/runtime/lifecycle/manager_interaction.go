@@ -521,12 +521,13 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 		zap.Stringer("runtime", execution.RuntimeName))
 
 	// Try to gracefully stop via agentctl first, then always close connections
+	agentStopFailed := false
 	if execution.agentctl != nil {
 		if !force {
 			if err := execution.agentctl.Stop(ctx); err != nil {
-				// During shutdown agentctl typically received the same
-				// terminal-wide SIGINT and is already gone, so a failed
-				// HTTP call here is expected, not noteworthy.
+				agentStopFailed = true
+				// During shutdown the instance may already be stopping through
+				// another lifecycle path, so a failed HTTP call is expected.
 				if m.IsShuttingDown() {
 					m.logger.Debug("failed to stop agent via agentctl",
 						zap.String("execution_id", executionID),
@@ -542,7 +543,7 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 	}
 
 	// Stop the agent execution via the runtime that created it
-	m.stopAgentViaBackend(ctx, executionID, execution, reason, force)
+	m.stopAgentViaBackend(ctx, executionID, execution, reason, force, agentStopFailed)
 
 	// Update execution status and remove from tracking
 	_ = m.executionStore.WithLock(executionID, func(exec *AgentExecution) {
@@ -738,7 +739,9 @@ func (m *Manager) initializeACPSessionForRestart(
 	// Mark execution as ready. This is a *boot* signal — initializeACPSessionForRestart
 	// is the post-restart init path and no turn has run yet, so AgentBootReady (not
 	// AgentReady) is what subscribers want to route on.
-	m.executionStore.UpdateStatus(execution.ID, v1.AgentStatusReady)
+	if err := m.updateStatusAndPersist(ctx, execution.ID, v1.AgentStatusReady); err != nil {
+		return err
+	}
 	m.eventPublisher.PublishAgentEvent(ctx, events.AgentBootReady, execution)
 
 	return nil
@@ -986,10 +989,58 @@ func (m *Manager) IsAgentReadyForPrompt(ctx context.Context, sessionID string) b
 	return execution.agentctl.HasAgentStream()
 }
 
+func (m *Manager) RecoverAgentPromptStream(ctx context.Context, sessionID string) error {
+	execution, exists := m.GetExecutionBySessionID(sessionID)
+	if !exists {
+		return fmt.Errorf("session %q has no execution: %w", sessionID, ErrExecutionNotFound)
+	}
+	if execution.PassthroughProcessID != "" || execution.IsPassthrough || execution.agentctl == nil {
+		return nil
+	}
+	if execution.agentctl.HasAgentStream() {
+		return nil
+	}
+	if m.streamManager == nil {
+		return fmt.Errorf("stream manager is not configured")
+	}
+
+	ready := make(chan struct{})
+	// Prompt recovery is reached through the per-session prompt path. Avoid a
+	// broader reconnect registry here; HasAgentStream above covers steady state.
+	m.streamManager.connectUpdatesStreamAsync(execution, ready)
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if !execution.agentctl.HasAgentStream() {
+		return fmt.Errorf("agent stream not connected")
+	}
+	if execution.Status == v1.AgentStatusFailed && execution.sessionInitialized && execution.ACPSessionID != "" {
+		status, err := execution.agentctl.GetStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to verify agent status after stream recovery: %w", err)
+		}
+		if !status.IsAgentRunning() {
+			return fmt.Errorf("agent process is not running after stream recovery: %s", status.AgentStatus)
+		}
+		if err := m.markBootReadyFromFailed(ctx, execution.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // UpdateStatus updates the status of an execution
 func (m *Manager) UpdateStatus(executionID string, status v1.AgentStatus) error {
+	return m.updateStatusAndPersist(context.Background(), executionID, status)
+}
+
+func (m *Manager) updateStatusAndPersist(ctx context.Context, executionID string, status v1.AgentStatus) error {
+	var updated *AgentExecution
 	if err := m.executionStore.WithLock(executionID, func(execution *AgentExecution) {
 		execution.Status = status
+		updated = execution
 	}); err != nil {
 		if errors.Is(err, ErrExecutionNotFound) {
 			return fmt.Errorf("execution %q not found", executionID)
@@ -1001,6 +1052,9 @@ func (m *Manager) UpdateStatus(executionID string, status v1.AgentStatus) error 
 		zap.String("execution_id", executionID),
 		zap.String("status", string(status)))
 
+	if updated != nil {
+		m.persistExecutorRunning(context.WithoutCancel(ctx), updated)
+	}
 	return nil
 }
 
@@ -1035,12 +1089,27 @@ func (m *Manager) MarkReady(executionID string) error {
 //
 // Publishes events.AgentBootReady. Returns error if execution not found.
 func (m *Manager) MarkBootReady(executionID string) error {
-	return m.markReadyEvent(executionID, events.AgentBootReady)
+	return m.markReadyEventWithContext(context.Background(), executionID, events.AgentBootReady)
 }
 
 // markReadyEvent is the shared body of MarkReady / MarkBootReady — both flip
 // the execution to the Ready status and publish their respective event type.
 func (m *Manager) markReadyEvent(executionID, eventType string) error {
+	return m.markReadyEventWithContext(context.Background(), executionID, eventType)
+}
+
+func (m *Manager) markBootReadyFromFailed(ctx context.Context, executionID string) error {
+	execution, exists := m.executionStore.Get(executionID)
+	if !exists {
+		return fmt.Errorf("execution %q not found", executionID)
+	}
+	if execution.Status != v1.AgentStatusFailed {
+		return nil
+	}
+	return m.markReadyEventWithContext(ctx, executionID, events.AgentBootReady)
+}
+
+func (m *Manager) markReadyEventWithContext(ctx context.Context, executionID, eventType string) error {
 	execution, exists := m.executionStore.Get(executionID)
 	if !exists {
 		return fmt.Errorf("execution %q not found", executionID)
@@ -1053,13 +1122,15 @@ func (m *Manager) markReadyEvent(executionID, eventType string) error {
 		return nil
 	}
 
-	m.executionStore.UpdateStatus(executionID, v1.AgentStatusReady)
+	if err := m.updateStatusAndPersist(ctx, executionID, v1.AgentStatusReady); err != nil {
+		return err
+	}
 
 	m.logger.Info("execution ready",
 		zap.String("execution_id", executionID),
 		zap.String("event_type", eventType))
 
-	m.eventPublisher.PublishAgentEvent(context.Background(), eventType, execution)
+	m.eventPublisher.PublishAgentEvent(ctx, eventType, execution)
 	return nil
 }
 
@@ -1254,7 +1325,7 @@ func (m *Manager) RespondToPermissionBySessionID(sessionID, pendingID, optionID 
 }
 
 // stopAgentViaBackend stops the agent execution via the runtime that created it.
-func (m *Manager) stopAgentViaBackend(ctx context.Context, executionID string, execution *AgentExecution, reason string, force bool) {
+func (m *Manager) stopAgentViaBackend(ctx context.Context, executionID string, execution *AgentExecution, reason string, force bool, agentStopFailed bool) {
 	if execution.RuntimeName == "" || m.executorRegistry == nil {
 		return
 	}
@@ -1275,11 +1346,11 @@ func (m *Manager) stopAgentViaBackend(ctx context.Context, executionID string, e
 		StandalonePort:       execution.standalonePort,
 		Metadata:             execution.Metadata,
 		StopReason:           reason,
+		AgentStopFailed:      agentStopFailed,
 	}
 	if err := rt.StopInstance(ctx, runtimeInstance, force); err != nil {
-		// During shutdown the runtime instance (e.g. a standalone agentctl)
-		// often already exited via the shared SIGINT, so StopInstance returns
-		// a benign 404. Only surface this at WARN outside shutdown.
+		// During shutdown the runtime instance may already be stopping or
+		// absent. Only surface this at WARN outside shutdown.
 		if m.IsShuttingDown() {
 			m.logger.Debug("failed to stop runtime instance, continuing with cleanup",
 				zap.String("execution_id", executionID),

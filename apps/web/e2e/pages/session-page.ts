@@ -74,7 +74,7 @@ export class SessionPage {
     return this.activeChat().getByTestId("chat-status-bar").getByTestId("pr-status-chip");
   }
   todoIndicator() {
-    return this.page.getByTestId("todo-indicator");
+    return this.activeChat().getByTestId("todo-indicator");
   }
   /** Span wrapper around the resume button — used to trigger tooltip on disabled state. */
   failedSessionResumeWrapper(): Locator {
@@ -346,6 +346,11 @@ export class SessionPage {
   /** Custom text input on the clarification overlay. */
   clarificationInput(): Locator {
     return this.page.getByTestId("clarification-input");
+  }
+
+  /** Inline Send button shown next to the custom input on touch devices. */
+  clarificationCustomSubmit(): Locator {
+    return this.page.getByTestId("clarification-custom-submit");
   }
 
   /** Deferred notice shown when agent has disconnected from clarification. */

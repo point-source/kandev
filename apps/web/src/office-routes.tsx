@@ -209,6 +209,10 @@ function useOfficeRouteBootstrap(
       store.getState().setMeta(metaResponse);
 
       if (!activeWorkspaceId) {
+        store.getState().setOfficeAgentProfiles([]);
+        store.getState().setProjects([]);
+        store.getState().setInboxItems([]);
+        store.getState().setInboxCount(0);
         setBootstrap({ complete: true, onboardingComplete });
         return;
       }

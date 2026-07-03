@@ -3,6 +3,7 @@ package backendapp
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"go.uber.org/zap"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/kandev/kandev/internal/secrets"
 	"github.com/kandev/kandev/internal/sentry"
 	"github.com/kandev/kandev/internal/slack"
+	systemsettings "github.com/kandev/kandev/internal/system/settings"
 	taskmodels "github.com/kandev/kandev/internal/task/models"
 	taskservice "github.com/kandev/kandev/internal/task/service"
 	"github.com/kandev/kandev/internal/task/share"
@@ -69,8 +71,9 @@ func provideServices(cfg *config.Config, log *logger.Logger, repos *Repositories
 		eventBus,
 		log,
 		taskservice.RepositoryDiscoveryConfig{
-			Roots:    cfg.RepositoryDiscovery.Roots,
-			MaxDepth: cfg.RepositoryDiscovery.MaxDepth,
+			Roots:             cfg.RepositoryDiscovery.Roots,
+			MaxDepth:          cfg.RepositoryDiscovery.MaxDepth,
+			TaskWorktreeRoots: []string{filepath.Join(cfg.ResolvedHomeDir(), "tasks")},
 		},
 	)
 
@@ -312,11 +315,42 @@ func (a *gitlabSecretAdapter) Delete(ctx context.Context, id string) error {
 	return a.store.Delete(ctx, id)
 }
 
+const gitlabHostSettingKey = "gitlab_host"
+
+type gitlabHostStore struct {
+	settings *systemsettings.Store
+}
+
+func newGitLabHostStore(dbPool *db.Pool) (gitlab.HostStore, error) {
+	settingsStore, err := systemsettings.NewStore(dbPool)
+	if err != nil {
+		return nil, err
+	}
+	return &gitlabHostStore{settings: settingsStore}, nil
+}
+
+func (s *gitlabHostStore) GetHost(ctx context.Context) (string, error) {
+	raw, found, err := s.settings.Get(ctx, gitlabHostSettingKey)
+	if err != nil || !found {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func (s *gitlabHostStore) SetHost(ctx context.Context, host string) error {
+	return s.settings.Save(ctx, gitlabHostSettingKey, []byte(host))
+}
+
 // initGitLabService wires up the GitLab integration. Failures are non-fatal:
 // the rest of the backend still boots without GitLab configured.
 func initGitLabService(dbPool *db.Pool, eventBus bus.EventBus, secretsStore secrets.SecretStore, log *logger.Logger) *gitlab.Service {
 	adapter := &gitlabSecretAdapter{store: secretsStore}
-	svc, _, err := gitlab.Provide(context.Background(), adapter, nil, log)
+	hostStore, hostStoreErr := newGitLabHostStore(dbPool)
+	if hostStoreErr != nil {
+		log.Warn("GitLab host store unavailable (non-fatal)", zap.Error(hostStoreErr))
+		return nil
+	}
+	svc, _, err := gitlab.Provide(context.Background(), adapter, hostStore, log)
 	if err != nil {
 		log.Warn("GitLab service initialization failed (non-fatal)", zap.Error(err))
 	}

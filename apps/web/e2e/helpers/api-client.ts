@@ -1355,8 +1355,16 @@ export class ApiClient {
     await this.request("DELETE", `/api/v1/github/watches/review/${watchId}`);
   }
 
-  async triggerReviewWatch(watchId: string): Promise<{ new_prs: number; cleaned?: number }> {
-    return this.request("POST", `/api/v1/github/watches/review/${watchId}/trigger`, undefined);
+  async triggerReviewWatch(
+    watchId: string,
+    workspaceId: string,
+  ): Promise<{ new_prs: number; new_prs_found: number; cleaned?: number }> {
+    const params = new URLSearchParams({ workspace_id: workspaceId });
+    return this.request(
+      "POST",
+      `/api/v1/github/watches/review/${watchId}/trigger?${params}`,
+      undefined,
+    );
   }
 
   /**
@@ -1476,6 +1484,13 @@ export class ApiClient {
 
   async mockJiraSetProjects(projects: MockJiraProject[]): Promise<void> {
     await this.request("POST", "/api/v1/jira/mock/projects", { projects });
+  }
+
+  async mockJiraSetProjectStatuses(projectKey: string, statuses: MockJiraStatus[]): Promise<void> {
+    await this.request("POST", "/api/v1/jira/mock/project-statuses", {
+      projectKey,
+      statuses,
+    });
   }
 
   async mockJiraAddTickets(tickets: MockJiraTicket[]): Promise<void> {
@@ -1873,6 +1888,8 @@ export class ApiClient {
 // --- Jira / Linear mock payload types ---
 
 export type MockJiraProject = { id: string; key: string; name: string };
+
+export type MockJiraStatus = { id: string; name: string; statusCategory?: string };
 
 export type MockJiraTransition = {
   id: string;

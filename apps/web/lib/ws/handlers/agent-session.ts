@@ -10,7 +10,7 @@ import {
   type TaskSessionState,
 } from "@/lib/types/http";
 import type { QueuedMessage } from "@/lib/state/slices/session/types";
-import type { KanbanState, WorkflowSnapshotData } from "@/lib/state/slices/kanban/types";
+import { syncKanbanPrimarySessionState } from "@/lib/ws/handlers/agent-session-kanban-sync";
 
 const debug = createDebugLogger("session:state");
 
@@ -27,6 +27,63 @@ const AGENT_LIVE_STATES: ReadonlySet<TaskSessionState> = new Set(["RUNNING", "WA
 
 export function isTerminalSessionState(state: TaskSessionState | undefined): boolean {
   return !!state && TERMINAL_SESSION_STATES.has(state);
+}
+
+function findSessionForTask(state: AppState, taskId: string, sessionId: string) {
+  const byTask = state.taskSessionsByTask;
+  const sessionsForTask = byTask?.itemsByTaskId?.[taskId];
+  if (byTask?.loadedByTaskId?.[taskId]) {
+    return sessionsForTask?.find((session) => session.id === sessionId) ?? null;
+  }
+  // Some task-update call sites use partial stores before taskSessions hydrates.
+  const byId = state.taskSessions?.items?.[sessionId];
+  if (byId) return byId.task_id === taskId ? byId : null;
+  return sessionsForTask?.find((session) => session.id === sessionId) ?? null;
+}
+
+function isTaskSessionListHydrating(state: AppState, taskId: string): boolean {
+  const byTask = state.taskSessionsByTask;
+  if (!byTask) return true;
+  if (byTask.loadingByTaskId?.[taskId]) return true;
+  return !byTask.loadedByTaskId?.[taskId];
+}
+
+/**
+ * Manual session selection pins a task-scoped session. Background WS events
+ * may only override that pin once the pinned session is known terminal, or
+ * when the terminal event is for the pinned session itself.
+ */
+export function shouldPreservePinnedSessionForTask(
+  state: AppState,
+  taskId: string,
+  incoming?: { sessionId: string; newState: TaskSessionState | undefined },
+): boolean {
+  const pinnedSessionId = state.tasks.pinnedSessionId;
+  if (!pinnedSessionId || state.tasks.activeTaskId !== taskId) return false;
+  if (
+    incoming?.sessionId === pinnedSessionId &&
+    incoming.newState &&
+    isTerminalSessionState(incoming.newState)
+  ) {
+    return false;
+  }
+
+  const pinnedSession = findSessionForTask(state, taskId, pinnedSessionId);
+  if (!pinnedSession) {
+    // Preserve missing rows only while the per-task list is still hydrating.
+    // Once loaded, absence means the pinned session was deleted or went stale.
+    return isTaskSessionListHydrating(state, taskId);
+  }
+  return !isTerminalSessionState(pinnedSession.state);
+}
+
+export function clearPinnedSessionIfOverridden(store: StoreApi<AppState>, sessionId: string): void {
+  const pinnedSessionId = store.getState().tasks.pinnedSessionId;
+  if (!pinnedSessionId || pinnedSessionId === sessionId) return;
+  store.setState((state) => ({
+    ...state,
+    tasks: { ...state.tasks, pinnedSessionId: null },
+  }));
 }
 
 /** Promote agentctl status to "ready" when the session enters a live state.
@@ -167,79 +224,6 @@ function maybeFanOutOfficeRefetch(
   setOfficeTrigger("agents");
 }
 
-function patchTaskPrimarySessionState(
-  tasks: KanbanState["tasks"],
-  taskId: string,
-  sessionId: string,
-  newState: TaskSessionState,
-): KanbanState["tasks"] {
-  let changed = false;
-  const nextTasks = tasks.map((task) => {
-    if (task.id !== taskId || task.primarySessionId !== sessionId) return task;
-    if (task.primarySessionState === newState) return task;
-    changed = true;
-    return { ...task, primarySessionState: newState };
-  });
-  return changed ? nextTasks : tasks;
-}
-
-function patchSnapshotPrimarySessionState(
-  snapshot: WorkflowSnapshotData,
-  taskId: string,
-  sessionId: string,
-  newState: TaskSessionState,
-): WorkflowSnapshotData {
-  const tasks = patchTaskPrimarySessionState(snapshot.tasks, taskId, sessionId, newState);
-  return tasks === snapshot.tasks ? snapshot : { ...snapshot, tasks };
-}
-
-function syncKanbanPrimarySessionState(
-  store: StoreApi<AppState>,
-  taskId: TaskId,
-  sessionId: SessionId,
-  newState: TaskSessionState | undefined,
-): void {
-  if (!newState) return;
-
-  store.setState((state) => {
-    const nextKanbanTasks = patchTaskPrimarySessionState(
-      state.kanban.tasks,
-      taskId,
-      sessionId,
-      newState,
-    );
-    let snapshotsChanged = false;
-    const nextSnapshots = Object.fromEntries(
-      Object.entries(state.kanbanMulti.snapshots).map(([workflowId, snapshot]) => {
-        const nextSnapshot = patchSnapshotPrimarySessionState(
-          snapshot,
-          taskId,
-          sessionId,
-          newState,
-        );
-        if (nextSnapshot !== snapshot) snapshotsChanged = true;
-        return [workflowId, nextSnapshot];
-      }),
-    );
-
-    if (nextKanbanTasks === state.kanban.tasks && !snapshotsChanged) return state;
-
-    return {
-      ...state,
-      kanban:
-        nextKanbanTasks === state.kanban.tasks
-          ? state.kanban
-          : { ...state.kanban, tasks: nextKanbanTasks },
-      kanbanMulti: snapshotsChanged
-        ? {
-            ...state.kanbanMulti,
-            snapshots: nextSnapshots,
-          }
-        : state.kanbanMulti,
-    };
-  });
-}
-
 /** Extract context window data from payload metadata and store it. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractContextWindow(store: StoreApi<AppState>, sessionId: string, payload: any): void {
@@ -273,38 +257,49 @@ function inheritAgentctlStatus(state: AppState, fromSessionId: string, toSession
  *   2. The current active session transitions to a terminal state — hand off
  *      to the newest non-terminal session for the same task, if any.
  */
+// eslint-disable-next-line max-params -- newState/previousState/wasKnownToStore are all needed by downstream branches
 function maybeAdoptSessionOnTransition(
   store: StoreApi<AppState>,
   taskId: string,
   sessionId: string,
   newState: TaskSessionState | undefined,
   wasKnownToStore: boolean,
+  previousState: TaskSessionState | undefined,
 ): void {
   const state = store.getState();
+  if (
+    state.tasks.pinnedSessionId !== sessionId &&
+    shouldPreservePinnedSessionForTask(state, taskId, { sessionId, newState })
+  ) {
+    return;
+  }
 
   if (!wasKnownToStore && shouldAdoptNewSession(state, taskId, newState)) {
     const oldSessionId = state.tasks.activeSessionId;
-    // Reverse-ordering guard: if the events arrive as old=COMPLETED then
-    // new=STARTING (instead of the typical new=STARTING then old=COMPLETED),
-    // shouldAdoptNewSession returns true on the second event because the old
-    // session is now terminal. But the user may have pinned the old session —
-    // in that case the symmetric guard below was skipped (no terminal event
-    // for the new session), and we'd auto-yank them off their pinned session
-    // here. Match the terminal-handoff path's pinning check.
-    if (oldSessionId && state.tasks.pinnedSessionId === oldSessionId) return;
     if (oldSessionId) inheritAgentctlStatus(state, oldSessionId, sessionId);
+    clearPinnedSessionIfOverridden(store, sessionId);
     state.setActiveSessionAuto(taskId, sessionId);
     return;
   }
 
   const isActive = state.tasks.activeSessionId === sessionId;
   if (isActive && newState && isTerminalSessionState(newState)) {
-    // If the user explicitly pinned this session (manual click), don't yank
-    // them away just because the workflow moved it to a terminal state.
-    if (state.tasks.pinnedSessionId === sessionId) return;
+    // When the user clicked open a terminal session (e.g. to review a
+    // completed run), setActiveSession pins it. If the backend then
+    // re-emits the same terminal state_changed (a replay — the previous
+    // stored state was already terminal), honor the pin and do NOT hand
+    // off to a running session. A genuine RUNNING→COMPLETED transition
+    // (previousState non-terminal) still hands off normally.
+    if (
+      state.tasks.pinnedSessionId === sessionId &&
+      previousState &&
+      isTerminalSessionState(previousState)
+    )
+      return;
     const replacement = pickReplacementSessionId(state, taskId);
     if (replacement && replacement !== sessionId) {
       inheritAgentctlStatus(state, sessionId, replacement);
+      clearPinnedSessionIfOverridden(store, replacement);
       state.setActiveSessionAuto(taskId, replacement);
     }
   }
@@ -512,7 +507,14 @@ export function registerTaskSessionHandlers(store: StoreApi<AppState>): WsHandle
       extractContextWindow(store, sessionId, payload);
       maybePromoteAgentctlReady(store, sessionId, newState, message.timestamp);
 
-      maybeAdoptSessionOnTransition(store, taskId, sessionId, newState, !!existingSession);
+      maybeAdoptSessionOnTransition(
+        store,
+        taskId,
+        sessionId,
+        newState,
+        !!existingSession,
+        existingSession?.state,
+      );
 
       maybeNotifySessionFailure(store, {
         taskId,

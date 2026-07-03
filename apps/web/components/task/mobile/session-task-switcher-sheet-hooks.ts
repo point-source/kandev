@@ -28,6 +28,10 @@ import { findTaskInSnapshots } from "@/lib/kanban/find-task";
 import { repositorySlug } from "@/lib/repository-slug";
 import { resolvePreferredSessionId } from "../task-select-helpers";
 import { agentErrorMessageForTask } from "@/lib/task-agent-error";
+import {
+  agentErrorAcknowledgementSessionIds,
+  usePersistResolvedAgentErrorAcknowledgements,
+} from "../use-agent-error-acknowledgements";
 
 // Map workflow snapshot to kanban state on workspace switch.
 function mapSnapshotToKanban(snapshot: WorkflowSnapshot, newWorkflowId: string) {
@@ -93,6 +97,7 @@ type SheetItemCtx = {
   envIdBySessionId: Parameters<typeof getSessionInfoForTask>[3];
   messagesBySession: Parameters<typeof hasPendingClarificationForSession>[0];
   dismissedAgentErrors: Record<string, string>;
+  acknowledgedAgentErrors: Record<string, string>;
 };
 
 function toSheetItem(
@@ -149,6 +154,7 @@ export function useSheetData(workspaceId: string | null) {
   const envIdBySessionId = useAppStore((state) => state.environmentIdBySessionId);
   const messagesBySession = useAppStore((state) => state.messages.bySession);
   const dismissedAgentErrors = useAppStore((state) => state.dismissedAgentErrors);
+  const acknowledgedAgentErrors = useAppStore((state) => state.acknowledgedAgentErrors);
   const {
     allTasks,
     allSteps,
@@ -165,6 +171,17 @@ export function useSheetData(workspaceId: string | null) {
     return activeTaskId;
   }, [activeSessionId, activeTaskId, sessionsById]);
 
+  const acknowledgementSessionIds = useMemo(
+    () => agentErrorAcknowledgementSessionIds(allTasks, sessionsByTaskId),
+    [allTasks, sessionsByTaskId],
+  );
+  usePersistResolvedAgentErrorAcknowledgements({
+    sessionsById,
+    sessionIds: acknowledgementSessionIds,
+    messagesBySession,
+    dismissedAgentErrors,
+  });
+
   const tasksWithRepositories = useMemo(() => {
     const repositories = workspaceId ? (repositoriesByWorkspace[workspaceId] ?? []) : [];
     const ctx: SheetItemCtx = {
@@ -179,6 +196,7 @@ export function useSheetData(workspaceId: string | null) {
       envIdBySessionId,
       messagesBySession,
       dismissedAgentErrors,
+      acknowledgedAgentErrors,
     };
     return allTasks.map((task) => toSheetItem(task, ctx));
   }, [
@@ -193,6 +211,7 @@ export function useSheetData(workspaceId: string | null) {
     envIdBySessionId,
     messagesBySession,
     dismissedAgentErrors,
+    acknowledgedAgentErrors,
   ]);
 
   const dialogSteps = useMemo(

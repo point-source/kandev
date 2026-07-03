@@ -7,6 +7,10 @@ import { createUISlice } from "./ui-slice";
 import { APP_SIDEBAR_EXPANDED_WIDTH } from "@/components/app-sidebar/app-sidebar-constants";
 import type { SidebarViewDraft } from "./sidebar-view-types";
 import type { UISlice } from "./types";
+import {
+  getStoredAcknowledgedAgentErrors,
+  setStoredAcknowledgedAgentErrors,
+} from "@/lib/session-last-agent-error";
 
 vi.mock("@/lib/api/domains/settings-api", () => ({
   updateUserSettings: vi.fn(() => Promise.resolve({ settings: {} })),
@@ -414,6 +418,40 @@ describe("appSidebar actions", () => {
     store.getState().toggleAppSidebarSettingsMode(); // off
     expect(store.getState().appSidebar.settingsMode).toBe(false);
     expect(store.getState().appSidebar.collapsed).toBe(false);
+  });
+});
+
+describe("agent error sidebar acknowledgements", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("hydrates acknowledged errors from localStorage", () => {
+    setStoredAcknowledgedAgentErrors({ "session-1": "stamp-1" });
+
+    const store = makeStore();
+
+    expect(store.getState().acknowledgedAgentErrors).toEqual({ "session-1": "stamp-1" });
+  });
+
+  it("records and persists acknowledged sidebar error stamps in one batch", () => {
+    const store = makeStore();
+
+    store.getState().acknowledgeAgentErrors({
+      "session-1": "stamp-1",
+      "session-2": "stamp-2",
+      "": "ignored",
+      "session-3": "",
+    });
+
+    expect(store.getState().acknowledgedAgentErrors).toEqual({
+      "session-1": "stamp-1",
+      "session-2": "stamp-2",
+    });
+    expect(getStoredAcknowledgedAgentErrors()).toEqual({
+      "session-1": "stamp-1",
+      "session-2": "stamp-2",
+    });
   });
 });
 

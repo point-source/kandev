@@ -69,6 +69,7 @@ Per-workspace credentials and triage triggers for external services.
 | [slack](integrations/slack.md) | shipped |
 | [external-mcp](integrations/external-mcp.md) | draft |
 | [gitlab-integration](gitlab-integration/spec.md) | shipped |
+| [jira-status-filter](jira-status-filter/spec.md) | shipped |
 
 ## workspaces/ — workspace lifecycle
 
@@ -92,6 +93,7 @@ Subscription quota tracking and per-agent cheap-model profile routing.
 | [ci-pr-automation](ui/ci-pr-automation.md) | draft |
 | [comment-markdown](ui/comment-markdown.md) | shipped |
 | [empty-turn-notice](ui/empty-turn-notice.md) | shipped |
+| [slash-command-composer](ui/slash-command-composer.md) | shipped |
 
 ## system-page/ — operational diagnostics & maintenance UI
 
@@ -111,6 +113,7 @@ System pages (Radarr/Sonarr-style) for status, disk usage, database maintenance,
 | [improve-kandev](improve-kandev/spec.md) | draft |
 | [homebrew-core](homebrew-core/spec.md) | draft |
 | [native-kandev-cli](native-kandev-cli/spec.md) | draft |
+| [desktop-tauri-app](desktop-tauri-app/spec.md) | shipped |
 | [public-share-links](public-share-links/spec.md) | draft |
 | [ssh-executor](ssh-executor/spec.md) | draft |
 | [cli-mode-parity](cli-mode-parity/spec.md) | draft |

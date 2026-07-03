@@ -148,11 +148,18 @@ apps/backend/
 - Exposes workspace operations (shell, git, files)
 - Supports multiple concurrent instances on different ports
 
+Standalone agentctl is launched in its own process group so terminal Ctrl+C is
+handled by the backend lifecycle manager first. Do not make standalone agentctl
+share the backend's foreground process group; that bypasses supervised shutdown
+and can leak ACP subprocesses.
+
 **Executor Types** (database model):
 - `local_pc` - Standalone process on host
 - `local_docker` - Docker container on host
 - `sprites` - Sprites cloud environment
 - `remote_docker`, `remote_vps`, `k8s` - Planned
+
+**Remote SSH executor platforms:** Treat supported remote OS/arch values as an end-to-end contract. Platform probe/normalization, lifecycle support checks, agentctl helper resolution, platform default shell, SSH readiness endpoints, frontend response types, and tests must stay aligned. Preserve raw unsupported platform details in user-facing errors, but use normalized values for supported-platform matching. Keep shell defaults platform-aware: Darwin defaults to `zsh`, Linux defaults to `bash`, unless an explicit shell is saved.
 
 ## Execution Flow
 
@@ -206,6 +213,7 @@ Every long-running goroutine must have a single owner with explicit start and st
 - Boot aborts if the backup fails — the pool is closed and `Provide` returns an error.
 - After all repos complete `initSchema`, `cmd/kandev/storage.go:recordSchemaVersion` writes the current binary version into `kandev_meta` (non-fatal; a failure just means the next boot will take a fresh snapshot).
 - Migration logging: `db.MigrateLogger.Apply(name, stmt)` — success logs Info, "already exists" / "duplicate column name" is silently swallowed, anything else logs Warn but never returns an error (preserving the existing swallow-error contract).
+- Schema replay handling: use `internal/db` helpers such as `IsDuplicateColumnError` / `IsAlreadyExistsError` instead of local error-string matching. When adding or changing startup schema code, include fresh-DB plus same-DB replay tests for SQLite; add the same env-gated Postgres replay coverage when the path supports Postgres. See `docs/decisions/0027-replayable-schema-migrations.md`.
 
 ## Schema & migrations (SQLite repository)
 

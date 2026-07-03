@@ -1,4 +1,9 @@
-import type { LinearIssueWatch, LinearSearchFilter, LinearUser } from "@/lib/types/linear";
+import type {
+  LinearIssueSortBy,
+  LinearIssueWatch,
+  LinearSearchFilter,
+  LinearUser,
+} from "@/lib/types/linear";
 import { DEFAULT_LINEAR_ISSUE_WATCH_PROMPT } from "./linear-issue-watch-placeholders";
 
 export const ASSIGNED_ANY = "__any__";
@@ -16,6 +21,19 @@ export const PRIORITY_OPTIONS: { value: LinearPriority; label: string }[] = [
   { value: 0, label: "No priority" },
 ];
 
+// Dispatch order applied when the in-flight cap limits how many matched issues
+// run at once. Order matters — most useful first; the empty value is Linear's
+// natural (recently-updated) order.
+export const SORT_BY_OPTIONS: { value: LinearIssueSortBy; label: string }[] = [
+  { value: "priority", label: "Priority (high → low)" },
+  { value: "priority_asc", label: "Priority (low → high)" },
+  { value: "created_desc", label: "Created (newest first)" },
+  { value: "created_asc", label: "Created (oldest first)" },
+  { value: "updated_desc", label: "Updated (recently updated first)" },
+  { value: "updated_asc", label: "Updated (least recently updated first)" },
+  { value: "", label: "Default (Linear order)" },
+];
+
 export interface FormState {
   workspaceId: string;
   query: string;
@@ -29,6 +47,10 @@ export interface FormState {
   estimateMax: string;
   workflowId: string;
   workflowStepId: string;
+  /** Optional repository binding; "" = unbound (repo-less task). */
+  repositoryId: string;
+  /** Base branch for the worktree; "" = the repository's default branch. */
+  baseBranch: string;
   agentProfileId: string;
   executorProfileId: string;
   prompt: string;
@@ -41,6 +63,8 @@ export interface FormState {
    * back to a number.
    */
   maxInflightTasks: string;
+  /** Dispatch order under the in-flight cap; empty = Linear's natural order. */
+  sortBy: LinearIssueSortBy;
 }
 
 export function makeEmptyForm(workspaceId: string): FormState {
@@ -57,12 +81,15 @@ export function makeEmptyForm(workspaceId: string): FormState {
     estimateMax: "",
     workflowId: "",
     workflowStepId: "",
+    repositoryId: "",
+    baseBranch: "",
     agentProfileId: "",
     executorProfileId: "",
     prompt: DEFAULT_LINEAR_ISSUE_WATCH_PROMPT,
     enabled: true,
     pollInterval: 300,
     maxInflightTasks: "5",
+    sortBy: "priority",
   };
 }
 
@@ -85,12 +112,15 @@ export function formStateFromWatch(w: LinearIssueWatch): FormState {
     estimateMax: estimateString(f.estimateMax),
     workflowId: w.workflowId,
     workflowStepId: w.workflowStepId,
+    repositoryId: w.repositoryId ?? "",
+    baseBranch: w.baseBranch ?? "",
     agentProfileId: w.agentProfileId,
     executorProfileId: w.executorProfileId,
     prompt: w.prompt || DEFAULT_LINEAR_ISSUE_WATCH_PROMPT,
     enabled: w.enabled,
     pollInterval: w.pollIntervalSeconds,
     maxInflightTasks: maxInflightTasksString(w.maxInflightTasks),
+    sortBy: w.sortBy ?? "",
   };
 }
 
@@ -147,12 +177,15 @@ export function buildWatchPayload(form: FormState): {
   filter: LinearSearchFilter;
   workflowId: string;
   workflowStepId: string;
+  repositoryId: string;
+  baseBranch: string;
   agentProfileId: string;
   executorProfileId: string;
   prompt: string;
   enabled: boolean;
   pollIntervalSeconds: number;
   maxInflightTasks: number | null;
+  sortBy: LinearIssueSortBy;
 } | null {
   const maxInflight = parseMaxInflightTasks(form.maxInflightTasks);
   if (maxInflight === "invalid") return null;
@@ -160,12 +193,17 @@ export function buildWatchPayload(form: FormState): {
     filter: buildFilterPayload(form),
     workflowId: form.workflowId,
     workflowStepId: form.workflowStepId,
+    // An empty repositoryId clears the binding; the empty base branch is sent
+    // verbatim so the backend fills it with the repo's default at save time.
+    repositoryId: form.repositoryId,
+    baseBranch: form.repositoryId ? form.baseBranch : "",
     agentProfileId: form.agentProfileId,
     executorProfileId: form.executorProfileId,
     prompt: form.prompt,
     enabled: form.enabled,
     pollIntervalSeconds: form.pollInterval,
     maxInflightTasks: maxInflight,
+    sortBy: form.sortBy,
   };
 }
 

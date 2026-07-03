@@ -33,12 +33,17 @@ var ErrExecutorNotFound = errors.New("executor not found")
 // will produce its own events.
 var ErrExecutionRotated = errors.New("execution rotated; CAS write rejected")
 
-// Status values for executors_running.status. The lifecycle manager defaults
-// rows to "starting" on creation (see runtime/lifecycle/persistence.go); the
-// orchestrator flips a row to "prepared" when a prepare-only launch finishes
-// with the agent process intentionally not started.
+// Status values for executors_running.status. The lifecycle manager mirrors
+// active execution state into this column; the orchestrator flips a row to
+// "prepared" when a prepare-only launch finishes with the agent process
+// intentionally not started.
 const (
 	ExecutorRunningStatusStarting = "starting"
+	ExecutorRunningStatusRunning  = "running"
+	ExecutorRunningStatusReady    = "ready"
+	ExecutorRunningStatusFailed   = "failed"
+	ExecutorRunningStatusStopped  = "stopped"
+	ExecutorRunningStatusComplete = "completed"
 	ExecutorRunningStatusPrepared = "prepared"
 )
 
@@ -59,6 +64,7 @@ type SearchMessagesOptions struct {
 // Task metadata keys used for deferred agent start (e.g., task.moved → handleTaskMovedNoSession).
 const (
 	MetaKeyAgentProfileID    = "agent_profile_id"
+	MetaKeyExecutorID        = "executor_id"
 	MetaKeyExecutorProfileID = "executor_profile_id"
 	// MetaKeyWorkspacePath is the optional host folder for repo-less tasks
 	// (set by CreateTask, read by the orchestrator when building a session).
@@ -641,6 +647,7 @@ type TaskSessionWorktree struct {
 	SessionID    string    `json:"session_id"`
 	WorktreeID   string    `json:"worktree_id"`
 	RepositoryID string    `json:"repository_id"`
+	BranchSlug   string    `json:"branch_slug,omitempty"`
 	Position     int       `json:"position"`
 	CreatedAt    time.Time `json:"created_at"`
 
@@ -1024,6 +1031,7 @@ type TaskEnvironmentRepo struct {
 	ID                string    `json:"id"`
 	TaskEnvironmentID string    `json:"task_environment_id"`
 	RepositoryID      string    `json:"repository_id"`
+	BranchSlug        string    `json:"branch_slug,omitempty"`
 	WorktreeID        string    `json:"worktree_id,omitempty"`
 	WorktreePath      string    `json:"worktree_path,omitempty"`
 	WorktreeBranch    string    `json:"worktree_branch,omitempty"`
@@ -1091,6 +1099,9 @@ func (r *TaskEnvironmentRepo) ToAPI() map[string]interface{} {
 	}
 	if r.WorktreeID != "" {
 		out["worktree_id"] = r.WorktreeID
+	}
+	if r.BranchSlug != "" {
+		out["branch_slug"] = r.BranchSlug
 	}
 	if r.WorktreePath != "" {
 		out["worktree_path"] = r.WorktreePath
