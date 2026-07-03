@@ -67,10 +67,7 @@ export async function listJiraProjects(options?: WorkspaceApiOptions) {
   );
 }
 
-export async function listJiraProjectStatuses(
-  projectKey: string,
-  options?: WorkspaceApiOptions,
-) {
+export async function listJiraProjectStatuses(projectKey: string, options?: WorkspaceApiOptions) {
   return fetchJson<{ statuses: JiraStatus[] }>(
     withWorkspace(`/api/v1/jira/projects/${encodeURIComponent(projectKey)}/statuses`, options),
     requestOptions(options),
