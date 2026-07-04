@@ -48,12 +48,17 @@ export type ProjectStatuses = {
 // lifetime of the component so re-selecting a project never refetches. A fetch
 // failure for one project is non-fatal: that project contributes no options
 // and the rest still load.
-export function useProjectStatuses(projectKeys: string[]): ProjectStatuses {
+export function useProjectStatuses(
+  projectKeys: string[],
+  workspaceId?: string | null,
+): ProjectStatuses {
   const [options, setOptions] = useState<JiraStatus[]>([]);
   const [loaded, setLoaded] = useState(false);
   const cacheRef = useRef<Map<string, JiraStatus[]>>(new Map());
 
-  const cacheKey = [...projectKeys].sort().join(",");
+  const workspaceKey = workspaceId?.trim() ?? "";
+  const projectKeySet = [...projectKeys].sort().join(",");
+  const cacheKey = `${workspaceKey}|${projectKeySet}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -67,21 +72,24 @@ export function useProjectStatuses(projectKeys: string[]): ProjectStatuses {
         return;
       }
       const cache = cacheRef.current;
+      const statusCacheKey = (key: string) => `${workspaceKey}\u0000${key}`;
       await Promise.all(
         projectKeys
-          .filter((key) => !cache.has(key))
+          .filter((key) => !cache.has(statusCacheKey(key)))
           .map(async (key) => {
             try {
-              const { statuses } = await listJiraProjectStatuses(key);
-              cache.set(key, statuses ?? []);
+              const { statuses } = await listJiraProjectStatuses(key, {
+                workspaceId: workspaceKey || undefined,
+              });
+              cache.set(statusCacheKey(key), statuses ?? []);
             } catch {
               // Non-fatal: cache an empty list so we don't refetch on every render.
-              cache.set(key, []);
+              cache.set(statusCacheKey(key), []);
             }
           }),
       );
       if (cancelled) return;
-      setOptions(unionByName(projectKeys.map((key) => cache.get(key) ?? [])));
+      setOptions(unionByName(projectKeys.map((key) => cache.get(statusCacheKey(key)) ?? [])));
       setLoaded(true);
     }
     void load();

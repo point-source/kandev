@@ -2,10 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { JiraStatus } from "@/lib/types/jira";
 
-const listJiraProjectStatusesMock = vi.fn<[string], Promise<{ statuses: JiraStatus[] }>>();
+const listJiraProjectStatusesMock = vi.fn<
+  [string, { workspaceId?: string }?],
+  Promise<{ statuses: JiraStatus[] }>
+>();
 
 vi.mock("@/lib/api/domains/jira-api", () => ({
-  listJiraProjectStatuses: (key: string) => listJiraProjectStatusesMock(key),
+  listJiraProjectStatuses: (key: string, options?: { workspaceId?: string }) =>
+    listJiraProjectStatusesMock(key, options),
 }));
 
 import { reconcileStatuses, useProjectStatuses } from "./use-project-statuses";
@@ -66,7 +70,7 @@ describe("useProjectStatuses", () => {
       }),
     );
 
-    const { result } = renderHook(() => useProjectStatuses(["CLIP"]));
+    const { result } = renderHook(() => useProjectStatuses(["CLIP"], "workspace-1"));
 
     // Before the fetch resolves the hook must not claim to be loaded, otherwise
     // callers would reconcile a saved status selection against empty options.
@@ -77,5 +81,8 @@ describe("useProjectStatuses", () => {
 
     await waitFor(() => expect(result.current.loaded).toBe(true));
     expect(result.current.options).toEqual([status("1", IN_DEV)]);
+    expect(listJiraProjectStatusesMock).toHaveBeenCalledWith("CLIP", {
+      workspaceId: "workspace-1",
+    });
   });
 });

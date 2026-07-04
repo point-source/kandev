@@ -209,6 +209,21 @@ export class ApiClient {
     return res.json() as Promise<T>;
   }
 
+  private async activeWorkspaceId(): Promise<string | undefined> {
+    const { settings } = await this.getUserSettings();
+    const workspaceId = settings.workspace_id;
+    return typeof workspaceId === "string" && workspaceId.trim() !== ""
+      ? workspaceId.trim()
+      : undefined;
+  }
+
+  private async withActiveWorkspace(path: string, workspaceId?: string): Promise<string> {
+    const resolved = workspaceId?.trim() || (await this.activeWorkspaceId());
+    if (!resolved) return path;
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}workspace_id=${encodeURIComponent(resolved)}`;
+  }
+
   async healthCheck(): Promise<void> {
     await this.request("GET", "/health");
   }
@@ -1433,18 +1448,27 @@ export class ApiClient {
     instanceType?: "cloud" | "server";
     defaultProjectKey?: string;
     secret: string;
+    workspaceId?: string;
   }): Promise<unknown> {
-    return this.request("POST", "/api/v1/jira/config", {
-      ...payload,
+    const { workspaceId, ...config } = payload;
+    const path = await this.withActiveWorkspace("/api/v1/jira/config", workspaceId);
+    return this.request("POST", path, {
+      ...config,
       authMethod: payload.authMethod ?? "api_token",
       instanceType: payload.instanceType ?? "cloud",
     });
   }
 
-  async setLinearConfig(payload: { secret: string; defaultTeamKey?: string }): Promise<unknown> {
-    return this.request("POST", "/api/v1/linear/config", {
+  async setLinearConfig(payload: {
+    secret: string;
+    defaultTeamKey?: string;
+    workspaceId?: string;
+  }): Promise<unknown> {
+    const { workspaceId, ...config } = payload;
+    const path = await this.withActiveWorkspace("/api/v1/linear/config", workspaceId);
+    return this.request("POST", path, {
       defaultTeamKey: "",
-      ...payload,
+      ...config,
       authMethod: "api_key",
     });
   }
@@ -1458,11 +1482,14 @@ export class ApiClient {
    */
   async waitForIntegrationAuthHealthy(
     integration: "jira" | "linear" | "sentry",
-    timeoutMs = 5_000,
+    options: number | { timeoutMs?: number; workspaceId?: string } = 5_000,
   ): Promise<void> {
+    const timeoutMs = typeof options === "number" ? options : (options.timeoutMs ?? 5_000);
+    const workspaceId = typeof options === "number" ? undefined : options.workspaceId;
+    const path = await this.withActiveWorkspace(`/api/v1/${integration}/config`, workspaceId);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const res = await this.rawRequest("GET", `/api/v1/${integration}/config`);
+      const res = await this.rawRequest("GET", path);
       if (res.ok && res.status === 200) {
         const cfg = (await res.json()) as { hasSecret?: boolean; lastOk?: boolean };
         if (cfg.hasSecret && cfg.lastOk) return;
@@ -1488,8 +1515,14 @@ export class ApiClient {
     await this.request("PUT", "/api/v1/jira/mock/auth-result", result);
   }
 
-  async mockJiraSetAuthHealth(args: { ok: boolean; error?: string }): Promise<void> {
-    await this.request("PUT", "/api/v1/jira/mock/auth-health", args);
+  async mockJiraSetAuthHealth(args: {
+    ok: boolean;
+    error?: string;
+    workspaceId?: string;
+  }): Promise<void> {
+    const { workspaceId, ...payload } = args;
+    const path = await this.withActiveWorkspace("/api/v1/jira/mock/auth-health", workspaceId);
+    await this.request("PUT", path, payload);
   }
 
   async mockJiraSetProjects(projects: MockJiraProject[]): Promise<void> {
@@ -1547,8 +1580,11 @@ export class ApiClient {
     ok: boolean;
     error?: string;
     orgSlug?: string;
+    workspaceId?: string;
   }): Promise<void> {
-    await this.request("PUT", "/api/v1/linear/mock/auth-health", args);
+    const { workspaceId, ...payload } = args;
+    const path = await this.withActiveWorkspace("/api/v1/linear/mock/auth-health", workspaceId);
+    await this.request("PUT", path, payload);
   }
 
   async mockLinearSetTeams(teams: MockLinearTeam[]): Promise<void> {
@@ -1583,8 +1619,14 @@ export class ApiClient {
     await this.request("PUT", "/api/v1/sentry/mock/auth-result", result);
   }
 
-  async mockSentrySetAuthHealth(args: { ok: boolean; error?: string }): Promise<void> {
-    await this.request("PUT", "/api/v1/sentry/mock/auth-health", args);
+  async mockSentrySetAuthHealth(args: {
+    ok: boolean;
+    error?: string;
+    workspaceId?: string;
+  }): Promise<void> {
+    const { workspaceId, ...payload } = args;
+    const path = await this.withActiveWorkspace("/api/v1/sentry/mock/auth-health", workspaceId);
+    await this.request("PUT", path, payload);
   }
 
   async mockSentrySetOrganizations(organizations: MockSentryOrganization[]): Promise<void> {

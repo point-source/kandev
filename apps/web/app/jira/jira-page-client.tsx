@@ -180,6 +180,7 @@ function AuthenticatedView({
   const search = useJiraSearch(workspaceId ?? null, state.effectiveJql);
   const { options: statusOptions, loaded: statusesLoaded } = useProjectStatuses(
     state.filters.projectKeys,
+    workspaceId,
   );
 
   // When the available status union changes (project selection changed, or
