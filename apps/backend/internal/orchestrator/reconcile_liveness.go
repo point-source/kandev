@@ -23,7 +23,7 @@ type rowLivenessProber interface {
 // rowLiveness classifies a row's backing-process liveness, returning Unknown when
 // no prober is wired (unit tests, degraded startup) so a caller never mistakes
 // "can't probe" for "dead". The probe is runtime-aware: a local process check
-// never runs against a remote/SSH row (§spec:runtime-aware-liveness).
+// never runs against a remote/SSH row (#1597 runtime-aware liveness).
 func (s *Service) rowLiveness(row *models.ExecutorRunning) models.ProcessLiveness {
 	prober, ok := s.agentManager.(rowLivenessProber)
 	if !ok || prober == nil {
@@ -33,7 +33,7 @@ func (s *Service) rowLiveness(row *models.ExecutorRunning) models.ProcessLivenes
 }
 
 // pruneOrRepairExecutorRow enforces the resume-safety deletion invariant
-// (§spec:resume-safety-invariant) at a reconciliation cleanup site: a row backing
+// (#1597 resume-safety invariant) at a reconciliation cleanup site: a row backing
 // a resumable session, or holding a resume_token, is repaired in place (never
 // deleted); only a row that is neither is pruned.
 func (s *Service) pruneOrRepairExecutorRow(ctx context.Context, running *models.ExecutorRunning, sessionState models.TaskSessionState) {
@@ -52,8 +52,8 @@ func (s *Service) pruneOrRepairExecutorRow(ctx context.Context, running *models.
 
 // repairDeadRowLiveness repairs a preserved row so it no longer claims a live
 // process — status=stopped, local_pid cleared, resume_token/worktree preserved —
-// satisfying "never leave a row claiming a dead process" (§req:success-criteria
-// #6). Best-effort; a missing row is not an error.
+// satisfying #1597's "never leave a row claiming a dead process" expected
+// behavior. Best-effort; a missing row is not an error.
 func (s *Service) repairDeadRowLiveness(ctx context.Context, running *models.ExecutorRunning) {
 	if err := s.repo.RepairExecutorRunningDead(ctx, running.SessionID); err != nil &&
 		!errors.Is(err, models.ErrExecutorRunningNotFound) {

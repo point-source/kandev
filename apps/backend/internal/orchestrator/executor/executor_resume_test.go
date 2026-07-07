@@ -115,7 +115,7 @@ func TestResumeSession_LiveAgentReturnsAlreadyRunning(t *testing.T) {
 
 // TestResumeSession_StaleExecutionCleansUpAndRetries is the "row looks live but
 // the process is gone" half of the corrected pause→resume contract
-// (§spec:pause-resume-recovery): the session sits at WAITING_FOR_INPUT with a
+// (#1597 pause→resume recovery): the session sits at WAITING_FOR_INPUT with a
 // resumable executors_running row, but its agent process is dead. LaunchAgent
 // reports "already has an agent running" (stale in-memory execution), the
 // runtime-aware liveness probe confirms no live agent, so resume cleans the

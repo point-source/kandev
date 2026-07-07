@@ -7,7 +7,7 @@ import { typeWhileBusy } from "../../helpers/type-while-busy";
 import { SessionPage } from "../../pages/session-page";
 
 // ---------------------------------------------------------------------------
-// Pause → resume recovery (§spec:pause-resume-recovery)
+// Pause → resume recovery (#1597 pause→resume recovery)
 //
 // The operator's headline pain: pause a running agent turn and the session
 // wedges — the next message is dropped or the composer stays stuck "running",

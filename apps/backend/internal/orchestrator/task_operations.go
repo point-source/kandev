@@ -2615,7 +2615,7 @@ func (s *Service) CancelAgent(ctx context.Context, sessionID string) error {
 	s.completeTurnForSession(ctx, sessionID)
 
 	// Deliver any message the operator queued while the turn was running
-	// (§spec:pause-resume-recovery). On a normal cancel the agent emits
+	// (#1597 pause→resume recovery). On a normal cancel the agent emits
 	// complete(cancelled) → handleAgentReady → on_turn_complete, which drains
 	// the queue. But an escalated cancel (agent hung) or a dead-process cancel
 	// fires no agent.ready event, so nothing would drain it — leaving the

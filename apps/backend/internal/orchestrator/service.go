@@ -1133,7 +1133,7 @@ func (s *Service) reconcileOneSessionOnStartup(ctx context.Context, running *mod
 	// needed for lazy recovery when the user opens the session. But make the row
 	// TRUE: after a restart the spawned process is normally gone, so if the local
 	// liveness handle is confirmed dead, repair the row (status=stopped, local_pid
-	// cleared) so it never keeps claiming a live process (§req:success-criteria #6).
+	// cleared) so it never keeps claiming a live process (#1597 expected behavior).
 	// resume_token/worktree are preserved by the repair. Remote rows report Unknown
 	// and are left to their own runtime's status poll.
 	if s.rowLiveness(running) == models.ProcessLivenessDead {

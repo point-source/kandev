@@ -39,7 +39,7 @@ type ExecutorRunningWriter interface {
 	// RepairExecutorRunningDead repairs a row in place (status=stopped, local_pid
 	// cleared, last_seen re-stamped) while preserving resume_token/worktree. Used
 	// instead of deletion when a stale-cleanup would otherwise destroy a resumable
-	// row (§spec:resume-safety-invariant). Idempotent-friendly: returns
+	// row (#1597 resume-safety invariant). Idempotent-friendly: returns
 	// ErrExecutorRunningNotFound if no row exists.
 	RepairExecutorRunningDead(ctx context.Context, sessionID string) error
 }
@@ -142,7 +142,7 @@ func agentctlPortFromExecution(execution *AgentExecution, agentctlURL string) in
 // runtime it is 0. SSH/remote processes live on another host (tracked via the
 // remote-host PID column) and docker processes live in a container, so this
 // never returns a pid for a non-local runtime — a local-process liveness check
-// can therefore never run against a remote row (§spec:runtime-aware-liveness).
+// can therefore never run against a remote row (#1597 runtime-aware liveness).
 func (m *Manager) resolveLocalPID(execution *AgentExecution) int {
 	if execution == nil {
 		return 0
@@ -254,7 +254,7 @@ func (m *Manager) persistExecutorRunning(ctx context.Context, execution *AgentEx
 	// the prior read succeeded or positively confirmed no row exists. If the read
 	// itself FAILS (transient DB error, not "not found"), we must NOT proceed: a
 	// blind upsert would blank a live resume_token, costing the session its resume
-	// ability (§spec:resume-safety-invariant). Skipping is fail-safe — the row keeps
+	// ability (#1597 resume-safety invariant). Skipping is fail-safe — the row keeps
 	// its current columns and the next transition (or reconciliation) re-persists.
 	var prior *models.ExecutorRunning
 	if reader, ok := m.runningWriter.(executorRunningReader); ok {
@@ -281,7 +281,7 @@ func (m *Manager) persistExecutorRunning(ctx context.Context, execution *AgentEx
 	// (SSH/docker) row. A terminal row carries no handle: for standalone the
 	// resolved PID is the shared agentctl control server, which outlives the
 	// session, and a completed/failed/stopped row must not claim a live process
-	// (§spec:truthful-executor-rows) — matching RepairExecutorRunningDead.
+	// (#1597 truthful executor rows) — matching RepairExecutorRunningDead.
 	if !isTerminalExecutorRunningStatus(running.Status) {
 		running.LocalPID = m.resolveLocalPID(execution)
 	}
@@ -305,7 +305,7 @@ func (m *Manager) persistExecutorRunning(ctx context.Context, execution *AgentEx
 // cleaned up (CleanupStaleExecutionBySessionID). Called after executionStore.Remove
 // so the in-memory and persistent state are gone in the same operation.
 //
-// Resume-safety invariant (§spec:resume-safety-invariant): a row that still holds
+// Resume-safety invariant (#1597 resume-safety invariant): a row that still holds
 // a resume_token is REPAIRED in place (status=stopped, local_pid cleared) rather
 // than deleted, so a session stays resumable even if a subsequent relaunch fails.
 // On the happy path the relaunch UPSERTs a fresh row over the repaired one, so

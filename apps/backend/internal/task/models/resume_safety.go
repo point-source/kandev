@@ -4,8 +4,8 @@ package models
 // row is still alive, judged in a runtime-aware way. It is a low-dependency
 // mirror of the runtime/lifecycle package's liveness probe result, so the
 // orchestrator and task service can reason about a row's liveness without
-// importing runtime/lifecycle (§spec:reconciliation-backstop,
-// §spec:runtime-aware-liveness).
+// importing runtime/lifecycle (#1597 startup reconciliation,
+// #1597 runtime-aware liveness).
 type ProcessLiveness int
 
 const (
@@ -53,7 +53,7 @@ func IsResumableSessionState(state TaskSessionState) bool {
 // reconciliation, on-demand stale cleanup, task teardown). The guarantee is
 // expressed as a deletion invariant rather than by duplicating resume_token into
 // a second table, which would reintroduce the divergence risk this effort
-// removes (§req:constraints "do not duplicate resume_token").
+// removes (#1597: resume_token must not be duplicated into a second table).
 //
 // One documented deviation: the lifecycle tier's stale-execution cleanup
 // (lifecycle.Manager deleteExecutorRunning) gates on the resume_token alone,

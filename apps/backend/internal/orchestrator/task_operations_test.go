@@ -598,7 +598,7 @@ func TestCancelAgent_TaskStateReconcile(t *testing.T) {
 }
 
 // TestCancelAgent_DeliversQueuedMessageOnResume pins the corrected pause→resume
-// contract (§spec:pause-resume-recovery): a message queued while the agent was
+// contract (#1597 pause→resume recovery): a message queued while the agent was
 // running is DELIVERED once cancel settles the session to WAITING_FOR_INPUT, not
 // stranded on the queue for indefinite manual drain.
 //

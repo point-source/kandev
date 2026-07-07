@@ -455,7 +455,7 @@ func (r *Repository) UpdateResumeToken(ctx context.Context, sessionID, expectedE
 // RepairExecutorRunningDead repairs a row in place to reflect that its backing
 // process is gone, WITHOUT deleting it. The resume-safety invariant requires a
 // resumable / non-terminal row be repaired rather than pruned
-// (§spec:resume-safety-invariant): flip status to "stopped", clear the local
+// (#1597 resume-safety invariant): flip status to "stopped", clear the local
 // liveness handle (local_pid = 0) so the row no longer claims a live process,
 // and re-stamp last_seen_at as a fresh liveness observation. resume_token,
 // worktree, and endpoint columns are intentionally preserved so the session

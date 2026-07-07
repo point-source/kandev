@@ -126,7 +126,7 @@ type Manager struct {
 	// standaloneHostPID is the OS process id of the standalone agentctl
 	// control-server this backend spawned on the local host. It is the
 	// host-local liveness handle recorded in executors_running.local_pid for
-	// local/standalone rows (see persistence.go / §spec:truthful-executor-rows).
+	// local/standalone rows (see persistence.go / #1597 truthful executor rows).
 	// 0 when unset (tests, or before the launcher wires it). Never used for
 	// SSH/remote rows — their process lives on another host.
 	standaloneHostPID int

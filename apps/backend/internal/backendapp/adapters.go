@@ -280,7 +280,7 @@ func (a *lifecycleAdapter) StopAgentWithReason(ctx context.Context, agentInstanc
 // executors_running row using the runtime-aware host-local probe. It is the
 // orchestrator's window into the platform-split liveness check (kept in the
 // lifecycle package) used by startup reconciliation
-// (§spec:runtime-aware-liveness). A local check never runs against a
+// (#1597 runtime-aware liveness). A local check never runs against a
 // remote/SSH row — such rows return Unknown.
 func (a *lifecycleAdapter) RowLiveness(row *models.ExecutorRunning) models.ProcessLiveness {
 	return lifecycle.RowProcessLiveness(row)

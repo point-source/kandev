@@ -13,8 +13,8 @@ import (
 // TestExecutorRunningLocalPIDRoundTrips proves the local_pid column is an
 // independent, fully-plumbed column: it is written by UpsertExecutorRunning and
 // read back by GetExecutorRunningBySessionID / ListExecutorsRunning without
-// aliasing the SSH-only pid column. This is the schema half of the §1597
-// executor-row-desync fix (§spec:truthful-executor-rows): a local/standalone row
+// aliasing the SSH-only pid column. This is the schema half of the #1597
+// executor-row-desync fix (#1597 truthful executor rows): a local/standalone row
 // must be able to carry a real host-local liveness handle distinct from the
 // remote-host SSH pid.
 func TestExecutorRunningLocalPIDRoundTrips(t *testing.T) {
@@ -106,7 +106,7 @@ func TestExecutorRunningLocalPIDRoundTrips(t *testing.T) {
 	}
 }
 
-// TestExecutorRunningLocalPIDSeparateFromSSHPID guards the §req:constraints rule
+// TestExecutorRunningLocalPIDSeparateFromSSHPID guards the #1597 pid-semantics rule
 // that a local liveness handle must never overload the SSH pid column: an SSH row
 // carries pid (remote host) with local_pid==0, and a local row carries local_pid
 // with pid==0, and neither leaks into the other.
@@ -144,7 +144,7 @@ func TestExecutorRunningLocalPIDSeparateFromSSHPID(t *testing.T) {
 }
 
 // TestRepairExecutorRunningDead proves the repair-in-place primitive of the
-// resume-safety invariant (§spec:resume-safety-invariant): a row whose process is
+// resume-safety invariant (#1597 resume-safety invariant): a row whose process is
 // gone is marked stopped with its local liveness handle cleared, WITHOUT losing
 // the resume_token / worktree that keep the session resumable.
 func TestRepairExecutorRunningDead(t *testing.T) {

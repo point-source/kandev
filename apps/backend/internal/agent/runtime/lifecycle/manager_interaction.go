@@ -1196,7 +1196,7 @@ func (m *Manager) MarkCompleted(executionID string, exitCode int, errorMessage s
 	// transitions (which flow through updateStatusAndPersist), MarkCompleted is
 	// the process-exit/crash boundary and historically skipped persistence — so a
 	// row kept claiming a `running`/`starting` process after it had exited
-	// (§req:problem-statement). Re-stamping here leaves the row truthful (terminal
+	// (#1597). Re-stamping here leaves the row truthful (terminal
 	// status + fresh last_seen_at) the moment the process is gone.
 	m.persistExecutorRunning(context.Background(), execution)
 

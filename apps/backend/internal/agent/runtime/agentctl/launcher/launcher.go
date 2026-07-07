@@ -98,7 +98,7 @@ func (l *Launcher) Port() int {
 
 // Pid returns the OS process id of the running agentctl control-server, or 0 if
 // it has not started yet. This is the host-local liveness handle recorded in
-// executors_running.local_pid for local/standalone rows (§spec:truthful-executor-rows).
+// executors_running.local_pid for local/standalone rows (#1597 truthful executor rows).
 func (l *Launcher) Pid() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

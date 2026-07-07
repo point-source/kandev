@@ -123,7 +123,7 @@ func TestMarkReadyPersistsReadyExecutorRunningStatus(t *testing.T) {
 }
 
 // TestLocalStandaloneRowCarriesLocalPID is the characterization test for the
-// §1597 symptom "every local row reports pid=0 with no local liveness handle".
+// #1597 symptom "every local row reports pid=0 with no local liveness handle".
 // A standalone execution persisted through the manager must carry the host-local
 // agentctl PID in executors_running.local_pid, an observed last_seen_at, and a
 // live endpoint — so a dead row is distinguishable from a live one.
@@ -168,7 +168,7 @@ func TestLocalStandaloneRowCarriesLocalPID(t *testing.T) {
 	}
 }
 
-// TestSSHRowNeverCarriesLocalPID guards §req:constraints: an SSH row's process
+// TestSSHRowNeverCarriesLocalPID guards the #1597 pid-semantics constraint: an SSH row's process
 // lives on a remote host, so the local liveness handle must stay 0 for it — the
 // remote pid keeps living in the PID column, never local_pid.
 func TestSSHRowNeverCarriesLocalPID(t *testing.T) {
@@ -249,7 +249,7 @@ func TestMarkCompletedPersistsTerminalRow(t *testing.T) {
 	// A terminal row must not carry a live local liveness handle: the resolved
 	// standalone PID is the shared agentctl control server, which outlives this
 	// session, and a completed row claiming a live process would read Alive from
-	// RowProcessLiveness — the exact lie §spec:truthful-executor-rows removes.
+	// RowProcessLiveness — the exact lie #1597 truthful executor rows removes.
 	// Matches RepairExecutorRunningDead, which clears local_pid on repair.
 	if writer.running.LocalPID != 0 {
 		t.Fatalf("terminal row local_pid = %d, want 0 (must not claim the live shared agentctl process)", writer.running.LocalPID)
@@ -283,7 +283,7 @@ func (w *readErrExecutorRunningWriter) RepairExecutorRunningDead(_ context.Conte
 	return nil
 }
 
-// TestPersistSkipsUpsertWhenPriorReadFails guards §spec:resume-safety-invariant:
+// TestPersistSkipsUpsertWhenPriorReadFails guards #1597 resume-safety invariant:
 // a transient prior-row read failure must NOT proceed to a blind upsert, because
 // that would blank a live resume_token (the upsert overwrites it with the empty
 // excluded value). MarkCompleted newly persists at the exit boundary, where a

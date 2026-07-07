@@ -10,8 +10,9 @@ import (
 )
 
 // TestReconcileSessionsOnStartupMakesRowsTrue is the restart-reconciliation
-// integration test for §spec:reconciliation-backstop / §req:success-criteria
-// #5, #6, #7. After a restart, reconciliation verifies each executors_running
+// integration test for #1597 startup reconciliation (the backlog stops
+// growing, rows are made true, resumability is never lost). After a restart,
+// reconciliation verifies each executors_running
 // row against reality using runtime-aware liveness and:
 //   - prunes a terminal row whose process is dead and that holds no resume_token
 //     (the stale-row backlog trends toward zero);
@@ -97,7 +98,7 @@ func TestReconcileSessionsOnStartupMakesRowsTrue(t *testing.T) {
 // gone entirely (deleted task/worktree) routes to handleMissingSessionOnStartup,
 // which stops the still-registered runtime handle (forced) and, once that
 // succeeds, deletes the now-meaningless executors_running row — so orphan rows
-// don't survive restarts and inflate the backlog (§req:success-criteria #5).
+// don't survive restarts and inflate the backlog (#1597).
 func TestReconcileSessionsOnStartup_MissingSessionStopsAgentAndDeletesRow(t *testing.T) {
 	repo := setupTestRepo(t)
 	ctx := context.Background()
@@ -140,7 +141,7 @@ func TestReconcileSessionsOnStartup_MissingSessionStopsAgentAndDeletesRow(t *tes
 // no resume_token is pruned (nothing to lose), while the rare Created row that
 // already carries a resume_token is repaired in place — the token is the only
 // handle to the agent-side conversation and must survive
-// (§spec:resume-safety-invariant, §req:success-criteria #7).
+// (#1597 resume-safety invariant).
 func TestReconcileSessionsOnStartup_CreatedSessionRowPrunedUnlessResumable(t *testing.T) {
 	repo := setupTestRepo(t)
 	ctx := context.Background()

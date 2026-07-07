@@ -10,7 +10,7 @@ import (
 
 // invariantWriter is a fake ExecutorRunningWriter + executorRunningReader that
 // records whether a cleanup DELETED vs REPAIRED the row, so a test can pin the
-// resume-safety deletion invariant (§spec:resume-safety-invariant).
+// resume-safety deletion invariant (#1597 resume-safety invariant).
 type invariantWriter struct {
 	prior    *models.ExecutorRunning
 	deleted  bool
@@ -49,7 +49,7 @@ func (w *invariantWriter) RepairExecutorRunningDead(_ context.Context, _ string)
 // (CleanupStaleExecutionBySessionID → deleteExecutorRunning). A row that still
 // holds a resume_token must be repaired in place, never deleted — otherwise a
 // stale-cleanup (or a resume whose relaunch fails) permanently costs the operator
-// a resumable conversation (§spec:resume-safety-invariant, §req:success-criteria #7).
+// a resumable conversation (#1597 resume-safety invariant).
 func TestDeleteExecutorRunningRepairsResumableRow(t *testing.T) {
 	log := newNopLogger(t)
 	writer := &invariantWriter{prior: &models.ExecutorRunning{

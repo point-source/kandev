@@ -7,8 +7,8 @@ import (
 
 // RowProcessLiveness reports the liveness of the OS process backing a row,
 // branching on the row's runtime so that a host-local process check is NEVER
-// applied to a remote row (§spec:runtime-aware-liveness; §req:constraints "do
-// not overload the SSH pid").
+// applied to a remote row (#1597: executors_running.pid is the agentctl PID
+// on the REMOTE host for SSH rows — never overload it with a local pid).
 //
 // It returns models.ProcessLiveness — a low-dependency type the orchestrator and
 // task service can consume without importing runtime/lifecycle — so cleanup and

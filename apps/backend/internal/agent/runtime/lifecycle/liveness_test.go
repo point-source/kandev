@@ -10,7 +10,7 @@ import (
 )
 
 // TestRowProcessLivenessLocalAliveVsDead proves a live local row is
-// distinguishable from a dead one from the row alone (§req:success-criteria #3).
+// distinguishable from a dead one from the row alone (#1597).
 func TestRowProcessLivenessLocalAliveVsDead(t *testing.T) {
 	// This process is, by definition, alive.
 	alive := &models.ExecutorRunning{
@@ -35,7 +35,7 @@ func TestRowProcessLivenessLocalAliveVsDead(t *testing.T) {
 // TestRowProcessLivenessNeverProbesSSH is the no-regression guard: an SSH row's
 // pid is a REMOTE pid, so the local predicate must never judge it — even when
 // that pid value happens to match a live LOCAL process. It returns Unknown and
-// defers to the SSH executor's remote kill -0 path (§spec:runtime-aware-liveness).
+// defers to the SSH executor's remote kill -0 path (#1597 runtime-aware liveness).
 func TestRowProcessLivenessNeverProbesSSH(t *testing.T) {
 	sshRow := &models.ExecutorRunning{
 		SessionID: "s-ssh",
