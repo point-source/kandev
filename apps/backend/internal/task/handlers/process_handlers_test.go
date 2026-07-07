@@ -399,6 +399,9 @@ func (m *mockRepository) UpdateResumeToken(ctx context.Context, sessionID, expec
 func (m *mockRepository) UpdateExecutorRunningStatus(ctx context.Context, sessionID, status string) error {
 	return nil
 }
+func (m *mockRepository) RepairExecutorRunningDead(ctx context.Context, sessionID string) error {
+	return nil
+}
 func (m *mockRepository) CreateEnvironment(ctx context.Context, environment *models.Environment) error {
 	return nil
 }

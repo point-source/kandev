@@ -1,8 +1,32 @@
 # 0025: Runtime Cleanup Uses `executors_running`
 
-**Status:** accepted
+**Status:** accepted (amended 2026-07-06 — see "Update")
 **Date:** 2026-06-22
 **Area:** backend
+
+## Update (2026-07-06, #1597 executor-row-desync)
+
+This decision **stays**: `executors_running` remains the authoritative durable
+runtime inventory. It was made *trustworthy* rather than reverted. Two
+clarifications now hold:
+
+- **Events are the primary producer; startup reconciliation heals what events
+  cannot.** Every lifecycle transition writes the row (launch, boot-ready,
+  turn-complete, cancel, process-exit/crash, stop), populating a host-local
+  liveness handle (`executors_running.local_pid`) for local/standalone rows. A
+  startup pass repairs rows whose process is confirmed dead and prunes only
+  terminal ones — a backend restart is exactly the moment events could not
+  have fired. A periodic in-run polling pass was prototyped and deliberately
+  not merged: it defended against failure modes that have not been observed
+  (prototype preserved on branch `archive/1597-full-six-batches`).
+- **One ironclad deletion invariant governs every reconciliation cleanup
+  path.** A row backing a resumable session, or holding a `resume_token`, is
+  repaired in place — never deleted; only a finished/never-started row with no
+  `resume_token` may be pruned. `resume_token` is not duplicated into a second
+  table; the guarantee is the invariant (`models.RowMustBePreserved`).
+  Liveness is runtime-aware (`lifecycle.RowProcessLiveness`): a host-local
+  process check never runs against a remote/SSH row. See the repo-root
+  `SPEC.md` §resume-safety-invariant and §reconciliation-backstop.
 
 ## Context
 
