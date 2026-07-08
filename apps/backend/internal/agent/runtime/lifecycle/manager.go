@@ -129,7 +129,7 @@ type Manager struct {
 	// local/standalone rows (see persistence.go / #1597 truthful executor rows).
 	// 0 when unset (tests, or before the launcher wires it). Never used for
 	// SSH/remote rows — their process lives on another host.
-	standaloneHostPID int
+	standaloneHostPID atomic.Int64
 }
 
 // SetStandaloneHostPID records the local agentctl control-server PID so
@@ -137,7 +137,7 @@ type Manager struct {
 // Wired during DI from the agentctl launcher (see backendapp). Safe to leave
 // unset in tests that don't exercise the persistence path.
 func (m *Manager) SetStandaloneHostPID(pid int) {
-	m.standaloneHostPID = pid
+	m.standaloneHostPID.Store(int64(pid))
 }
 
 // NewManager creates a new lifecycle manager.

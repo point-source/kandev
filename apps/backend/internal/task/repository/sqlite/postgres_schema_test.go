@@ -24,7 +24,13 @@ func TestPostgresExecutorRunningLocalPIDMigration(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	seedExecutorRunningCleanupTask(t, repo, "task-pg")
+	now := time.Now().UTC()
+	if _, err := db.Exec(db.Rebind(`
+		INSERT INTO tasks (id, workspace_id, title, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`), "task-pg", "ws-task-pg", "Task pg", now, now); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
 	if err := repo.CreateTaskSession(ctx, &models.TaskSession{
 		ID: "session-pg", TaskID: "task-pg", State: models.TaskSessionStateWaitingForInput,
 	}); err != nil {

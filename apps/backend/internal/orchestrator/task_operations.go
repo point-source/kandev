@@ -2620,11 +2620,10 @@ func (s *Service) CancelAgent(ctx context.Context, sessionID string) error {
 	// the queue. But an escalated cancel (agent hung) or a dead-process cancel
 	// fires no agent.ready event, so nothing would drain it — leaving the
 	// operator's queued message stranded until a second manual send. Draining
-	// here, after the session is reconciled to WAITING_FOR_INPUT and the turn is
-	// completed, covers those paths. Idempotent with the event-driven drain:
-	// drainQueuedMessageForPromptableSession pops via TakeQueued atomically, so a
-	// normal cancel that also fires handleAgentReady cannot double-deliver. Only
-	// runs when the session actually settled to WAITING_FOR_INPUT above.
+	// here after the turn is completed covers those paths. It is idempotent with
+	// the event-driven drain: drainQueuedMessageForPromptableSession pops via
+	// TakeQueued atomically, so a normal cancel that also fires handleAgentReady
+	// cannot double-deliver.
 	if session != nil {
 		s.drainQueuedMessageForPromptableSession(ctx, sessionID)
 	}
