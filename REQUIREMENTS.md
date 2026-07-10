@@ -6,11 +6,14 @@
 > Provenance / scope pivot (2026-07-10): this file previously held the
 > requirements for the #1597 executor-row-desync work and its adjacent
 > "accept input while the foreground turn is idle on background work" behavior
-> (call it **scope A**). That scope is considered functioning on current `main`
-> via upstream fixes #1600 / #1602 and is documented in the #1597 branches and
-> git history. This task deliberately targets the *other* half — **scope B**:
-> steering a turn that is genuinely, actively generating. Scope A is out of
-> scope here (see §req:constraints).
+> (call it **scope A**). Scope A is now **delivered** by
+> §spec:fine-grained-busy-signal — a backend gate that narrows the busy signal
+> to the foreground turn plus the operator-visible composer/status surfacing —
+> not merely assumed to be "functioning on current `main`" via upstream #1600 /
+> #1602 (discovery falsified that assumption for the held-open and out-of-turn
+> windows). This task deliberately targets the *other* half — **scope B**:
+> steering a turn that is genuinely, actively generating. Scope A is delivered
+> separately (see §req:success-criteria #7 and §req:constraints).
 
 ## Problem statement §req:problem-statement
 
@@ -78,6 +81,21 @@ Observable from the app, using a Claude agent unless noted:
    will steer the live turn or sit in the queue until the turn ends — so the
    operator is not surprised about when the agent will see it.
 
+7. **(Scope A — delivered by §spec:fine-grained-busy-signal.)** The session
+   accepts input whenever the foreground turn is *idle* — the foreground agent is
+   not itself generating and the turn is only held open by recognized background
+   work it spawned (a subagent, a run-in-background shell, an active Monitor) —
+   rather than reporting "busy" for the whole duration of that background work.
+   The operator can *see* the difference: both a generating turn and a
+   background-idle turn show a "working" affordance, but only the background-idle
+   turn enables the composer, and the "working" indicator stays up (never the
+   done/complete affordance) until the last background task finishes. An agent
+   whose in-flight frames are not recognized as background keeps today's
+   reject-while-RUNNING behavior, unchanged. *(Restores the pre-pivot scope-A
+   criterion so §spec:fine-grained-busy-signal's provenance citation resolves;
+   scope A is out of scope for the #1607 steering work itself — see
+   §req:constraints.)*
+
 ## User stories §req:user-stories
 
 - **As an operator watching my Claude agent head down the wrong path mid-turn**,
@@ -134,11 +152,12 @@ Observable from the app, using a Claude agent unless noted:
   should feel like the queue the operator already uses, upgraded to send into the
   live turn — not a parallel, unfamiliar mechanism. *(Operator suggestion; the
   mechanism itself is left to the Spec step.)*
-- **Scope A is out of scope.** Accepting input while the foreground turn is idle
-  on background work is treated as functioning via upstream #1600 / #1602 and is
-  not re-addressed here. This task proceeds straight to steering; if scope A is
-  later found to have regressed, that is handled separately. *(Operator
-  decision: proceed straight to B without re-verifying A.)*
+- **Scope A is out of scope for the steering work.** Accepting input while the
+  foreground turn is idle on background work is owned by
+  §spec:fine-grained-busy-signal (now shipped), not by this #1607 steering task.
+  The steering work proceeds independently; if scope A is later found to have
+  regressed, that is handled against its own spec. *(Operator decision: proceed
+  straight to B without re-verifying A.)*
 - **Backend conventions apply.** Per `apps/backend/CLAUDE.md`: agent-capability
   detection is gated in code; every changed behavior carries regression tests;
   commits follow Conventional Commits.

@@ -328,9 +328,20 @@ Satisfies §req:success-criteria #5, #6; §req:quality-attributes
 
 ## Fine-grained foreground-idle busy signal §spec:fine-grained-busy-signal
 
-*Status: in progress — the backend behavior half (the foreground-idle busy
-gate on the prompt path) has landed; the operator-visible composer/status
-surfacing of the three-way signal is the remaining frontend half.*
+*Status: done — the backend foreground-idle gate landed first (the in-memory
+`turnActivity` tracker narrows `checkSessionPromptable` to the foreground turn),
+and the operator-visible half now surfaces it end to end. The orchestrator emits
+a `task_session.activity_changed` WS event (plus `foreground_activity` on every
+`state_changed`) when a RUNNING turn flips between generating and idle-on-
+background-work; the web `TaskSession` carries `foreground_activity`, and
+`deriveSessionFlags` splits the old `state === RUNNING` "busy" into
+foreground-generating (gates the composer) vs background-idle (accepts input
+while the "working" affordance stays up). `getSessionStateIcon` renders the
+three affordances — generating spinner, distinct working-in-background spinner,
+done checkmark — and never shows "done" while background work runs. Covered by
+`state-icons.test.tsx`, `use-session-state.test.ts`, the `session.activity_changed`
+handler tests, and the `busy-signal` / `mobile-busy-signal` Playwright specs
+(desktop + mobile), driven by the mock agent's `/background` command.*
 
 **Behavior.** A session whose durable state reads RUNNING accepts a new
 operator message whenever its foreground turn is *idle* — that is, the
@@ -447,10 +458,11 @@ mid-turn steering, #1607) currently *defers* this behavior, asserting it
 (§req:constraints, §req:quality-attributes "no regression"). This spec's
 discovery contradicts that assertion for the held-open and out-of-turn
 windows, so this section realizes the intent captured **before** the
-pivot — pre-pivot §req:success-criteria #8, "the session accepts input
-whenever the foreground turn is idle … only *waiting on a spawned
-background task*." A Discover pass should restore an explicit scope-A
-success criterion so this citation is not dangling. Also satisfies
+pivot — "the session accepts input whenever the foreground turn is idle …
+only *waiting on a spawned background task*." That explicit scope-A
+criterion has been **restored** as §req:success-criteria #7 (and the
+committed file's scope-disposition note now points at this shipped work
+rather than at upstream #1600 / #1602), so the citation resolves. Also satisfies
 §req:quality-attributes (reliability and ordering; capability-gated, not
 assumed) and §req:user-stories (the operator whose agent kicked off
 background work wants to keep talking to the session).
