@@ -1,9 +1,15 @@
 package orchestrator
 
 import (
+	"context"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
+	"github.com/kandev/kandev/internal/events"
+	"github.com/kandev/kandev/internal/events/bus"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
 )
 
 // turnActivity tracks, in memory, whether a session's open turn is being driven
@@ -45,29 +51,38 @@ func (s *Service) turnActivityFor(sessionID string, create bool) *turnActivity {
 // markForegroundGenerating records that the foreground agent produced output
 // (streamed a message/thinking chunk, or a fresh foreground prompt was
 // dispatched), so the turn is once again driven by the foreground even if a
-// background task is still outstanding.
-func (s *Service) markForegroundGenerating(sessionID string) {
+// background task is still outstanding. It returns true when this call actually
+// flipped the session out of the background-idle substate, so the caller can
+// publish the operator-facing activity signal only on a real transition.
+func (s *Service) markForegroundGenerating(sessionID string) bool {
 	if sessionID == "" {
-		return
+		return false
 	}
 	ta := s.turnActivityFor(sessionID, true)
 	ta.mu.Lock()
+	changed := ta.yielded
 	ta.yielded = false
 	ta.mu.Unlock()
+	return changed
 }
 
 // registerBackgroundTask records a spawned background task (a subagent Task or a
 // run-in-background shell). While at least one is outstanding, the foreground
 // turn is treated as "waiting on background" rather than "actively generating".
-func (s *Service) registerBackgroundTask(sessionID, toolCallID string) {
+// It returns true when this call flipped the session into the background-idle
+// substate (i.e. it was foreground-generating before), so the caller publishes
+// the activity signal only on the first background task, not every one.
+func (s *Service) registerBackgroundTask(sessionID, toolCallID string) bool {
 	if sessionID == "" || toolCallID == "" {
-		return
+		return false
 	}
 	ta := s.turnActivityFor(sessionID, true)
 	ta.mu.Lock()
+	changed := !ta.yielded
 	ta.background[toolCallID] = struct{}{}
 	ta.yielded = true
 	ta.mu.Unlock()
+	return changed
 }
 
 // hasBackgroundTask reports whether toolCallID is already tracked as outstanding
@@ -88,21 +103,26 @@ func (s *Service) hasBackgroundTask(sessionID, toolCallID string) bool {
 
 // completeBackgroundTask clears a previously-registered background task. When no
 // background task remains, the foreground turn is no longer "waiting on
-// background".
-func (s *Service) completeBackgroundTask(sessionID, toolCallID string) {
+// background". It returns true when clearing this task flipped the session back
+// out of the background-idle substate (the last outstanding task finished),
+// so the caller publishes the activity signal only on that final completion.
+func (s *Service) completeBackgroundTask(sessionID, toolCallID string) bool {
 	if sessionID == "" || toolCallID == "" {
-		return
+		return false
 	}
 	ta := s.turnActivityFor(sessionID, false)
 	if ta == nil {
-		return
+		return false
 	}
 	ta.mu.Lock()
 	delete(ta.background, toolCallID)
-	if len(ta.background) == 0 {
+	changed := false
+	if len(ta.background) == 0 && ta.yielded {
 		ta.yielded = false
+		changed = true
 	}
 	ta.mu.Unlock()
+	return changed
 }
 
 // clearTurnActivity drops all tracked activity for a session. Called from every
@@ -127,6 +147,40 @@ func (s *Service) isForegroundTurnGenerating(sessionID string) bool {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
 	return !ta.yielded
+}
+
+// foregroundActivityValue reports the fine-grained busy substate of a session
+// for the operator-facing signal: "generating" when the foreground turn is
+// actively producing output (the default), "background" when it has yielded to
+// outstanding spawned work. Only meaningful while the session state is RUNNING.
+func (s *Service) foregroundActivityValue(sessionID string) v1.ForegroundActivity {
+	if s.isForegroundTurnGenerating(sessionID) {
+		return v1.ForegroundActivityGenerating
+	}
+	return v1.ForegroundActivityBackground
+}
+
+// publishForegroundActivityChanged emits the fine-grained busy signal so the
+// web composer and status indicator can distinguish "generating" from "waiting
+// on background work" without a coarse session-state transition. Callers invoke
+// it only when a flip actually happened (the mark/register/complete helpers
+// return that), so it never fires per background frame.
+func (s *Service) publishForegroundActivityChanged(ctx context.Context, taskID, sessionID string) {
+	if s.eventBus == nil || taskID == "" || sessionID == "" {
+		return
+	}
+	eventData := map[string]interface{}{
+		metaKeyTaskID:         taskID,
+		metaKeySessionID:      sessionID,
+		"foreground_activity": string(s.foregroundActivityValue(sessionID)),
+	}
+	if err := s.eventBus.Publish(ctx, events.TaskSessionActivityChanged,
+		bus.NewEvent(events.TaskSessionActivityChanged, "task-session", eventData)); err != nil {
+		s.logger.Warn("publish task_session.activity_changed failed",
+			zap.String("task_id", taskID),
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
 }
 
 // normalizedIsBackgroundTask reports whether a normalized tool payload represents

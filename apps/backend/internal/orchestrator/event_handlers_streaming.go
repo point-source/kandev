@@ -262,7 +262,9 @@ func (s *Service) handleToolCallEvent(ctx context.Context, payload *lifecycle.Ag
 	// background". Child tool calls (ParentToolCallID set) are the subagent's
 	// internal work, not a new background task, so they are ignored here.
 	if payload.Data.ParentToolCallID == "" && normalizedIsBackgroundTask(payload.Data.Normalized) {
-		s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+		if s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
+			s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
+		}
 	}
 }
 
@@ -367,7 +369,9 @@ func (s *Service) handleStreamingEventKind(
 func (s *Service) handleMessageStreamingEvent(ctx context.Context, payload *lifecycle.AgentStreamEventPayload) {
 	// Streamed foreground output means the agent is actively generating again,
 	// even if a background task is still outstanding — narrows the busy signal.
-	s.markForegroundGenerating(payload.SessionID)
+	if s.markForegroundGenerating(payload.SessionID) {
+		s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
+	}
 	s.handleStreamingEventKind(ctx, payload, "message",
 		s.messageCreator.AppendAgentMessage,
 		s.messageCreator.CreateAgentMessageStreaming)
@@ -377,7 +381,9 @@ func (s *Service) handleMessageStreamingEvent(ctx context.Context, payload *life
 // It creates a new thinking message on first chunk (IsAppend=false) or appends to existing (IsAppend=true).
 func (s *Service) handleThinkingStreamingEvent(ctx context.Context, payload *lifecycle.AgentStreamEventPayload) {
 	// Streamed foreground reasoning means the agent is actively generating again.
-	s.markForegroundGenerating(payload.SessionID)
+	if s.markForegroundGenerating(payload.SessionID) {
+		s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
+	}
 	s.handleStreamingEventKind(ctx, payload, "thinking message",
 		s.messageCreator.AppendThinkingMessage,
 		s.messageCreator.CreateThinkingMessageStreaming)
@@ -446,7 +452,9 @@ func (s *Service) handleToolUpdateEvent(ctx context.Context, payload *lifecycle.
 				// permanently "not generating" for the rest of the turn.
 				// completeBackgroundTask is a no-op for IDs that were never
 				// registered, so this cannot clear a still-outstanding background task.
-				s.completeBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+				if s.completeBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
+					s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
+				}
 			} else if !s.hasBackgroundTask(payload.SessionID, payload.Data.ToolCallID) &&
 				normalizedIsBackgroundTask(payload.Data.Normalized) {
 				// Both of Claude's background shapes only become recognizable on a
@@ -457,7 +465,9 @@ func (s *Service) handleToolUpdateEvent(ctx context.Context, payload *lifecycle.
 				// that first recognition: re-registering on later updates would re-set
 				// `yielded` and clobber a foreground stream that meanwhile marked the
 				// turn generating again.
-				s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+				if s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
+					s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
+				}
 			}
 		}
 	}
@@ -577,6 +587,11 @@ func (s *Service) publishTaskSessionStateChanged(
 		metaKeyAgentProfileID:    agentProfileID,
 		"agent_profile_snapshot": session.AgentProfileSnapshot,
 		"is_passthrough":         session.IsPassthrough,
+		// Carry the fine-grained busy substate on every coarse transition so
+		// the client resets any stale "background" value when a new turn starts
+		// or the turn ends (§spec:fine-grained-busy-signal). Intra-RUNNING flips
+		// ride the dedicated task_session.activity_changed event instead.
+		"foreground_activity": string(s.foregroundActivityValue(sessionID)),
 	}
 	if stateUpdatedAt != nil && !stateUpdatedAt.IsZero() {
 		eventData[metaKeyUpdatedAt] = stateUpdatedAt.Format(time.RFC3339Nano)
