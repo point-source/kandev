@@ -3,7 +3,7 @@ import { useSession } from "@/hooks/domains/session/use-session";
 import { useTask } from "@/hooks/use-task";
 import type { TaskSession } from "@/lib/types/http";
 
-function deriveSessionFlags(session: TaskSession | null | undefined) {
+export function deriveSessionFlags(session: TaskSession | null | undefined) {
   const state = session?.state;
   const errorMessage = session?.error_message;
   const foregroundActivity = session?.foreground_activity;
