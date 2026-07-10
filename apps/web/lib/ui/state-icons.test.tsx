@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { isValidElement, type ReactNode } from "react";
-import { IconCheck, IconMessageQuestion } from "@tabler/icons-react";
-import { getTaskStateIcon, shouldShowTaskRunningSpinner } from "./state-icons";
+import { IconCheck, IconCircleCheck, IconLoader2, IconMessageQuestion } from "@tabler/icons-react";
+import { getSessionStateIcon, getTaskStateIcon, shouldShowTaskRunningSpinner } from "./state-icons";
 
 function iconType(node: ReactNode) {
   if (!isValidElement(node)) throw new Error("Expected React element");
   return node.type;
+}
+
+function iconClassName(node: ReactNode): string {
+  if (!isValidElement(node)) throw new Error("Expected React element");
+  return (node.props as { className?: string }).className ?? "";
 }
 
 describe("getTaskStateIcon", () => {
@@ -19,6 +24,49 @@ describe("getTaskStateIcon", () => {
 
   it("keeps review task state as the review check without pending clarification", () => {
     expect(iconType(getTaskStateIcon("REVIEW", undefined, false))).toBe(IconCheck);
+  });
+});
+
+describe("getSessionStateIcon — fine-grained busy tri-state", () => {
+  // §spec:fine-grained-busy-signal. Three distinguishable conditions:
+  //  (a) RUNNING + generating  → generating spinner
+  //  (b) RUNNING + background   → working-in-background spinner, NOT the done check
+  //  (c) COMPLETED              → done checkmark
+  it("(a) shows a spinner while the foreground is generating", () => {
+    const a = getSessionStateIcon("RUNNING", undefined, "generating");
+    expect(iconType(a)).toBe(IconLoader2);
+    expect(iconClassName(a)).toContain("animate-spin");
+  });
+
+  it("(a) defaults to the generating spinner when the substate is unknown", () => {
+    // Absent/null substate must preserve the historical RUNNING affordance.
+    expect(iconType(getSessionStateIcon("RUNNING"))).toBe(IconLoader2);
+    expect(iconType(getSessionStateIcon("RUNNING", undefined, null))).toBe(IconLoader2);
+  });
+
+  it("(b) shows a working spinner — never the done checkmark — while background work runs", () => {
+    const b = getSessionStateIcon("RUNNING", undefined, "background");
+    expect(iconType(b)).toBe(IconLoader2);
+    expect(iconType(b)).not.toBe(IconCircleCheck);
+    expect(iconClassName(b)).toContain("animate-spin");
+  });
+
+  it("(b) is visually distinct from (a) so the operator can tell them apart", () => {
+    const a = iconClassName(getSessionStateIcon("RUNNING", undefined, "generating"));
+    const b = iconClassName(getSessionStateIcon("RUNNING", undefined, "background"));
+    expect(a).not.toBe(b);
+  });
+
+  it("(c) flips to the done checkmark only once the session leaves RUNNING", () => {
+    // The (b)→(c) flip: the coarse state stays RUNNING while background work is
+    // outstanding, so the checkmark appears only after the last task finishes
+    // and the session settles to COMPLETED.
+    expect(iconType(getSessionStateIcon("COMPLETED"))).toBe(IconCircleCheck);
+    // A stale "background" substate must not resurrect a spinner on a terminal
+    // session — the coarse state governs (c).
+    expect(iconType(getSessionStateIcon("COMPLETED", undefined, "background"))).toBe(
+      IconCircleCheck,
+    );
   });
 });
 

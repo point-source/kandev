@@ -3,7 +3,6 @@ import {
   IconAlertCircle,
   IconAlertTriangle,
   IconCheck,
-  IconCircleFilled,
   IconCircleCheck,
   IconClock,
   IconLoader2,
@@ -11,7 +10,7 @@ import {
   IconPlayerPause,
   IconX,
 } from "@tabler/icons-react";
-import type { TaskSessionState, TaskState } from "@/lib/types/http";
+import type { ForegroundActivity, TaskSessionState, TaskState } from "@/lib/types/http";
 import { cn } from "@/lib/utils";
 
 type IconConfig = {
@@ -41,7 +40,8 @@ const TASK_STATE_ICONS: Record<TaskState, IconConfig> = {
 const SESSION_STATE_ICONS: Record<TaskSessionState, IconConfig> = {
   CREATED: { Icon: IconAlertCircle, className: STYLE_MUTED },
   STARTING: { Icon: IconLoader2, className: STYLE_LOADING },
-  RUNNING: { Icon: IconCircleFilled, className: "text-emerald-500" },
+  // (a) generating: the foreground agent is actively producing output.
+  RUNNING: { Icon: IconLoader2, className: STYLE_LOADING },
   // Office sessions: agent process torn down, conversation paused. Use the
   // pause icon — visually distinct from RUNNING and from terminal states.
   IDLE: { Icon: IconPlayerPause, className: STYLE_MUTED },
@@ -49,6 +49,15 @@ const SESSION_STATE_ICONS: Record<TaskSessionState, IconConfig> = {
   COMPLETED: { Icon: IconCircleCheck, className: "text-green-500" },
   FAILED: { Icon: IconAlertTriangle, className: STYLE_ERROR },
   CANCELLED: { Icon: IconPlayerPause, className: STYLE_MUTED },
+};
+
+// (b) background-idle: the foreground turn has yielded to spawned background
+// work (§spec:fine-grained-busy-signal). Still a spinner — the operator can see
+// the agent is not done — but tinted distinctly from the generating spinner so
+// (a) and (b) are legibly different, and never the done checkmark.
+const SESSION_BACKGROUND_ICON: IconConfig = {
+  Icon: IconLoader2,
+  className: "text-emerald-500 animate-spin",
 };
 
 const DEFAULT_TASK_ICON: IconConfig = {
@@ -135,9 +144,25 @@ export function getTaskStateIcon(
   return <config.Icon className={cn("h-4 w-4", config.className, className)} />;
 }
 
-export function getSessionStateIcon(state?: TaskSessionState, className?: string) {
-  const config = state
-    ? (SESSION_STATE_ICONS[state] ?? DEFAULT_SESSION_ICON)
-    : DEFAULT_SESSION_ICON;
+function getSessionStateIconConfig(
+  state?: TaskSessionState,
+  foregroundActivity?: ForegroundActivity | null,
+): IconConfig {
+  // (b) background-idle wins over the default RUNNING (generating) icon: while
+  // the foreground turn waits on spawned background work the session must read
+  // as "working in background", never as done (§spec:fine-grained-busy-signal).
+  if (state === "RUNNING" && foregroundActivity === "background") {
+    return SESSION_BACKGROUND_ICON;
+  }
+  if (!state) return DEFAULT_SESSION_ICON;
+  return SESSION_STATE_ICONS[state] ?? DEFAULT_SESSION_ICON;
+}
+
+export function getSessionStateIcon(
+  state?: TaskSessionState,
+  className?: string,
+  foregroundActivity?: ForegroundActivity | null,
+) {
+  const config = getSessionStateIconConfig(state, foregroundActivity);
   return <config.Icon className={cn("h-4 w-4", config.className, className)} />;
 }
