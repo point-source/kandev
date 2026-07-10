@@ -33,6 +33,7 @@ export type BackendMessageType =
   | "session.message.updated"
   | "session.message.deleted"
   | "session.state_changed"
+  | "session.activity_changed"
   | "session.waiting_for_input"
   | "session.agentctl_starting"
   | "session.agentctl_ready"
@@ -92,6 +93,10 @@ import type {
   TaskState,
   ToolStatus,
 } from "@/lib/types/http";
+import type {
+  TaskSessionStateChangedPayload,
+  TaskSessionActivityChangedPayload,
+} from "@/lib/types/session-events";
 import type { SecretListItem } from "@/lib/types/http-secrets";
 import type { GitEventPayload } from "@/lib/types/git-events";
 import type { GitHubRateLimitUpdate, TaskCIAutomationOptions, TaskPR } from "@/lib/types/github";
@@ -278,30 +283,9 @@ export type MessageAddedPayload = {
   updated_at?: string;
 };
 
-export type TaskSessionStateChangedPayload = {
-  task_id: string;
-  session_id: string;
-  old_state?: string;
-  new_state?: string;
-  /** Authoritative row timestamp — used to drop out-of-order subscribe snapshots. */
-  updated_at?: string;
-  /**
-   * Agent profile id — drives the per-agent live-session selectors on the
-   * sidebar. Empty for sessions launched without a profile.
-   */
-  agent_profile_id?: string;
-  agent_profile_snapshot?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-  session_metadata?: Record<string, unknown>;
-  is_passthrough?: boolean;
-  error_message?: string;
-  /** When true, the frontend should not show an error toast for this state change. */
-  suppress_toast?: boolean;
-  // Workflow-related fields (sent during workflow transitions)
-  review_status?: string;
-  // Task environment (for session→environment mapping)
-  task_environment_id?: string;
-};
+// Session WS-event payload types live in ./session-events to keep this
+// message-map registry under its line cap; re-exported for existing importers.
+export type { TaskSessionStateChangedPayload, TaskSessionActivityChangedPayload };
 
 export type TaskSessionWaitingForInputPayload = {
   task_id: string;
@@ -565,6 +549,10 @@ export type BackendMessageMap = OfficeBackendMessageMap & {
   "session.message.updated": BackendMessage<"session.message.updated", MessageAddedPayload>;
   "session.message.deleted": BackendMessage<"session.message.deleted", MessageAddedPayload>;
   "session.state_changed": BackendMessage<"session.state_changed", TaskSessionStateChangedPayload>;
+  "session.activity_changed": BackendMessage<
+    "session.activity_changed",
+    TaskSessionActivityChangedPayload
+  >;
   "session.waiting_for_input": BackendMessage<
     "session.waiting_for_input",
     TaskSessionWaitingForInputPayload
