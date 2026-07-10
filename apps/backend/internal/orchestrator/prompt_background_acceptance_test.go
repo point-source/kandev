@@ -179,7 +179,7 @@ func TestPromptTask_NonClaudeFramesStayBusy(t *testing.T) {
 		streams.NewReadFile("/repo/main.go", 0, 0),
 		streams.NewGeneric("codex_apply_patch", map[string]any{"raw_input": map[string]any{"patch": "..."}}),
 	}
-	for i, n := range frames {
+	for _, n := range frames {
 		svc.handleAgentStreamEvent(context.Background(), &lifecycle.AgentStreamEventPayload{
 			TaskID:      taskID,
 			SessionID:   sessionID,
@@ -191,7 +191,6 @@ func TestPromptTask_NonClaudeFramesStayBusy(t *testing.T) {
 				Normalized: n,
 			},
 		})
-		_ = i
 	}
 
 	// The gate is unchanged: a RUNNING session with only unrecognized foreground
