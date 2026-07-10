@@ -255,6 +255,15 @@ func (s *Service) handleToolCallEvent(ctx context.Context, payload *lifecycle.Ag
 		// the task to REVIEW) leaves session=RUNNING with task=REVIEW.
 		s.setSessionRunningForExecution(ctx, payload.TaskID, payload.SessionID, payload.ExecutionID)
 	}
+
+	// A top-level spawned background task (subagent / run-in-background shell)
+	// holds the turn open while the foreground goes idle. Track it so
+	// checkSessionPromptable can tell "foreground generating" from "waiting on
+	// background". Child tool calls (ParentToolCallID set) are the subagent's
+	// internal work, not a new background task, so they are ignored here.
+	if payload.Data.ParentToolCallID == "" && normalizedIsBackgroundTask(payload.Data.Normalized) {
+		s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+	}
 }
 
 // saveAgentTextIfPresent saves any accumulated agent text as an agent message
@@ -356,6 +365,9 @@ func (s *Service) handleStreamingEventKind(
 // handleMessageStreamingEvent handles streaming message events for real-time text updates.
 // It creates a new message on first chunk (IsAppend=false) or appends to existing (IsAppend=true).
 func (s *Service) handleMessageStreamingEvent(ctx context.Context, payload *lifecycle.AgentStreamEventPayload) {
+	// Streamed foreground output means the agent is actively generating again,
+	// even if a background task is still outstanding — narrows the busy signal.
+	s.markForegroundGenerating(payload.SessionID)
 	s.handleStreamingEventKind(ctx, payload, "message",
 		s.messageCreator.AppendAgentMessage,
 		s.messageCreator.CreateAgentMessageStreaming)
@@ -364,6 +376,8 @@ func (s *Service) handleMessageStreamingEvent(ctx context.Context, payload *life
 // handleThinkingStreamingEvent handles streaming thinking events for real-time reasoning updates.
 // It creates a new thinking message on first chunk (IsAppend=false) or appends to existing (IsAppend=true).
 func (s *Service) handleThinkingStreamingEvent(ctx context.Context, payload *lifecycle.AgentStreamEventPayload) {
+	// Streamed foreground reasoning means the agent is actively generating again.
+	s.markForegroundGenerating(payload.SessionID)
 	s.handleStreamingEventKind(ctx, payload, "thinking message",
 		s.messageCreator.AppendThinkingMessage,
 		s.messageCreator.CreateThinkingMessageStreaming)
@@ -417,6 +431,46 @@ func (s *Service) handleToolUpdateEvent(ctx context.Context, payload *lifecycle.
 			payload.Data.ToolStatus == "success" || payload.Data.ToolStatus == agentEventError || payload.Data.ToolStatus == agentEventFailed {
 			s.setSessionRunningForExecution(ctx, payload.TaskID, payload.SessionID, payload.ExecutionID)
 		}
+
+		// Background-work bookkeeping for the finer-grained busy signal. Child
+		// tool calls (ParentToolCallID set) are a subagent's own internal work,
+		// not a new background task, so they never touch the hold.
+		if payload.Data.ParentToolCallID == "" {
+			if isTerminalToolStatus(payload.Data.ToolStatus) {
+				// A finished top-level background task no longer holds the turn
+				// open. Once none remain, the foreground is no longer "waiting on
+				// background". Cleared by tool-call ID membership rather than by
+				// re-classifying the terminal payload: adapters that rebuild
+				// Normalized per update (or drop the Background flag on the terminal
+				// frame) would otherwise never match, leaving the session
+				// permanently "not generating" for the rest of the turn.
+				// completeBackgroundTask is a no-op for IDs that were never
+				// registered, so this cannot clear a still-outstanding background task.
+				s.completeBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+			} else if !s.hasBackgroundTask(payload.SessionID, payload.Data.ToolCallID) &&
+				normalizedIsBackgroundTask(payload.Data.Normalized) {
+				// Both of Claude's background shapes only become recognizable on a
+				// tool_call_update — the run_in_background flag and command are
+				// streamed after the initial (empty) tool_call, and the Monitor view
+				// is seeded on its registration update — so a non-terminal update is
+				// the first frame where the classifier can see them. Register only on
+				// that first recognition: re-registering on later updates would re-set
+				// `yielded` and clobber a foreground stream that meanwhile marked the
+				// turn generating again.
+				s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID)
+			}
+		}
+	}
+}
+
+// isTerminalToolStatus reports whether a tool_update status marks the tool call
+// as finished (successfully, in error, or cancelled).
+func isTerminalToolStatus(status string) bool {
+	switch status {
+	case agentEventComplete, agentEventCompleted, "success", agentEventError, agentEventFailed, "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
