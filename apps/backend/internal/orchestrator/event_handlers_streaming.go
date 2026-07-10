@@ -438,38 +438,47 @@ func (s *Service) handleToolUpdateEvent(ctx context.Context, payload *lifecycle.
 			s.setSessionRunningForExecution(ctx, payload.TaskID, payload.SessionID, payload.ExecutionID)
 		}
 
-		// Background-work bookkeeping for the finer-grained busy signal. Child
-		// tool calls (ParentToolCallID set) are a subagent's own internal work,
-		// not a new background task, so they never touch the hold.
-		if payload.Data.ParentToolCallID == "" {
-			if isTerminalToolStatus(payload.Data.ToolStatus) {
-				// A finished top-level background task no longer holds the turn
-				// open. Once none remain, the foreground is no longer "waiting on
-				// background". Cleared by tool-call ID membership rather than by
-				// re-classifying the terminal payload: adapters that rebuild
-				// Normalized per update (or drop the Background flag on the terminal
-				// frame) would otherwise never match, leaving the session
-				// permanently "not generating" for the rest of the turn.
-				// completeBackgroundTask is a no-op for IDs that were never
-				// registered, so this cannot clear a still-outstanding background task.
-				if s.completeBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
-					s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
-				}
-			} else if !s.hasBackgroundTask(payload.SessionID, payload.Data.ToolCallID) &&
-				normalizedIsBackgroundTask(payload.Data.Normalized) {
-				// Both of Claude's background shapes only become recognizable on a
-				// tool_call_update — the run_in_background flag and command are
-				// streamed after the initial (empty) tool_call, and the Monitor view
-				// is seeded on its registration update — so a non-terminal update is
-				// the first frame where the classifier can see them. Register only on
-				// that first recognition: re-registering on later updates would re-set
-				// `yielded` and clobber a foreground stream that meanwhile marked the
-				// turn generating again.
-				if s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
-					s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
-				}
-			}
+		// Background-work bookkeeping for the finer-grained busy signal.
+		s.trackBackgroundToolUpdate(ctx, payload)
+	}
+}
+
+// trackBackgroundToolUpdate maintains the fine-grained busy signal's background
+// hold from a top-level tool_call_update: a terminal status clears the hold and
+// the first recognizable non-terminal frame registers it. Child tool calls
+// (ParentToolCallID set) are a subagent's own internal work, not a new
+// background task, so they never touch the hold.
+func (s *Service) trackBackgroundToolUpdate(ctx context.Context, payload *lifecycle.AgentStreamEventPayload) {
+	if payload.Data.ParentToolCallID != "" {
+		return
+	}
+	if isTerminalToolStatus(payload.Data.ToolStatus) {
+		// A finished top-level background task no longer holds the turn open.
+		// Once none remain, the foreground is no longer "waiting on background".
+		// Cleared by tool-call ID membership rather than by re-classifying the
+		// terminal payload: adapters that rebuild Normalized per update (or drop
+		// the Background flag on the terminal frame) would otherwise never match,
+		// leaving the session permanently "not generating" for the rest of the
+		// turn. completeBackgroundTask is a no-op for IDs that were never
+		// registered, so this cannot clear a still-outstanding background task.
+		if s.completeBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
+			s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
 		}
+		return
+	}
+	if s.hasBackgroundTask(payload.SessionID, payload.Data.ToolCallID) ||
+		!normalizedIsBackgroundTask(payload.Data.Normalized) {
+		return
+	}
+	// Both of Claude's background shapes only become recognizable on a
+	// tool_call_update — the run_in_background flag and command are streamed
+	// after the initial (empty) tool_call, and the Monitor view is seeded on its
+	// registration update — so a non-terminal update is the first frame where the
+	// classifier can see them. Register only on that first recognition:
+	// re-registering on later updates would re-set `yielded` and clobber a
+	// foreground stream that meanwhile marked the turn generating again.
+	if s.registerBackgroundTask(payload.SessionID, payload.Data.ToolCallID) {
+		s.publishForegroundActivityChanged(ctx, payload.TaskID, payload.SessionID)
 	}
 }
 
