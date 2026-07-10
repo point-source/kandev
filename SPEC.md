@@ -328,20 +328,16 @@ Satisfies §req:success-criteria #5, #6; §req:quality-attributes
 
 ## Fine-grained foreground-idle busy signal §spec:fine-grained-busy-signal
 
-*Status: done — the backend foreground-idle gate landed first (the in-memory
-`turnActivity` tracker narrows `checkSessionPromptable` to the foreground turn),
-and the operator-visible half now surfaces it end to end. The orchestrator emits
-a `task_session.activity_changed` WS event (plus `foreground_activity` on every
-`state_changed`) when a RUNNING turn flips between generating and idle-on-
-background-work; the web `TaskSession` carries `foreground_activity`, and
-`deriveSessionFlags` splits the old `state === RUNNING` "busy" into
-foreground-generating (gates the composer) vs background-idle (accepts input
-while the "working" affordance stays up). `getSessionStateIcon` renders the
-three affordances — generating spinner, distinct working-in-background spinner,
-done checkmark — and never shows "done" while background work runs. Covered by
-`state-icons.test.tsx`, `use-session-state.test.ts`, the `session.activity_changed`
-handler tests, and the `busy-signal` / `mobile-busy-signal` Playwright specs
-(desktop + mobile), driven by the mock agent's `/background` command.*
+*Status: done. The backend narrows the busy gate to the foreground turn (an
+in-memory per-session activity tracker feeding `checkSessionPromptable`), and
+the operator-visible half surfaces it end to end: a RUNNING turn that flips
+between generating and idle-on-background-work is pushed to the client, the web
+session model carries the substate, the composer gates on foreground-generating
+rather than the coarse RUNNING state, and the status icon renders three
+affordances — generating, working-in-background, done — never showing "done"
+while background work runs. Covered by backend gate/handler tests, the frontend
+derivation and icon tests, and desktop + mobile Playwright specs driven by the
+mock agent's `/background` command.*
 
 **Behavior.** A session whose durable state reads RUNNING accepts a new
 operator message whenever its foreground turn is *idle* — that is, the
@@ -397,10 +393,7 @@ flips to complete only after it finishes. Repeat with a non-Claude agent
 whose frames aren't recognized as background: input stays gated, no
 change. Because both the accepted-vs-busy state and the
 working-vs-complete state must be visible to be actionable, the composer
-and the status indicator reflect the fine-grained signal (the reviewed
-prototype is backend-only — the composer still derives "busy" from
-`state === RUNNING`, so the frontend surfacing of both signals is part of
-this capability, not a separate follow-up).
+and the status indicator both reflect the fine-grained signal.
 
 **Why.** The single durable session state (RUNNING vs WAITING_FOR_INPUT)
 is too coarse to tell "the foreground agent is generating" from "the
@@ -448,8 +441,7 @@ subagent case (that message still waits behind the open exchange, as the
 queue does today); the win is a truthful signal — no false lockout, no
 error, and prompt delivery for the out-of-turn cases — not mid-turn
 influence. Surfacing "working in the background" as a status distinct from
-both "generating" and "done" is new frontend work beyond the reviewed
-backend prototype, but it is what makes the truthful signal legible to the
+both "generating" and "done" is what makes the truthful signal legible to the
 operator rather than a silent backend nicety.
 
 **Requirements provenance.** The committed `REQUIREMENTS.md` (re-scoped to
