@@ -328,9 +328,9 @@ Satisfies §req:success-criteria #5, #6; §req:quality-attributes
 
 ## Fine-grained foreground-idle busy signal §spec:fine-grained-busy-signal
 
-*Status: not started — buildable in Kandev alone; a reviewed, tested
-prototype of the backend half lives on branch
-`archive/1597-full-six-batches`.*
+*Status: in progress — the backend behavior half (the foreground-idle busy
+gate on the prompt path) has landed; the operator-visible composer/status
+surfacing of the three-way signal is the remaining frontend half.*
 
 **Behavior.** A session whose durable state reads RUNNING accepts a new
 operator message whenever its foreground turn is *idle* — that is, the
