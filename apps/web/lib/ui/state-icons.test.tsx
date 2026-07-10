@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { isValidElement, type ReactNode } from "react";
-import { IconCheck, IconCircleCheck, IconLoader2, IconMessageQuestion } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconCircleCheck,
+  IconCircleFilled,
+  IconLoader2,
+  IconMessageQuestion,
+} from "@tabler/icons-react";
 import { getSessionStateIcon, getTaskStateIcon, shouldShowTaskRunningSpinner } from "./state-icons";
 
 function iconType(node: ReactNode) {
@@ -29,19 +35,21 @@ describe("getTaskStateIcon", () => {
 
 describe("getSessionStateIcon — fine-grained busy tri-state", () => {
   // §spec:fine-grained-busy-signal. Three distinguishable conditions:
-  //  (a) RUNNING + generating  → generating spinner
+  //  (a) RUNNING + generating  → the established static "running" dot (unchanged)
   //  (b) RUNNING + background   → working-in-background spinner, NOT the done check
   //  (c) COMPLETED              → done checkmark
-  it("(a) shows a spinner while the foreground is generating", () => {
+  it("(a) keeps the established static running dot while the foreground is generating", () => {
+    // The fine-grained signal only ADDS a background indicator; the foreground
+    // running affordance is deliberately left as it always was (static dot).
     const a = getSessionStateIcon("RUNNING", undefined, "generating");
-    expect(iconType(a)).toBe(IconLoader2);
-    expect(iconClassName(a)).toContain("animate-spin");
+    expect(iconType(a)).toBe(IconCircleFilled);
+    expect(iconClassName(a)).not.toContain("animate-spin");
   });
 
-  it("(a) defaults to the generating spinner when the substate is unknown", () => {
+  it("(a) defaults to the running dot when the substate is unknown", () => {
     // Absent/null substate must preserve the historical RUNNING affordance.
-    expect(iconType(getSessionStateIcon("RUNNING"))).toBe(IconLoader2);
-    expect(iconType(getSessionStateIcon("RUNNING", undefined, null))).toBe(IconLoader2);
+    expect(iconType(getSessionStateIcon("RUNNING"))).toBe(IconCircleFilled);
+    expect(iconType(getSessionStateIcon("RUNNING", undefined, null))).toBe(IconCircleFilled);
   });
 
   it("(b) shows a working spinner — never the done checkmark — while background work runs", () => {

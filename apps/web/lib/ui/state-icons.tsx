@@ -4,6 +4,7 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconCircleCheck,
+  IconCircleFilled,
   IconClock,
   IconLoader2,
   IconMessageQuestion,
@@ -40,8 +41,11 @@ const TASK_STATE_ICONS: Record<TaskState, IconConfig> = {
 const SESSION_STATE_ICONS: Record<TaskSessionState, IconConfig> = {
   CREATED: { Icon: IconAlertCircle, className: STYLE_MUTED },
   STARTING: { Icon: IconLoader2, className: STYLE_LOADING },
-  // (a) generating: the foreground agent is actively producing output.
-  RUNNING: { Icon: IconLoader2, className: STYLE_LOADING },
+  // (a) generating: the foreground agent is actively producing output. This is
+  // the established "session is running" indicator and is deliberately left
+  // unchanged — the fine-grained busy signal only ADDS a distinct
+  // background-work indicator (below); it does not restyle foreground running.
+  RUNNING: { Icon: IconCircleFilled, className: "text-emerald-500" },
   // Office sessions: agent process torn down, conversation paused. Use the
   // pause icon — visually distinct from RUNNING and from terminal states.
   IDLE: { Icon: IconPlayerPause, className: STYLE_MUTED },
@@ -52,9 +56,11 @@ const SESSION_STATE_ICONS: Record<TaskSessionState, IconConfig> = {
 };
 
 // (b) background-idle: the foreground turn has yielded to spawned background
-// work (§spec:fine-grained-busy-signal). Still a spinner — the operator can see
-// the agent is not done — but tinted distinctly from the generating spinner so
-// (a) and (b) are legibly different, and never the done checkmark.
+// work (§spec:fine-grained-busy-signal). A spinner — the operator can see the
+// agent is not done — visually separate from the static "generating" dot (a) by
+// its motion, and never the done checkmark. The spinner (work in motion) reads
+// as "something is still running in the background" while the foreground is
+// idle; the solid dot stays reserved for the foreground actively generating.
 const SESSION_BACKGROUND_ICON: IconConfig = {
   Icon: IconLoader2,
   className: "text-emerald-500 animate-spin",
