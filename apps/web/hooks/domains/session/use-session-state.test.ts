@@ -207,9 +207,8 @@ describe("useSessionState — fine-grained busy signal (foreground_activity)", (
 
     const { result } = renderHook(() => useSessionState("session-1"));
 
+    // Gated (busy) AND working.
     expect(result.current.isAgentBusy).toBe(true);
-    expect(result.current.isForegroundGenerating).toBe(true);
-    expect(result.current.isBackgroundWorking).toBe(false);
     expect(result.current.isWorking).toBe(true);
   });
 
@@ -221,11 +220,9 @@ describe("useSessionState — fine-grained busy signal (foreground_activity)", (
 
     const { result } = renderHook(() => useSessionState("session-1"));
 
-    // Composer enabled: the message sends instead of silently queueing.
+    // Composer enabled (not busy) — the message sends instead of queueing —
+    // yet still working, never "done".
     expect(result.current.isAgentBusy).toBe(false);
-    expect(result.current.isForegroundGenerating).toBe(false);
-    // Still working — never "done".
-    expect(result.current.isBackgroundWorking).toBe(true);
     expect(result.current.isWorking).toBe(true);
   });
 
@@ -237,7 +234,7 @@ describe("useSessionState — fine-grained busy signal (foreground_activity)", (
 
     const { result } = renderHook(() => useSessionState("session-1"));
 
-    expect(result.current.isBackgroundWorking).toBe(false);
+    // Fully idle (c): neither working nor busy.
     expect(result.current.isWorking).toBe(false);
     expect(result.current.isAgentBusy).toBe(false);
   });

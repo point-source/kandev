@@ -6,35 +6,24 @@ import type { TaskSession } from "@/lib/types/http";
 export function deriveSessionFlags(session: TaskSession | null | undefined) {
   const state = session?.state;
   const errorMessage = session?.error_message;
-  const foregroundActivity = session?.foreground_activity;
   const isStarting = state === "STARTING";
   const isRunning = state === "RUNNING";
   // §spec:fine-grained-busy-signal. Three conditions, not two:
   //  (a) generating       — RUNNING, foreground actively producing output
   //  (b) background-idle   — RUNNING, foreground yielded to spawned background work
   //  (c) fully idle        — not RUNNING
-  // Only (a) gates the composer; (b) accepts input while the "working"
-  // affordance stays up. An absent/unknown substate defaults to generating,
-  // preserving the historical reject-while-RUNNING contract.
-  const isBackgroundWorking = isRunning && foregroundActivity === "background";
-  const isForegroundGenerating = isRunning && !isBackgroundWorking;
-  // "Busy" for input-gating: only a foreground-generating turn blocks the
-  // composer. In (b) the operator can type; the message sends, not queues.
-  const isAgentBusy = isForegroundGenerating;
-  // "Working" drives the spinner/affordance: any live turn (generating OR
+  // `isAgentBusy` gates the composer (queue-vs-send): only a foreground-
+  // generating turn (a) blocks input; (b) accepts it. An absent/unknown
+  // substate defaults to generating, preserving the historical
+  // reject-while-RUNNING contract.
+  const isBackgroundIdle = isRunning && session?.foreground_activity === "background";
+  const isAgentBusy = isRunning && !isBackgroundIdle;
+  // `isWorking` drives the spinner/affordance: any live turn (generating OR
   // background-idle) plus STARTING — it must stay up through (b).
   const isWorking = isStarting || isRunning;
   const isFailed = state === "FAILED" || state === "CANCELLED";
   const needsRecovery = state === "WAITING_FOR_INPUT" && !!errorMessage;
-  return {
-    isStarting,
-    isWorking,
-    isAgentBusy,
-    isForegroundGenerating,
-    isBackgroundWorking,
-    isFailed,
-    needsRecovery,
-  };
+  return { isStarting, isWorking, isAgentBusy, isFailed, needsRecovery };
 }
 
 type UseSessionStateOptions = {
