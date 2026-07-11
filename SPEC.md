@@ -335,9 +335,15 @@ between generating and idle-on-background-work is pushed to the client, the web
 session model carries the substate, the composer gates on foreground-generating
 rather than the coarse RUNNING state, and the status icon renders three
 affordances — generating, working-in-background, done — never showing "done"
-while background work runs. Covered by backend gate/handler tests, the frontend
-derivation and icon tests, and desktop + mobile Playwright specs driven by the
-mock agent's `/background` command.*
+while background work runs. The substate is also read from the in-memory tracker
+into the boot payload and the session REST/WS DTOs (RUNNING-only, not persisted),
+so a fresh page-load or a second tab opened mid-background-window shows the
+accept-input + working-in-background affordance immediately rather than the
+coarse busy signal until the next WS flip; a backend restart resets to the safe
+generating default. Covered by backend gate/handler/serialization tests, the
+frontend derivation, icon, and hydration tests, and desktop + mobile Playwright
+specs — including a reload assertion — driven by the mock agent's `/background`
+command.*
 
 **Behavior.** A session whose durable state reads RUNNING accepts a new
 operator message whenever its foreground turn is *idle* — that is, the
