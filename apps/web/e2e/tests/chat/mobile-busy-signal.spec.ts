@@ -52,4 +52,44 @@ test.describe("Mobile fine-grained busy signal", () => {
     await expect(session.agentStatus()).not.toBeVisible({ timeout: 40_000 });
     await expect(session.idleInput()).toBeVisible({ timeout: 10_000 });
   });
+
+  test("background-idle substate survives a reload at mobile width", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    test.setTimeout(90_000);
+
+    // Long background window so it is still held after the reload lands.
+    const task = await apiClient.createTaskWithAgent(
+      seedData.workspaceId,
+      "Mobile busy signal reload",
+      seedData.agentProfileId,
+      {
+        description: "/background 20s",
+        workflow_id: seedData.workflowId,
+        workflow_step_id: seedData.startStepId,
+        repository_ids: [seedData.repositoryId],
+      },
+    );
+
+    await testPage.goto(`/t/${task.id}`);
+    const session = new SessionPage(testPage);
+    await session.waitForLoad();
+
+    // Reach the background-idle window.
+    await expect(session.agentStatus()).toBeVisible({ timeout: 20_000 });
+    await expect(session.idleInput()).toBeVisible({ timeout: 25_000 });
+    await expect(session.agentStatus()).toBeVisible();
+
+    // Reload mid-window: a fresh mobile client. The accept-input + working
+    // affordance must come straight from the boot payload (no persisted value,
+    // no activity_changed WS flip due) — §spec:fine-grained-busy-signal.
+    await testPage.reload();
+    await session.waitForLoad();
+
+    await expect(session.idleInput()).toBeVisible({ timeout: 15_000 });
+    await expect(session.agentStatus()).toBeVisible();
+    await expect(session.turnComplete()).toHaveCount(0);
+  });
 });

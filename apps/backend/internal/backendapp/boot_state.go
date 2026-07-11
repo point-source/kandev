@@ -856,6 +856,13 @@ func (b bootStateBuilder) addTaskDetailSessionsState(
 			continue
 		}
 		dto := taskdto.FromTaskSession(session)
+		// Mirror the in-memory fine-grained busy substate onto a RUNNING session
+		// so a fresh page-load / second tab sees the accept-input +
+		// working-in-background affordance without waiting for a WS flip
+		// (§spec:fine-grained-busy-signal). No-op for non-RUNNING sessions.
+		if b.p.orchestratorSvc != nil {
+			taskdto.EnrichForegroundActivity(&dto, b.p.orchestratorSvc)
+		}
 		sessionItems[session.ID] = dto
 		sessionList = append(sessionList, dto)
 		if session.TaskEnvironmentID != "" {

@@ -212,7 +212,9 @@ func (h *TaskHandlers) httpListTaskSessions(c *gin.Context) {
 	sessionDTOs := make([]dto.TaskSessionSummaryDTO, 0, len(sessions))
 	ids := make([]string, 0, len(sessions))
 	for _, session := range sessions {
-		sessionDTOs = append(sessionDTOs, dto.FromTaskSessionSummary(session))
+		summary := dto.FromTaskSessionSummary(session)
+		dto.EnrichForegroundActivitySummary(&summary, h.foregroundActivity)
+		sessionDTOs = append(sessionDTOs, summary)
 		ids = append(ids, session.ID)
 	}
 	// Resolve the per-session tool_call counts so the frontend can render
@@ -254,8 +256,10 @@ func (h *TaskHandlers) httpGetTaskSession(c *gin.Context) {
 		handleNotFound(c, h.logger, err, "task session not found")
 		return
 	}
+	sessionDTO := dto.FromTaskSession(session)
+	dto.EnrichForegroundActivity(&sessionDTO, h.foregroundActivity)
 	c.JSON(http.StatusOK, dto.GetTaskSessionResponse{
-		Session: dto.FromTaskSession(session),
+		Session: sessionDTO,
 	})
 }
 
@@ -274,8 +278,10 @@ func (h *TaskHandlers) httpDismissLastAgentError(c *gin.Context) {
 		handleNotFound(c, h.logger, err, "task session not found")
 		return
 	}
+	sessionDTO := dto.FromTaskSession(session)
+	dto.EnrichForegroundActivity(&sessionDTO, h.foregroundActivity)
 	c.JSON(http.StatusOK, dto.GetTaskSessionResponse{
-		Session: dto.FromTaskSession(session),
+		Session: sessionDTO,
 	})
 }
 

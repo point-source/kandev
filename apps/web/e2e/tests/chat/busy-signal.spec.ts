@@ -109,6 +109,43 @@ test.describe("Fine-grained busy signal — composer + status", () => {
     await expect(testPage.getByTestId("queue-chip")).not.toBeVisible();
   });
 
+  test("background-idle substate survives a fresh page reload (boot payload, no WS flip)", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    test.setTimeout(90_000);
+
+    const session = await seedTaskAndWaitForIdle(
+      testPage,
+      apiClient,
+      seedData,
+      "Busy signal reload",
+    );
+
+    // Open a long background window so it is still held after the reload lands.
+    await session.sendMessage("/background 20s");
+    await expect(session.agentStatus()).toBeVisible({ timeout: 15_000 });
+
+    // Reach the background-idle window: accept-input while still working.
+    await expect(session.idleInput()).toBeVisible({ timeout: 20_000 });
+    await expect(session.agentStatus()).toBeVisible();
+
+    // Reload: this is a fresh client that loads MID background-window. The
+    // substate is not persisted and no activity_changed WS flip is due (the turn
+    // was already background before the reload), so the only way the composer can
+    // show accept-input + working here is if the boot payload carried the
+    // fine-grained substate. This is the exact gap this batch closes: before it,
+    // a reload showed the coarse "Queue more instructions…" busy affordance until
+    // the next flip — which, for a genuinely idle-on-background turn, never comes.
+    await testPage.reload();
+    await session.waitForLoad();
+
+    await expect(session.idleInput()).toBeVisible({ timeout: 15_000 });
+    await expect(session.agentStatus()).toBeVisible();
+    await expect(session.turnComplete()).toHaveCount(0);
+  });
+
   test("a turn with no background work keeps the composer gated (queues input)", async ({
     testPage,
     apiClient,
@@ -116,7 +153,12 @@ test.describe("Fine-grained busy signal — composer + status", () => {
   }) => {
     test.setTimeout(60_000);
 
-    const session = await seedTaskAndWaitForIdle(testPage, apiClient, seedData, "Busy signal gated");
+    const session = await seedTaskAndWaitForIdle(
+      testPage,
+      apiClient,
+      seedData,
+      "Busy signal gated",
+    );
 
     // A plain slow turn generates in the foreground the whole time — no
     // recognized background work — so the composer stays gated exactly as today.

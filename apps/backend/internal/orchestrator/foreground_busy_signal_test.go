@@ -8,6 +8,7 @@ import (
 	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/task/models"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
 )
 
 // TestCheckSessionPromptable_BackgroundTaskAcceptsInput is the red
@@ -50,6 +51,40 @@ func TestCheckSessionPromptable_BackgroundTaskAcceptsInput(t *testing.T) {
 
 // TestTurnActivity_ForegroundBackgroundTransitions locks in the state machine
 // behind isForegroundTurnGenerating.
+// TestForegroundActivity_ExportedValue covers the seam the page-load / list
+// serialization layer depends on (§spec:fine-grained-busy-signal): the exported
+// ForegroundActivity mirror of the in-memory tracker. An untracked session — which
+// includes every session after a backend restart, since a restart ends the turn —
+// must report the safe "generating" default so a stale "you may type" can never be
+// serialized.
+func TestForegroundActivity_ExportedValue(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+
+	const s = "session-fa"
+
+	if got := svc.ForegroundActivity(s); got != v1.ForegroundActivityGenerating {
+		t.Fatalf("untracked session must default to generating, got %q", got)
+	}
+
+	svc.registerBackgroundTask(s, "t1")
+	if got := svc.ForegroundActivity(s); got != v1.ForegroundActivityBackground {
+		t.Fatalf("after registering background work, got %q, want background", got)
+	}
+
+	svc.completeBackgroundTask(s, "t1")
+	if got := svc.ForegroundActivity(s); got != v1.ForegroundActivityGenerating {
+		t.Fatalf("after background work finishes, got %q, want generating", got)
+	}
+
+	// clearTurnActivity models a turn-close / restart-adjacent reset back to safe.
+	svc.registerBackgroundTask(s, "t2")
+	svc.clearTurnActivity(s)
+	if got := svc.ForegroundActivity(s); got != v1.ForegroundActivityGenerating {
+		t.Fatalf("after clearTurnActivity, got %q, want generating", got)
+	}
+}
+
 func TestTurnActivity_ForegroundBackgroundTransitions(t *testing.T) {
 	repo := setupTestRepo(t)
 	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())

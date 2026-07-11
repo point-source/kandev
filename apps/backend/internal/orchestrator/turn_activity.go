@@ -160,6 +160,19 @@ func (s *Service) foregroundActivityValue(sessionID string) v1.ForegroundActivit
 	return v1.ForegroundActivityBackground
 }
 
+// ForegroundActivity exposes the in-memory fine-grained busy substate so the
+// page-load / list serialization layer can stamp it onto a RUNNING session's
+// DTO (§spec:fine-grained-busy-signal). This is the same value that drives the
+// live task_session.activity_changed WS event, read straight from the in-memory
+// tracker — the single source of truth. There is no persisted copy: an untracked
+// session (including every session after a backend restart, which ends the turn)
+// reports the safe "generating" default, so a stale "you may type" can never be
+// serialized. Callers must only stamp the result on RUNNING sessions; for every
+// other state the coarse session state already tells the whole story.
+func (s *Service) ForegroundActivity(sessionID string) v1.ForegroundActivity {
+	return s.foregroundActivityValue(sessionID)
+}
+
 // publishForegroundActivityChanged emits the fine-grained busy signal so the
 // web composer and status indicator can distinguish "generating" from "waiting
 // on background work" without a coarse session-state transition. Callers invoke
