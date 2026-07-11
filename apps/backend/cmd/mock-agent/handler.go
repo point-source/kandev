@@ -283,15 +283,7 @@ func emitSleep(e *emitter, cmd string) {
 // while the session still reads RUNNING. When the hold elapses the subagent
 // completes, the foreground resumes, and the turn ends (→ done).
 func emitBackgroundWork(e *emitter, cmd string) {
-	d := 8 * time.Second
-	parts := strings.Fields(cmd)
-	if len(parts) >= 2 {
-		if secs, err := time.ParseDuration(parts[1] + "s"); err == nil && secs > 0 {
-			d = secs
-		} else if parsed, err2 := time.ParseDuration(parts[1]); err2 == nil && parsed > 0 {
-			d = parsed
-		}
-	}
+	d := parseBackgroundDuration(cmd, 8*time.Second)
 
 	e.text("Kicking off background work; I'll keep going in the background.")
 
@@ -314,6 +306,26 @@ func emitBackgroundWork(e *emitter, cmd string) {
 	})
 
 	e.text("Background work complete.")
+}
+
+// parseBackgroundDuration reads the optional duration argument of a /background
+// command, returning def when it is absent or unparseable. A value carrying an
+// explicit unit is honored as-is (`1m`, `500ms`, `2h`); a bare number is treated
+// as seconds (`8` → 8s). The explicit-unit parse is tried FIRST: appending "s"
+// to a unit-bearing value like `1m` would otherwise parse as the valid-but-wrong
+// "1ms" (1 millisecond) and never reach the correct interpretation.
+func parseBackgroundDuration(cmd string, def time.Duration) time.Duration {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		return def
+	}
+	if parsed, err := time.ParseDuration(parts[1]); err == nil && parsed > 0 {
+		return parsed
+	}
+	if secs, err := time.ParseDuration(parts[1] + "s"); err == nil && secs > 0 {
+		return secs
+	}
+	return def
 }
 
 // emitError emits an error message.
