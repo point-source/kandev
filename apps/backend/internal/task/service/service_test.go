@@ -1080,6 +1080,55 @@ func TestService_CreateRepository_DefaultWorktreeBranchPrefix(t *testing.T) {
 	}
 }
 
+func TestService_CreateRepository_CopyFilesSymlinkKeyword(t *testing.T) {
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+	_ = repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws-1", Name: "Workspace"})
+
+	created, err := svc.CreateRepository(ctx, &CreateRepositoryRequest{
+		WorkspaceID: "ws-1",
+		Name:        "Test Repo",
+		CopyFiles:   ".env, .env.local:symlink",
+	})
+	if err != nil {
+		t.Fatalf("CreateRepository failed: %v", err)
+	}
+	if created.CopyFiles != ".env, .env.local:symlink" {
+		t.Fatalf("copy_files not persisted verbatim: %q", created.CopyFiles)
+	}
+}
+
+func TestService_CreateRepository_InvalidCopyFilesKeyword(t *testing.T) {
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+	_ = repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws-1", Name: "Workspace"})
+
+	_, err := svc.CreateRepository(ctx, &CreateRepositoryRequest{
+		WorkspaceID: "ws-1",
+		Name:        "Test Repo",
+		CopyFiles:   ".env.local:hardlink",
+	})
+	if !errors.Is(err, ErrInvalidRepositorySettings) {
+		t.Fatalf("expected ErrInvalidRepositorySettings, got %v", err)
+	}
+}
+
+func TestService_UpdateRepository_InvalidCopyFilesKeyword(t *testing.T) {
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+	_ = repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws-1", Name: "Workspace"})
+	created, err := svc.CreateRepository(ctx, &CreateRepositoryRequest{WorkspaceID: "ws-1", Name: "Test Repo"})
+	if err != nil {
+		t.Fatalf("CreateRepository failed: %v", err)
+	}
+
+	bad := ".env:move"
+	_, err = svc.UpdateRepository(ctx, created.ID, &UpdateRepositoryRequest{CopyFiles: &bad})
+	if !errors.Is(err, ErrInvalidRepositorySettings) {
+		t.Fatalf("expected ErrInvalidRepositorySettings, got %v", err)
+	}
+}
+
 func TestService_CreateRepository_DefaultWorktreeBranchTemplate(t *testing.T) {
 	svc, _, repo := createTestService(t)
 	ctx := context.Background()

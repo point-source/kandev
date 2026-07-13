@@ -16,6 +16,7 @@ import (
 	"github.com/kandev/kandev/internal/task/models"
 	taskrepo "github.com/kandev/kandev/internal/task/repository"
 	"github.com/kandev/kandev/internal/worktree"
+	"github.com/kandev/kandev/internal/worktree/copyfiles"
 )
 
 const (
@@ -539,6 +540,9 @@ func (s *Service) CreateRepository(ctx context.Context, req *CreateRepositoryReq
 	if req.PullBeforeWorktree != nil {
 		pullBeforeWorktree = *req.PullBeforeWorktree
 	}
+	if err := copyfiles.ValidateSpec(req.CopyFiles); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+	}
 	repository := &models.Repository{
 		ID:                     uuid.New().String(),
 		WorkspaceID:            req.WorkspaceID,
@@ -721,6 +725,9 @@ func applyRepositoryUpdates(repository *models.Repository, req *UpdateRepository
 		repository.DevScript = *req.DevScript
 	}
 	if req.CopyFiles != nil {
+		if err := copyfiles.ValidateSpec(*req.CopyFiles); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+		}
 		repository.CopyFiles = *req.CopyFiles
 	}
 	return nil
