@@ -238,7 +238,7 @@ export type TaskSessionStateChangedPayload = {
   review_status?: string;
   // Task environment (for session→environment mapping)
   task_environment_id?: string;
-  // Fine-grained busy substate (see ADR-0035), carried on every transition so
+  // Fine-grained busy substate (see ADR-0036), carried on every transition so
   // the client resets stale values; intra-RUNNING flips arrive on
   // session.activity_changed instead.
   foreground_activity?: ForegroundActivity;
@@ -246,7 +246,7 @@ export type TaskSessionStateChangedPayload = {
 
 /**
  * Payload for `session.activity_changed` — the fine-grained busy signal
- * (see ADR-0035). Fires when a RUNNING session's foreground turn flips between
+ * (see ADR-0036). Fires when a RUNNING session's foreground turn flips between
  * generating and idle-on-background-work, with no coarse state change.
  */
 export type TaskSessionActivityChangedPayload = {
