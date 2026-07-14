@@ -4,69 +4,180 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
+
+	"go.uber.org/zap"
 )
 
 // ErrSameWorkspace is returned when a copy targets the same workspace it reads
 // from.
 var ErrSameWorkspace = errors.New("sentry: source and target workspaces are the same")
 
-// ErrNothingToCopy is returned when the source workspace has no Sentry config.
-var ErrNothingToCopy = errors.New("sentry: source workspace has no configuration to copy")
+// ErrNothingToCopy is returned when the source workspace has no Sentry
+// instances.
+var ErrNothingToCopy = errors.New("sentry: source workspace has no Sentry instances to copy")
 
-// CopyConfigToWorkspace copies the Sentry provider config and credential (auth
-// token) from sourceWorkspaceID to targetWorkspaceID. Watchers are
-// intentionally out of scope — only the connection settings and secret are
-// duplicated.
-func (s *Service) CopyConfigToWorkspace(ctx context.Context, sourceWorkspaceID, targetWorkspaceID string) (*SentryConfig, error) {
-	sourceWorkspaceID, err := s.normalizeWorkspaceID(sourceWorkspaceID)
+type copyInput struct {
+	config    *SentryConfig
+	secret    string
+	hasSecret bool
+}
+
+// CopyConfigToWorkspace copies every Sentry instance from sourceWorkspaceID
+// into targetWorkspaceID: fresh instance IDs, secrets duplicated under the new
+// per-instance keys, and names deduped against the target's existing instances.
+// Issue watches are intentionally out of scope — only the connection settings
+// and secrets are duplicated. Returns the newly created instances.
+func (s *Service) CopyConfigToWorkspace(ctx context.Context, sourceWorkspaceID, targetWorkspaceID string) ([]*SentryConfig, error) {
+	if err := validateCopyWorkspaces(sourceWorkspaceID, targetWorkspaceID); err != nil {
+		return nil, err
+	}
+	prepared, used, err := s.prepareCopyInputs(ctx, sourceWorkspaceID, targetWorkspaceID)
 	if err != nil {
 		return nil, err
 	}
-	targetWorkspaceID, err = s.normalizeWorkspaceID(targetWorkspaceID)
+	copied, err := s.createCopiedInstances(ctx, targetWorkspaceID, prepared, used)
 	if err != nil {
 		return nil, err
+	}
+	s.finalizeCopiedInstances(copied)
+	return copied, nil
+}
+
+// validateCopyWorkspaces rejects empty or identical source/target workspace
+// IDs before any store access.
+func validateCopyWorkspaces(sourceWorkspaceID, targetWorkspaceID string) error {
+	if sourceWorkspaceID == "" || targetWorkspaceID == "" {
+		return fmt.Errorf("%w: source and target workspace IDs are required", ErrInvalidConfig)
 	}
 	if sourceWorkspaceID == targetWorkspaceID {
-		return nil, ErrSameWorkspace
+		return ErrSameWorkspace
 	}
-	cfg, err := s.store.GetConfigForWorkspace(ctx, sourceWorkspaceID)
+	return nil
+}
+
+// prepareCopyInputs reads every source instance and, for each, reveals its
+// secret before any target-workspace mutation, plus the target's existing
+// instance names to dedupe against. Aborting here means no partial target
+// state to roll back.
+func (s *Service) prepareCopyInputs(ctx context.Context, sourceWorkspaceID, targetWorkspaceID string) ([]copyInput, map[string]struct{}, error) {
+	sources, err := s.store.ListInstances(ctx, sourceWorkspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("read source sentry config: %w", err)
+		return nil, nil, fmt.Errorf("read source sentry instances: %w", err)
 	}
-	if cfg == nil {
-		return nil, ErrNothingToCopy
+	if len(sources) == 0 {
+		return nil, nil, ErrNothingToCopy
 	}
-	secret, err := s.revealSecret(ctx, sourceWorkspaceID)
+	existing, err := s.store.ListInstances(ctx, targetWorkspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("read source sentry secret: %w", err)
+		return nil, nil, fmt.Errorf("read target sentry instances: %w", err)
 	}
-	// An empty Secret means "keep existing" in SetConfigForWorkspace, so copying
-	// from a workspace without a stored token would leave the target on its old
-	// credential paired with the copied settings. Treat that as nothing to copy.
-	if secret == "" {
-		return nil, ErrNothingToCopy
+	used := make(map[string]struct{}, len(existing))
+	for _, inst := range existing {
+		used[inst.Name] = struct{}{}
 	}
-	req := &SetConfigRequest{
-		AuthMethod: cfg.AuthMethod,
-		URL:        cfg.URL,
-		Secret:     secret,
+	prepared := make([]copyInput, 0, len(sources))
+	for _, src := range sources {
+		input := copyInput{config: src}
+		if s.secrets != nil {
+			secret, ok, err := s.revealInstanceSecret(ctx, src.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read source sentry secret: %w", err)
+			}
+			input.secret = secret
+			input.hasSecret = ok
+		}
+		prepared = append(prepared, input)
 	}
-	// Mark the target unhealthy before the write so the UI doesn't briefly flash
-	// a stale "connected" state from the target's previous credential while the
-	// async probe kicked off by SetConfigForWorkspace validates the copied one.
-	if err := s.store.UpdateAuthHealthForWorkspace(ctx, targetWorkspaceID, false, "", time.Now().UTC()); err != nil {
-		return nil, fmt.Errorf("reset target sentry health: %w", err)
+	return prepared, used, nil
+}
+
+// createCopiedInstances copies every prepared input into the target
+// workspace, rolling back all instances created by this request if any copy
+// fails.
+func (s *Service) createCopiedInstances(ctx context.Context, targetWorkspaceID string, prepared []copyInput, used map[string]struct{}) ([]*SentryConfig, error) {
+	copied := make([]*SentryConfig, 0, len(prepared))
+	for _, input := range prepared {
+		out, err := s.copyInstance(ctx, targetWorkspaceID, input, used)
+		if out != nil {
+			copied = append(copied, out)
+		}
+		if err != nil {
+			return nil, s.rollbackCopiedInstances(ctx, copied, err)
+		}
 	}
-	cfgOut, err := s.SetConfigForWorkspace(ctx, targetWorkspaceID, req)
-	if err != nil {
-		// The write failed, so the target's config is unchanged but we already
-		// flipped its health row. Re-probe asynchronously (best effort) so the row
-		// reflects the target's real state again rather than a spurious
-		// "unhealthy", without delaying the error response by the probe timeout.
-		// Detach from the request context, which may already be cancelled.
-		go s.RecordAuthHealthForWorkspace(context.Background(), targetWorkspaceID)
-		return nil, err
+	return copied, nil
+}
+
+// finalizeCopiedInstances invalidates the cached clients for the freshly copied
+// instances. It deliberately fires no per-instance auth-health probe here: a
+// workspace may hold arbitrarily many instances, so probing each copy inline
+// would burst an unbounded number of goroutines and outbound Sentry calls.
+// The copied instances instead get their first health check from the bounded
+// background auth-health poller (RecordAuthHealth, concurrency-capped) on its
+// next cycle.
+func (s *Service) finalizeCopiedInstances(copied []*SentryConfig) {
+	for _, cfg := range copied {
+		s.invalidateClient(cfg.ID)
 	}
-	return cfgOut, nil
+}
+
+// copyInstance duplicates a prepared source instance into the target workspace
+// with a name deduped against used (which it updates) and a rekeyed secret.
+// Health probing is left to the bounded background poller (see
+// finalizeCopiedInstances).
+func (s *Service) copyInstance(ctx context.Context, targetWorkspaceID string, input copyInput, used map[string]struct{}) (*SentryConfig, error) {
+	cfg := &SentryConfig{
+		WorkspaceID: targetWorkspaceID,
+		Name:        uniqueInstanceName(used, input.config.Name),
+		AuthMethod:  input.config.AuthMethod,
+		URL:         input.config.URL,
+	}
+	if err := s.store.CreateInstance(ctx, cfg); err != nil {
+		return nil, fmt.Errorf("create copied sentry instance: %w", err)
+	}
+	if input.hasSecret && s.secrets != nil {
+		if err := s.secrets.Set(ctx, secretKeyForInstance(cfg.ID), "Sentry auth token", input.secret); err != nil {
+			return cfg, fmt.Errorf("store copied sentry secret: %w", err)
+		}
+		cfg.HasSecret = true
+	}
+	return cfg, nil
+}
+
+// rollbackCopiedInstances removes only instances created by the current copy
+// request. It continues after cleanup errors so every created row is
+// attempted, and only deletes a copied secret once its row delete actually
+// succeeded — if DeleteInstance fails (e.g. the instance became referenced by
+// a watch created concurrently, returning ErrInstanceInUse), that instance's
+// row and secret are left fully intact rather than orphaning a live row.
+func (s *Service) rollbackCopiedInstances(ctx context.Context, copied []*SentryConfig, cause error) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	var rollbackErrs []error
+	for i := len(copied) - 1; i >= 0; i-- {
+		cfg := copied[i]
+		if cfg == nil || cfg.ID == "" {
+			continue
+		}
+		if err := s.store.DeleteInstance(cleanupCtx, cfg.ID); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback copied sentry instance %q: %w", cfg.ID, err))
+			continue
+		}
+		if s.secrets != nil {
+			key := secretKeyForInstance(cfg.ID)
+			exists, err := s.secrets.Exists(cleanupCtx, key)
+			if err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("check copied sentry secret %q during rollback: %w", cfg.ID, err))
+			} else if exists {
+				if err := s.secrets.Delete(cleanupCtx, key); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback copied sentry secret %q: %w", cfg.ID, err))
+				}
+			}
+		}
+	}
+	if len(rollbackErrs) == 0 {
+		return cause
+	}
+	cleanupErr := errors.Join(rollbackErrs...)
+	s.log.Warn("sentry: copy rollback cleanup failed", zap.Error(cleanupErr))
+	return errors.Join(cause, cleanupErr)
 }

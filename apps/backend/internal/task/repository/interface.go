@@ -13,6 +13,8 @@ import (
 var ErrWorkspaceNameMismatch = repoerrors.ErrWorkspaceNameMismatch
 var ErrWorkspaceNotFound = repoerrors.ErrWorkspaceNotFound
 var ErrTaskNotFound = repoerrors.ErrTaskNotFound
+var ErrTaskPlanNotFound = repoerrors.ErrTaskPlanNotFound
+var ErrRepositoryNotFound = repoerrors.ErrRepositoryNotFound
 
 // WorkspaceRepository handles workspace CRUD.
 type WorkspaceRepository interface {
@@ -121,6 +123,7 @@ type MessageRepository interface {
 	FindMessagesByPendingID(ctx context.Context, pendingID string) ([]*models.Message, error)
 	FindMessageByPendingIDAndQuestion(ctx context.Context, sessionID, pendingID, questionID string) (*models.Message, error)
 	FindPendingClarificationMessagesBySessionID(ctx context.Context, sessionID string) ([]*models.Message, error)
+	GetPendingActionsBySessionIDs(ctx context.Context, sessionIDs []string) (map[string]models.TaskPendingAction, error)
 	UpdateMessage(ctx context.Context, message *models.Message) error
 	ListMessages(ctx context.Context, sessionID string) ([]*models.Message, error)
 	ListMessagesByTurnID(ctx context.Context, turnID string) ([]*models.Message, error)
@@ -318,6 +321,7 @@ type PlanRepository interface {
 	CreateTaskPlan(ctx context.Context, plan *models.TaskPlan) error
 	GetTaskPlan(ctx context.Context, taskID string) (*models.TaskPlan, error)
 	UpdateTaskPlan(ctx context.Context, plan *models.TaskPlan) error
+	MarkTaskPlanImplementationStarted(ctx context.Context, taskID, sessionID, actor string) (*models.TaskPlan, error)
 	DeleteTaskPlan(ctx context.Context, taskID string) error
 
 	// Revision history

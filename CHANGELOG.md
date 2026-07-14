@@ -2,6 +2,57 @@
 
 All notable changes to Kandev.
 
+## 0.78.0 - 2026-07-13
+
+### Features
+
+- add workflow WIP pull system ([#1613](https://github.com/kdlbs/kandev/pull/1613))
+- add per-file copy/symlink materialization per repository ([#1650](https://github.com/kdlbs/kandev/pull/1650)) by @jcoatelen-ledger
+- support multiple concurrent Sentry instances ([#1469](https://github.com/kdlbs/kandev/pull/1469)) by @ClemDNL
+- add durable plan implement action ([#1645](https://github.com/kdlbs/kandev/pull/1645))
+
+### Bug Fixes
+
+- use long press for mobile task actions ([#1673](https://github.com/kdlbs/kandev/pull/1673))
+- preserve colon paths in copy files ([#1674](https://github.com/kdlbs/kandev/pull/1674))
+- prune orphaned task worktree repositories ([#1667](https://github.com/kdlbs/kandev/pull/1667))
+- clarify plan mode workflow guidance ([#1666](https://github.com/kdlbs/kandev/pull/1666))
+- guard agent profile orphan cleanup ([#1659](https://github.com/kdlbs/kandev/pull/1659))
+- show pending task input before messages load ([#1663](https://github.com/kdlbs/kandev/pull/1663))
+- stop unstable use(params) promise from hiding office tree ([#1664](https://github.com/kdlbs/kandev/pull/1664))
+- use maintained codex acp bridge ([#1656](https://github.com/kdlbs/kandev/pull/1656))
+- wrap Utility Agents sub-sections in bounded cards ([#1654](https://github.com/kdlbs/kandev/pull/1654)) by @ClemDNL
+- simplify walkthrough prompt requests ([#1660](https://github.com/kdlbs/kandev/pull/1660))
+- show implement button whenever plan mode is active ([#1646](https://github.com/kdlbs/kandev/pull/1646))
+- support markdown preview comments ([#1648](https://github.com/kdlbs/kandev/pull/1648))
+- isolate saved layouts from stale sessions ([#1649](https://github.com/kdlbs/kandev/pull/1649))
+
+## 0.77.0 - 2026-07-10
+
+### Features
+
+- add agent-authored code walkthroughs ([#1647](https://github.com/kdlbs/kandev/pull/1647))
+- move integration links into task menus ([#1644](https://github.com/kdlbs/kandev/pull/1644))
+- improve workspace sidebar navigation ([#1643](https://github.com/kdlbs/kandev/pull/1643))
+- add configurable branch names ([#1615](https://github.com/kdlbs/kandev/pull/1615))
+
+### Bug Fixes
+
+- add mobile workspace switcher ([#1640](https://github.com/kdlbs/kandev/pull/1640))
+- repair GitHub repository scope filters ([#1641](https://github.com/kdlbs/kandev/pull/1641))
+- inherit parent scope for mcp subtasks ([#1638](https://github.com/kdlbs/kandev/pull/1638))
+- sync task completion with terminal workflow steps ([#1639](https://github.com/kdlbs/kandev/pull/1639))
+- expand nested custom prompts ([#1637](https://github.com/kdlbs/kandev/pull/1637))
+- open each linked PR in its own tab from the "+" menu ([#1636](https://github.com/kdlbs/kandev/pull/1636)) by @ClemDNL
+- stop archived automation-run tasks from pinning max_concurrent_runs ([#1632](https://github.com/kdlbs/kandev/pull/1632)) by @ClemDNL
+- keep created subtasks during hydration ([#1626](https://github.com/kdlbs/kandev/pull/1626))
+- keep diff previews tied to the correct file ([#1618](https://github.com/kdlbs/kandev/pull/1618))
+- equalize integration card heights ([#1624](https://github.com/kdlbs/kandev/pull/1624))
+
+### Documentation
+
+- add pr fixup conflict guidance ([#1642](https://github.com/kdlbs/kandev/pull/1642))
+
 ## 0.76.0 - 2026-07-09
 
 ### Bug Fixes

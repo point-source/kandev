@@ -1,7 +1,7 @@
 import { copySlackConfig } from "@/lib/api/domains/slack-api";
 import { copyJiraConfig } from "@/lib/api/domains/jira-api";
 import { copyLinearConfig } from "@/lib/api/domains/linear-api";
-import { copySentryConfig } from "@/lib/api/domains/sentry-api";
+import { copySentryInstances } from "@/lib/api/domains/sentry-api";
 import { copyGitHubWorkspaceSettings } from "@/lib/api/domains/github-api";
 
 // IntegrationSlug is the set of integration settings pages that support copying
@@ -18,10 +18,11 @@ const integrationLabels: Record<IntegrationSlug, string> = {
 };
 
 // integrationFromPathname returns the integration slug for a settings pathname
-// like /settings/integrations/slack, or null when the current page is not a
-// copyable integration page.
+// like /settings/integrations/slack or
+// /settings/workspace/<id>/integrations/slack, or null when the current page is
+// not a copyable integration page.
 export function integrationFromPathname(pathname: string): IntegrationSlug | null {
-  const match = pathname.match(/^\/settings\/integrations\/([^/]+)/);
+  const match = pathname.match(/^\/settings(?:\/workspace\/[^/]+)?\/integrations\/([^/]+)/);
   const slug = match?.[1];
   if (slug && Object.prototype.hasOwnProperty.call(integrationLabels, slug)) {
     return slug as IntegrationSlug;
@@ -54,7 +55,7 @@ export async function copyIntegrationConfig(
       await copyLinearConfig(targetWorkspaceId, options);
       return;
     case "sentry":
-      await copySentryConfig(targetWorkspaceId, options);
+      await copySentryInstances(targetWorkspaceId, options);
       return;
     case "github":
       await copyGitHubWorkspaceSettings(targetWorkspaceId, options);

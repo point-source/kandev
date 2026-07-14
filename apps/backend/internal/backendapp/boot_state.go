@@ -516,12 +516,16 @@ func (b bootStateBuilder) workflowSnapshotState(ctx context.Context, workflow *t
 		b.logBootError("list home workflow tasks", err)
 		return nil, false
 	}
-	taskStates := make([]map[string]any, 0, len(tasks))
+	visibleTasks := make([]*taskmodels.Task, 0, len(tasks))
 	for _, task := range tasks {
 		if task == nil || task.IsEphemeral || task.WorkflowStepID == "" {
 			continue
 		}
-		taskStates = append(taskStates, mapKanbanTaskState(taskdto.FromTask(task)))
+		visibleTasks = append(visibleTasks, task)
+	}
+	taskStates := make([]map[string]any, 0, len(visibleTasks))
+	for _, task := range b.taskDTOsWithSessionInfo(ctx, visibleTasks) {
+		taskStates = append(taskStates, mapKanbanTaskState(task))
 	}
 	return map[string]any{
 		"workflowId":   workflow.ID,
@@ -623,6 +627,11 @@ func (b bootStateBuilder) taskDTOsWithSessionInfo(ctx context.Context, tasks []*
 		b.logBootError("get task detail primary session info", err)
 		return taskDTOs(tasks)
 	}
+	pendingActionsBySession, err := b.bootPendingActionsForWaitingPrimarySessions(ctx, primaryInfoByTask)
+	if err != nil {
+		b.logBootError("get task detail pending actions", err)
+		pendingActionsBySession = map[string]taskmodels.TaskPendingAction{}
+	}
 	result := make([]taskdto.TaskDTO, 0, len(tasks))
 	for _, task := range tasks {
 		if task == nil {
@@ -654,6 +663,7 @@ func (b bootStateBuilder) taskDTOsWithSessionInfo(ctx context.Context, tasks []*
 			info.agentName,
 			info.workingDirectory,
 			info.sessionState,
+			bootPendingActionPtr(info.sessionID, pendingActionsBySession),
 		))
 	}
 	return result
@@ -670,6 +680,7 @@ func taskDTOs(tasks []*taskmodels.Task) []taskdto.TaskDTO {
 }
 
 type bootSessionInfoFields struct {
+	sessionID        *string
 	reviewStatus     taskmodels.ReviewStatus
 	sessionState     *string
 	executorID       *string
@@ -683,6 +694,10 @@ func bootSessionInfo(session *taskmodels.TaskSession) bootSessionInfoFields {
 	var info bootSessionInfoFields
 	if session == nil {
 		return info
+	}
+	if session.ID != "" {
+		value := session.ID
+		info.sessionID = &value
 	}
 	info.reviewStatus = session.ReviewStatus
 	if session.State != "" {
@@ -712,6 +727,37 @@ func bootSessionInfo(session *taskmodels.TaskSession) bootSessionInfoFields {
 		}
 	}
 	return info
+}
+
+func (b bootStateBuilder) bootPendingActionsForWaitingPrimarySessions(
+	ctx context.Context,
+	primaryInfoByTask map[string]*taskmodels.TaskSession,
+) (map[string]taskmodels.TaskPendingAction, error) {
+	sessionIDs := make([]string, 0, len(primaryInfoByTask))
+	for _, info := range primaryInfoByTask {
+		if info != nil && info.State == taskmodels.TaskSessionStateWaitingForInput {
+			sessionIDs = append(sessionIDs, info.ID)
+		}
+	}
+	if len(sessionIDs) == 0 {
+		return map[string]taskmodels.TaskPendingAction{}, nil
+	}
+	return b.p.taskSvc.GetPendingActionsForSessions(ctx, sessionIDs)
+}
+
+func bootPendingActionPtr(
+	sessionID *string,
+	pendingActionsBySession map[string]taskmodels.TaskPendingAction,
+) *string {
+	if sessionID == nil {
+		return nil
+	}
+	action, ok := pendingActionsBySession[*sessionID]
+	if !ok {
+		return nil
+	}
+	value := string(action)
+	return &value
 }
 
 func (b bootStateBuilder) taskDetailInitialState(

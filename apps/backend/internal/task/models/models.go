@@ -18,6 +18,9 @@ var ErrExecutorRunningNotFound = errors.New("executor running not found")
 // ErrTaskSessionNotFound is returned when no task session record exists.
 var ErrTaskSessionNotFound = errors.New("task session not found")
 
+// ErrTaskWalkthroughNotFound is returned when no walkthrough record exists.
+var ErrTaskWalkthroughNotFound = errors.New("task walkthrough not found")
+
 // ErrExecutorNotFound is returned by the executor repository when no
 // executor row exists for the given ID. Callers should use errors.Is to
 // distinguish "row doesn't exist" (404 semantically) from transport-level
@@ -523,6 +526,15 @@ const (
 	// event), or agentctl rejected the response because the pending entry was
 	// already gone. No ACP outcome ever reaches the wire in this state.
 	PermissionStatusExpired PermissionStatus = "expired"
+)
+
+// TaskPendingAction is the compact task-list projection for a primary session
+// blocked on user input.
+type TaskPendingAction string
+
+const (
+	TaskPendingActionClarification TaskPendingAction = "clarification"
+	TaskPendingActionPermission    TaskPendingAction = "permission"
 )
 
 // Message represents a message in a task session
@@ -1128,13 +1140,16 @@ func (r *TaskEnvironmentRepo) ToAPI() map[string]interface{} {
 
 // TaskPlan represents a plan associated with a task
 type TaskPlan struct {
-	ID        string    `json:"id"`
-	TaskID    string    `json:"task_id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	CreatedBy string    `json:"created_by"` // "agent" or "user"
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                             string     `json:"id"`
+	TaskID                         string     `json:"task_id"`
+	Title                          string     `json:"title"`
+	Content                        string     `json:"content"`
+	CreatedBy                      string     `json:"created_by"` // "agent" or "user"
+	CreatedAt                      time.Time  `json:"created_at"`
+	UpdatedAt                      time.Time  `json:"updated_at"`
+	ImplementationStartedAt        *time.Time `json:"implementation_started_at,omitempty"`
+	ImplementationStartedSessionID *string    `json:"implementation_started_session_id,omitempty"`
+	ImplementationStartedBy        *string    `json:"implementation_started_by,omitempty"`
 }
 
 // TaskPlanRevision is one immutable snapshot in the revision history of a task plan.
@@ -1150,6 +1165,32 @@ type TaskPlanRevision struct {
 	RevertOfRevisionID *string   `json:"revert_of_revision_id,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"` // bumps on coalesce merge
+}
+
+// TaskWalkthrough is an agent-authored guided code tour attached to a task.
+// It is the "what & where" of a review narration: an ordered list of Steps,
+// each anchored to a concrete repo/file/line, rendered as popovers over the
+// review diff. Mirrors the TaskPlan artifact pattern (one per task, agent-authored).
+type TaskWalkthrough struct {
+	ID        string            `json:"id"`
+	TaskID    string            `json:"task_id"`
+	Title     string            `json:"title"`
+	Steps     []WalkthroughStep `json:"steps"`
+	CreatedBy string            `json:"created_by"` // always "agent"
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
+// WalkthroughStep is a single anchored stop in a TaskWalkthrough. Text is
+// markdown shown in the popover; File/Line locate the anchor inside the diff
+// (Repo disambiguates in multi-repo reviews, LineEnd optionally spans a range).
+type WalkthroughStep struct {
+	Title   string `json:"title,omitempty"`
+	Repo    string `json:"repo,omitempty"`
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	LineEnd int    `json:"line_end,omitempty"`
+	Text    string `json:"text"`
 }
 
 // TaskDocument represents a named document (plan, spec, notes, etc.) associated with a task.

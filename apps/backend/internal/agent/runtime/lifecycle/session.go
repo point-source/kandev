@@ -519,10 +519,10 @@ func (sm *SessionManager) waitForPromptDone(ctx context.Context, execution *Agen
 				sm.logger.Error("prompt completed with error",
 					zap.String("execution_id", execution.ID),
 					zap.String("error", signal.Error))
-				// Wrap the cancel-escalation sentinel so PromptTask can identify it and
+				// Wrap cancel-release sentinels so PromptTask can identify them and
 				// skip the REVIEW task-state transition — the user is cancelling, not
 				// hitting a real agent failure.
-				if strings.HasPrefix(signal.Error, "cancel escalated") {
+				if isCancelReleaseError(signal.Error) {
 					return nil, fmt.Errorf("%w: %s: %w", ErrAgentReported, signal.Error, ErrCancelEscalated)
 				}
 				return nil, fmt.Errorf("%w: %s", ErrAgentReported, signal.Error)
@@ -561,6 +561,11 @@ func (sm *SessionManager) waitForPromptDone(ctx context.Context, execution *Agen
 			}
 		}
 	}
+}
+
+func isCancelReleaseError(msg string) bool {
+	return strings.HasPrefix(msg, "cancel escalated") ||
+		strings.Contains(msg, "prompt abandoned after cancel")
 }
 
 // SendPrompt sends a prompt to an agent execution and waits for completion.
@@ -663,6 +668,12 @@ func (sm *SessionManager) SendPrompt(
 			sm.logger.Warn("prompt retry after stream reconnect failed",
 				zap.String("execution_id", execution.ID),
 				zap.Error(retryErr))
+		}
+		if isCancelReleaseError(err.Error()) {
+			sm.logger.Info("prompt trigger abandoned after cancel; requeueing",
+				zap.String("execution_id", execution.ID),
+				zap.Error(err))
+			return nil, fmt.Errorf("failed to trigger prompt: %w: %w", err, ErrCancelEscalated)
 		}
 		sm.logger.Error("failed to trigger prompt",
 			zap.String("execution_id", execution.ID),

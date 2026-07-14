@@ -119,31 +119,32 @@ type EnvironmentDTO struct {
 }
 
 type TaskDTO struct {
-	ID                      string                 `json:"id"`
-	WorkspaceID             string                 `json:"workspace_id"`
-	WorkflowID              string                 `json:"workflow_id"`
-	WorkflowStepID          string                 `json:"workflow_step_id"`
-	Title                   string                 `json:"title"`
-	Description             string                 `json:"description"`
-	State                   v1.TaskState           `json:"state"`
-	Priority                string                 `json:"priority"`
-	Repositories            []TaskRepositoryDTO    `json:"repositories,omitempty"`
-	Position                int                    `json:"position"`
-	PrimarySessionID        *string                `json:"primary_session_id,omitempty"`
-	SessionCount            *int                   `json:"session_count,omitempty"`
-	ReviewStatus            models.ReviewStatus    `json:"review_status,omitempty"`
-	PrimaryExecutorID       *string                `json:"primary_executor_id,omitempty"`
-	PrimaryExecutorType     *string                `json:"primary_executor_type,omitempty"`
-	PrimaryExecutorName     *string                `json:"primary_executor_name,omitempty"`
-	PrimaryAgentName        *string                `json:"primary_agent_name,omitempty"`
-	PrimaryWorkingDirectory *string                `json:"primary_working_directory,omitempty"`
-	PrimarySessionState     *string                `json:"primary_session_state,omitempty"`
-	IsRemoteExecutor        bool                   `json:"is_remote_executor,omitempty"`
-	ParentID                string                 `json:"parent_id,omitempty"`
-	ArchivedAt              *time.Time             `json:"archived_at,omitempty"`
-	CreatedAt               time.Time              `json:"created_at"`
-	UpdatedAt               time.Time              `json:"updated_at"`
-	Metadata                map[string]interface{} `json:"metadata,omitempty"`
+	ID                          string                 `json:"id"`
+	WorkspaceID                 string                 `json:"workspace_id"`
+	WorkflowID                  string                 `json:"workflow_id"`
+	WorkflowStepID              string                 `json:"workflow_step_id"`
+	Title                       string                 `json:"title"`
+	Description                 string                 `json:"description"`
+	State                       v1.TaskState           `json:"state"`
+	Priority                    string                 `json:"priority"`
+	Repositories                []TaskRepositoryDTO    `json:"repositories,omitempty"`
+	Position                    int                    `json:"position"`
+	PrimarySessionID            *string                `json:"primary_session_id,omitempty"`
+	SessionCount                *int                   `json:"session_count,omitempty"`
+	ReviewStatus                models.ReviewStatus    `json:"review_status,omitempty"`
+	PrimaryExecutorID           *string                `json:"primary_executor_id,omitempty"`
+	PrimaryExecutorType         *string                `json:"primary_executor_type,omitempty"`
+	PrimaryExecutorName         *string                `json:"primary_executor_name,omitempty"`
+	PrimaryAgentName            *string                `json:"primary_agent_name,omitempty"`
+	PrimaryWorkingDirectory     *string                `json:"primary_working_directory,omitempty"`
+	PrimarySessionState         *string                `json:"primary_session_state,omitempty"`
+	PrimarySessionPendingAction *string                `json:"primary_session_pending_action"`
+	IsRemoteExecutor            bool                   `json:"is_remote_executor,omitempty"`
+	ParentID                    string                 `json:"parent_id,omitempty"`
+	ArchivedAt                  *time.Time             `json:"archived_at,omitempty"`
+	CreatedAt                   time.Time              `json:"created_at"`
+	UpdatedAt                   time.Time              `json:"updated_at"`
+	Metadata                    map[string]interface{} `json:"metadata,omitempty"`
 
 	// Office extensions
 	AssigneeAgentProfileID string `json:"assignee_agent_profile_id,omitempty"`
@@ -539,7 +540,7 @@ func FromTask(task *models.Task) TaskDTO {
 
 // FromTaskWithPrimarySession converts a task model to a TaskDTO, including the primary session ID.
 func FromTaskWithPrimarySession(task *models.Task, primarySessionID *string) TaskDTO {
-	return FromTaskWithSessionInfo(task, primarySessionID, nil, models.ReviewStatusNone, nil, nil, nil, nil, nil, nil)
+	return FromTaskWithSessionInfo(task, primarySessionID, nil, models.ReviewStatusNone, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // FromTaskWithSessionInfo converts a task model to a TaskDTO, including session information.
@@ -554,6 +555,7 @@ func FromTaskWithSessionInfo(
 	primaryAgentName *string,
 	primaryWorkingDirectory *string,
 	primarySessionState *string,
+	primarySessionPendingAction *string,
 ) TaskDTO {
 	// Convert repositories
 	var repositories []TaskRepositoryDTO
@@ -572,31 +574,32 @@ func FromTaskWithSessionInfo(
 	}
 
 	return TaskDTO{
-		ID:                      task.ID,
-		WorkspaceID:             task.WorkspaceID,
-		WorkflowID:              task.WorkflowID,
-		WorkflowStepID:          task.WorkflowStepID,
-		Title:                   task.Title,
-		Description:             task.Description,
-		State:                   task.State,
-		Priority:                task.Priority,
-		Repositories:            repositories,
-		Position:                task.Position,
-		PrimarySessionID:        primarySessionID,
-		SessionCount:            sessionCount,
-		ReviewStatus:            reviewStatus,
-		PrimaryExecutorID:       primaryExecutorID,
-		PrimaryExecutorType:     primaryExecutorType,
-		PrimaryExecutorName:     primaryExecutorName,
-		PrimaryAgentName:        primaryAgentName,
-		PrimaryWorkingDirectory: primaryWorkingDirectory,
-		PrimarySessionState:     primarySessionState,
-		IsRemoteExecutor:        primaryExecutorType != nil && models.IsRemoteExecutorType(models.ExecutorType(*primaryExecutorType)),
-		ParentID:                task.ParentID,
-		ArchivedAt:              task.ArchivedAt,
-		CreatedAt:               task.CreatedAt,
-		UpdatedAt:               task.UpdatedAt,
-		Metadata:                task.Metadata,
+		ID:                          task.ID,
+		WorkspaceID:                 task.WorkspaceID,
+		WorkflowID:                  task.WorkflowID,
+		WorkflowStepID:              task.WorkflowStepID,
+		Title:                       task.Title,
+		Description:                 task.Description,
+		State:                       task.State,
+		Priority:                    task.Priority,
+		Repositories:                repositories,
+		Position:                    task.Position,
+		PrimarySessionID:            primarySessionID,
+		SessionCount:                sessionCount,
+		ReviewStatus:                reviewStatus,
+		PrimaryExecutorID:           primaryExecutorID,
+		PrimaryExecutorType:         primaryExecutorType,
+		PrimaryExecutorName:         primaryExecutorName,
+		PrimaryAgentName:            primaryAgentName,
+		PrimaryWorkingDirectory:     primaryWorkingDirectory,
+		PrimarySessionState:         primarySessionState,
+		PrimarySessionPendingAction: primarySessionPendingAction,
+		IsRemoteExecutor:            primaryExecutorType != nil && models.IsRemoteExecutorType(models.ExecutorType(*primaryExecutorType)),
+		ParentID:                    task.ParentID,
+		ArchivedAt:                  task.ArchivedAt,
+		CreatedAt:                   task.CreatedAt,
+		UpdatedAt:                   task.UpdatedAt,
+		Metadata:                    task.Metadata,
 		// Office extensions. AssigneeAgentProfileID is a read-time
 		// projection from workflow_step_participants (ADR 0005 Wave F);
 		// the repo's task SELECTs hydrate it via a correlated subquery.
@@ -693,6 +696,8 @@ type WorkflowStepDTO struct {
 	ShowInCommandPanel    bool           `json:"show_in_command_panel"`
 	AutoArchiveAfterHours int            `json:"auto_archive_after_hours,omitempty"`
 	AgentProfileID        string         `json:"agent_profile_id,omitempty"`
+	WIPLimit              int            `json:"wip_limit"`
+	PullFromStepID        string         `json:"pull_from_step_id,omitempty"`
 	// StageType is a Phase 2 (ADR-0004) semantic hint for the frontend.
 	// Allowed values: "work" | "review" | "approval" | "custom".
 	StageType string    `json:"stage_type,omitempty"`
@@ -743,13 +748,16 @@ type ApproveSessionResponse struct {
 
 // TaskPlanDTO represents a task plan for API responses
 type TaskPlanDTO struct {
-	ID        string    `json:"id"`
-	TaskID    string    `json:"task_id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                             string     `json:"id"`
+	TaskID                         string     `json:"task_id"`
+	Title                          string     `json:"title"`
+	Content                        string     `json:"content"`
+	CreatedBy                      string     `json:"created_by"`
+	CreatedAt                      time.Time  `json:"created_at"`
+	UpdatedAt                      time.Time  `json:"updated_at"`
+	ImplementationStartedAt        *time.Time `json:"implementation_started_at,omitempty"`
+	ImplementationStartedSessionID *string    `json:"implementation_started_session_id,omitempty"`
+	ImplementationStartedBy        *string    `json:"implementation_started_by,omitempty"`
 }
 
 // TaskPlanFromModel converts a TaskPlan model to a TaskPlanDTO.
@@ -758,13 +766,16 @@ func TaskPlanFromModel(plan *models.TaskPlan) *TaskPlanDTO {
 		return nil
 	}
 	return &TaskPlanDTO{
-		ID:        plan.ID,
-		TaskID:    plan.TaskID,
-		Title:     plan.Title,
-		Content:   plan.Content,
-		CreatedBy: plan.CreatedBy,
-		CreatedAt: plan.CreatedAt,
-		UpdatedAt: plan.UpdatedAt,
+		ID:                             plan.ID,
+		TaskID:                         plan.TaskID,
+		Title:                          plan.Title,
+		Content:                        plan.Content,
+		CreatedBy:                      plan.CreatedBy,
+		CreatedAt:                      plan.CreatedAt,
+		UpdatedAt:                      plan.UpdatedAt,
+		ImplementationStartedAt:        plan.ImplementationStartedAt,
+		ImplementationStartedSessionID: plan.ImplementationStartedSessionID,
+		ImplementationStartedBy:        plan.ImplementationStartedBy,
 	}
 }
 

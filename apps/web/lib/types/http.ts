@@ -75,6 +75,8 @@ export type StepDefinition = {
   is_start_step?: boolean;
   show_in_command_panel?: boolean;
   agent_profile_id?: AgentProfileId;
+  wip_limit?: number;
+  pull_from_step_id?: string | null;
 };
 
 // Workflow Step - instance of a step on a workflow
@@ -91,6 +93,8 @@ export type WorkflowStep = {
   show_in_command_panel?: boolean;
   auto_archive_after_hours?: number;
   agent_profile_id?: string;
+  wip_limit?: number;
+  pull_from_step_id?: string | null;
   /**
    * Phase 2 (ADR-0004) semantic UX hint. Backend code does not branch on this;
    * frontend uses it to choose presentation (review/approval styling, etc).
@@ -147,6 +151,8 @@ export type TaskSessionState =
   | "FAILED"
   | "CANCELLED";
 
+export type TaskPendingAction = "clarification" | "permission";
+
 export type Workflow = {
   id: WorkflowId;
   workspace_id: WorkspaceId;
@@ -197,6 +203,12 @@ export type Repository = {
   setup_script: string;
   cleanup_script: string;
   dev_script: string;
+  /**
+   * Comma-separated gitignored files/globs seeded into each new worktree.
+   * Append `:symlink` to an entry (e.g. `.env.local:symlink`) to link it back
+   * to the main repo instead of copying it; `::symlink` escapes a literal
+   * suffix. Remote executors always copy the bytes.
+   */
   copy_files: string;
   created_at: string;
   updated_at: string;
@@ -278,6 +290,7 @@ export type Task = {
   repositories?: TaskRepository[];
   primary_session_id?: SessionId | null;
   primary_session_state?: TaskSessionState | null;
+  primary_session_pending_action?: TaskPendingAction | null;
   session_count?: number | null;
   review_status?: "pending" | "approved" | "changes_requested" | "rejected" | null;
   primary_executor_id?: string | null;
@@ -329,6 +342,8 @@ export type WorkflowStepDTO = {
   auto_archive_after_hours?: number;
   agent_profile_id?: AgentProfileId;
   stage_type?: "work" | "review" | "approval" | "custom";
+  wip_limit?: number;
+  pull_from_step_id?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -668,6 +683,8 @@ export type StepPortable = {
   is_start_step: boolean;
   allow_manual_move: boolean;
   auto_archive_after_hours?: number;
+  wip_limit?: number;
+  pull_from_step_position?: number;
 };
 
 export type ImportWorkflowsResult = {
