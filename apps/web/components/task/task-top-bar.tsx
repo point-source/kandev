@@ -365,7 +365,7 @@ function TopBarRight({
 }) {
   return (
     <div className="flex items-center justify-self-end gap-2 [&_button]:whitespace-nowrap">
-      <TopbarMetrics activeSessionId={activeSessionId} />
+      <TopbarMetrics activeSessionId={activeSessionId} size="sm" />
       {isArchived && (
         <TopbarCluster label="Unarchive task" className="[&_button]:h-7 [&_button]:text-xs">
           <TaskUnarchiveButton taskId={taskId} />
