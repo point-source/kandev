@@ -45,7 +45,10 @@ test.describe("Linear settings", () => {
     await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
   });
 
-  test("workspace selector scopes the saved credentials form", async ({ testPage, apiClient }) => {
+  test("workspace-scoped route scopes the saved credentials form", async ({
+    testPage,
+    apiClient,
+  }) => {
     const other = await apiClient.createWorkspace("Linear Secondary Workspace");
     await apiClient.mockLinearSetTeams([{ id: "team-1", key: "ENG", name: "Engineering" }]);
 
@@ -57,13 +60,78 @@ test.describe("Linear settings", () => {
     await expect(settings.deleteButton).toBeVisible();
     await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
 
-    await settings.workspaceTrigger.click();
-    await testPage.getByRole("menuitem", { name: new RegExp(other.name) }).click();
+    await settings.gotoWorkspace(other.id);
 
     await expect(settings.secretInput).toHaveValue("");
     await expect(settings.saveButton).toBeDisabled();
     await expect(settings.deleteButton).toHaveCount(0);
     await expect(testPage.getByText(/leave blank to keep the current value/i)).toHaveCount(0);
+  });
+
+  test("a workspace-scoped deep link adopts that workspace on load", async ({
+    testPage,
+    apiClient,
+  }) => {
+    const other = await apiClient.createWorkspace("Linear Deep Link Workspace");
+    // Seed the secondary workspace so the deep link lands on a configured row,
+    // proving the route path — not the user's global default — drove selection.
+    await apiClient.setLinearConfig({ secret: "lin_api_deeplink", workspaceId: other.id });
+
+    const settings = new LinearSettingsPage(testPage);
+    await settings.gotoWorkspace(other.id);
+
+    // The seeded row loads, confirming the deep link scoped the form to `other`.
+    await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
+  });
+
+  test("workspace-scoped integration route keeps the workspace in the path", async ({
+    testPage,
+    apiClient,
+  }) => {
+    const other = await apiClient.createWorkspace("Linear Path Workspace");
+
+    const settings = new LinearSettingsPage(testPage);
+    await settings.gotoWorkspace(other.id);
+
+    await expect(testPage).toHaveURL(
+      new RegExp(`/settings/workspace/${other.id}/integrations/linear$`),
+    );
+    await expect(testPage).not.toHaveURL(/[?&]workspace=/);
+    await expect(settings.secretInput).toHaveValue("");
+  });
+
+  test("copy config duplicates the credentials to another workspace", async ({
+    testPage,
+    apiClient,
+  }) => {
+    const other = await apiClient.createWorkspace("Linear Copy Target Workspace");
+    await apiClient.mockLinearSetTeams([{ id: "team-1", key: "ENG", name: "Engineering" }]);
+
+    const settings = new LinearSettingsPage(testPage);
+    await settings.goto();
+
+    // Configure the source (default) workspace.
+    await settings.secretInput.fill("lin_api_source");
+    await settings.saveButton.click();
+    await expect(settings.deleteButton).toBeVisible();
+
+    // Copy the config to the empty target workspace via the dialog.
+    await settings.copyConfigTrigger.click();
+    await settings.copyConfigTarget.click();
+    await testPage.getByRole("option", { name: new RegExp(other.name) }).click();
+    await settings.copyConfigConfirm.click();
+    await expect(testPage.getByText(/Copied Linear config/i)).toBeVisible();
+
+    // The target workspace should now report a saved secret via the API.
+    const res = await apiClient.rawRequest("GET", `/api/v1/linear/config?workspace_id=${other.id}`);
+    expect(res.status).toBe(200);
+    const cfg = (await res.json()) as { hasSecret?: boolean };
+    expect(cfg.hasSecret).toBe(true);
+
+    // Opening the target workspace route shows the copied credentials loaded.
+    await settings.gotoWorkspace(other.id);
+    await expect(settings.deleteButton).toBeVisible();
+    await expect(testPage.getByText(/leave blank to keep the current value/i)).toBeVisible();
   });
 
   test("test connection surfaces inline success and failure", async ({ testPage, apiClient }) => {

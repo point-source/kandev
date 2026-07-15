@@ -47,6 +47,19 @@ func (r *fakeCascadeRepo) UnarchiveTaskByCascade(_ context.Context, id, cascadeI
 	return true, nil
 }
 
+func (r *fakeCascadeRepo) UnarchiveTask(_ context.Context, id string) (bool, error) {
+	r.base.mu.Lock()
+	defer r.base.mu.Unlock()
+	t := r.base.tasks[id]
+	// Mirror the production CAS: only rows without a cascade stamp are
+	// restorable through the manual path.
+	if t == nil || t.ArchivedAt == nil || t.ArchivedByCascadeID != "" {
+		return false, nil
+	}
+	t.ArchivedAt = nil
+	return true, nil
+}
+
 // fakeWSGroupRepoCascade extends fakeWSGroupRepo with the phase 6
 // release/restore/cleanup-status methods.
 type fakeWSGroupRepoCascade struct {
@@ -325,6 +338,10 @@ func (r *fakeDeleteRepo) DeleteTask(_ context.Context, id string) error {
 	defer r.base.mu.Unlock()
 	delete(r.base.tasks, id)
 	return nil
+}
+
+func (r *fakeDeleteRepo) DeleteExpiredQuickChatTask(context.Context, string, time.Time) (bool, error) {
+	panic("DeleteExpiredQuickChatTask should not be used by delete cascade tests")
 }
 
 // REGRESSION (post-review #4): a parent with already-archived children

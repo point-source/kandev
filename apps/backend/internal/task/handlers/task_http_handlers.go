@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/kandev/kandev/internal/common/constants"
+	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/orchestrator"
 	"github.com/kandev/kandev/internal/task/dto"
 	"github.com/kandev/kandev/internal/task/models"
@@ -90,7 +91,12 @@ func (h *TaskHandlers) httpListTasksByWorkspace(c *gin.Context) {
 // method (the persisted ExecutorSnapshot JSON uses different keys), so the
 // batch loader alone can't supply them without a regression. Two queries
 // total, down from three pre-batch.
-func buildTaskDTOsWithSessionInfo(ctx context.Context, svc *service.Service, tasks []*models.Task) ([]dto.TaskDTO, error) {
+func buildTaskDTOsWithSessionInfo(
+	ctx context.Context,
+	svc *service.Service,
+	log *logger.Logger,
+	tasks []*models.Task,
+) ([]dto.TaskDTO, error) {
 	if len(tasks) == 0 {
 		return []dto.TaskDTO{}, nil
 	}
@@ -105,6 +111,11 @@ func buildTaskDTOsWithSessionInfo(ctx context.Context, svc *service.Service, tas
 	primarySessionInfoMap, err := svc.GetPrimarySessionInfoForTasks(ctx, taskIDs)
 	if err != nil {
 		return nil, err
+	}
+	pendingActionsBySession, err := pendingActionsForWaitingPrimarySessions(ctx, svc, primarySessionInfoMap)
+	if err != nil {
+		log.Warn("failed to load pending actions for task list, using empty map", zap.Error(err))
+		pendingActionsBySession = map[string]models.TaskPendingAction{}
 	}
 	result := make([]dto.TaskDTO, 0, len(tasks))
 	for _, task := range tasks {
@@ -133,12 +144,14 @@ func buildTaskDTOsWithSessionInfo(ctx context.Context, svc *service.Service, tas
 			si.agentName,
 			si.workingDirectory,
 			si.sessionState,
+			pendingActionPtr(si.sessionID, pendingActionsBySession),
 		))
 	}
 	return result, nil
 }
 
 type sessionInfoFields struct {
+	sessionID        *string
 	reviewStatus     models.ReviewStatus
 	sessionState     *string
 	executorID       *string
@@ -152,6 +165,10 @@ func extractSessionInfo(info *models.TaskSession) sessionInfoFields {
 	var si sessionInfoFields
 	if info == nil {
 		return si
+	}
+	if info.ID != "" {
+		val := info.ID
+		si.sessionID = &val
 	}
 	si.reviewStatus = info.ReviewStatus
 	if info.State != "" {
@@ -183,8 +200,40 @@ func extractSessionInfo(info *models.TaskSession) sessionInfoFields {
 	return si
 }
 
+func pendingActionsForWaitingPrimarySessions(
+	ctx context.Context,
+	svc *service.Service,
+	primarySessionInfoMap map[string]*models.TaskSession,
+) (map[string]models.TaskPendingAction, error) {
+	sessionIDs := make([]string, 0, len(primarySessionInfoMap))
+	for _, info := range primarySessionInfoMap {
+		if info != nil && info.State == models.TaskSessionStateWaitingForInput {
+			sessionIDs = append(sessionIDs, info.ID)
+		}
+	}
+	if len(sessionIDs) == 0 {
+		return map[string]models.TaskPendingAction{}, nil
+	}
+	return svc.GetPendingActionsForSessions(ctx, sessionIDs)
+}
+
+func pendingActionPtr(
+	sessionID *string,
+	pendingActionsBySession map[string]models.TaskPendingAction,
+) *string {
+	if sessionID == nil {
+		return nil
+	}
+	action, ok := pendingActionsBySession[*sessionID]
+	if !ok {
+		return nil
+	}
+	value := string(action)
+	return &value
+}
+
 func (h *TaskHandlers) toTaskDTOsWithSessionInfo(ctx context.Context, tasks []*models.Task) ([]dto.TaskDTO, error) {
-	return buildTaskDTOsWithSessionInfo(ctx, h.service, tasks)
+	return buildTaskDTOsWithSessionInfo(ctx, h.service, h.logger, tasks)
 }
 
 func (h *TaskHandlers) httpGetTask(c *gin.Context) {
@@ -193,7 +242,7 @@ func (h *TaskHandlers) httpGetTask(c *gin.Context) {
 		handleNotFound(c, h.logger, err, "task not found")
 		return
 	}
-	dtos, err := buildTaskDTOsWithSessionInfo(c.Request.Context(), h.service, []*models.Task{task})
+	dtos, err := buildTaskDTOsWithSessionInfo(c.Request.Context(), h.service, h.logger, []*models.Task{task})
 	if err != nil {
 		h.logger.Error("failed to build task DTO with session info", zap.Error(err))
 		c.JSON(http.StatusOK, dto.FromTask(task))
@@ -990,7 +1039,7 @@ func (h *TaskHandlers) httpUpdateTask(c *gin.Context) {
 		Description:  description,
 		Priority:     body.Priority,
 		State:        body.State,
-		Repositories: convertToServiceRepos(repos),
+		Repositories: convertUpdateRepositories(body.Repositories != nil, repos),
 		Position:     body.Position,
 		Metadata:     body.Metadata,
 	})
@@ -1171,27 +1220,68 @@ func (h *TaskHandlers) httpUnarchiveTask(c *gin.Context) {
 		handleNotFound(c, h.logger, err, "task not unarchived")
 		return
 	}
+	// Probe branch recoverability for every restored task: archive deleted
+	// the local branch + worktree, so report whether the branch still
+	// exists (locally or on origin) and restore checkout_branch so the
+	// next session picks the old work back up. Best-effort — an empty
+	// list just means nothing was recoverable. Detached from the request
+	// context: the tasks are already unarchived, so a client disconnect
+	// must not skip the checkout_branch restore.
+	recoveryCtx := context.WithoutCancel(c.Request.Context())
+	recovery := make([]service.BranchRecovery, 0)
+	for _, id := range outcome.ArchivedTaskIDs {
+		recovery = append(recovery, h.service.RecoverTaskBranches(recoveryCtx, id)...)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success":            true,
 		"cascade_id":         outcome.CascadeID,
 		"unarchived_ids":     outcome.ArchivedTaskIDs,
 		"skipped_ids":        outcome.SkippedTaskIDs,
 		"affected_group_ids": outcome.ReleasedGroupIDs,
+		"recovery":           recovery,
 	})
 }
 
 // httpStartQuickChatRequest is the request body for starting a quick chat session.
 type httpStartQuickChatRequest struct {
-	Title             string `json:"title,omitempty"`
-	RepositoryID      string `json:"repository_id,omitempty"`
-	AgentProfileID    string `json:"agent_profile_id,omitempty"`
-	ExecutorID        string `json:"executor_id,omitempty"`
-	Prompt            string `json:"prompt,omitempty"`
-	LocalPath         string `json:"local_path,omitempty"`
-	RepositoryName    string `json:"repository_name,omitempty"`
-	DefaultBranch     string `json:"default_branch,omitempty"`
-	BaseBranch        string `json:"base_branch,omitempty"`
-	LaunchImmediately bool   `json:"launch_immediately,omitempty"`
+	Title             string                         `json:"title,omitempty"`
+	RepositoryID      string                         `json:"repository_id,omitempty"`
+	Repositories      []httpQuickChatRepositoryInput `json:"repositories,omitempty"`
+	AgentProfileID    string                         `json:"agent_profile_id,omitempty"`
+	ExecutorID        string                         `json:"executor_id,omitempty"`
+	Prompt            string                         `json:"prompt,omitempty"`
+	LocalPath         string                         `json:"local_path,omitempty"`
+	RepositoryName    string                         `json:"repository_name,omitempty"`
+	DefaultBranch     string                         `json:"default_branch,omitempty"`
+	BaseBranch        string                         `json:"base_branch,omitempty"`
+	LaunchImmediately bool                           `json:"launch_immediately,omitempty"`
+}
+
+type httpQuickChatRepositoryInput struct {
+	RepositoryID string `json:"repository_id"`
+	BaseBranch   string `json:"base_branch"`
+}
+
+func (body *httpStartQuickChatRequest) validateRepositories() error {
+	hasLegacyRepository := body.RepositoryID != "" || body.LocalPath != "" ||
+		body.RepositoryName != "" || body.DefaultBranch != "" || body.BaseBranch != ""
+	if len(body.Repositories) > 0 && hasLegacyRepository {
+		return errors.New("repositories cannot be combined with legacy repository fields")
+	}
+	seen := make(map[string]struct{}, len(body.Repositories))
+	for _, repo := range body.Repositories {
+		if repo.RepositoryID == "" {
+			return errors.New("repository_id is required")
+		}
+		if repo.BaseBranch == "" {
+			return fmt.Errorf("base_branch is required for repository %q", repo.RepositoryID)
+		}
+		if _, exists := seen[repo.RepositoryID]; exists {
+			return fmt.Errorf("repository %q can only be selected once", repo.RepositoryID)
+		}
+		seen[repo.RepositoryID] = struct{}{}
+	}
+	return nil
 }
 
 // httpStartQuickChatResponse is returned when a quick chat session is created.
@@ -1211,6 +1301,16 @@ type quickChatParams struct {
 
 // buildQuickChatRepositories builds the repository input list from the request.
 func (body *httpStartQuickChatRequest) buildRepositories() []service.TaskRepositoryInput {
+	if len(body.Repositories) > 0 {
+		repos := make([]service.TaskRepositoryInput, 0, len(body.Repositories))
+		for _, repo := range body.Repositories {
+			repos = append(repos, service.TaskRepositoryInput{
+				RepositoryID: repo.RepositoryID,
+				BaseBranch:   repo.BaseBranch,
+			})
+		}
+		return repos
+	}
 	if body.RepositoryID == "" && body.LocalPath == "" {
 		return nil
 	}
@@ -1229,8 +1329,11 @@ func (body *httpStartQuickChatRequest) resolveParams(workspace *models.Workspace
 	if agentProfileID == "" && workspace.DefaultAgentProfileID != nil {
 		agentProfileID = *workspace.DefaultAgentProfileID
 	}
+	repos := body.buildRepositories()
 	executorID := body.ExecutorID
-	if executorID == "" && workspace.DefaultExecutorID != nil {
+	if len(repos) > 0 {
+		executorID = models.ExecutorIDWorktree
+	} else if executorID == "" && workspace.DefaultExecutorID != nil {
 		executorID = *workspace.DefaultExecutorID
 	}
 
@@ -1251,7 +1354,7 @@ func (body *httpStartQuickChatRequest) resolveParams(workspace *models.Workspace
 		agentProfileID: agentProfileID,
 		executorID:     executorID,
 		title:          title,
-		repos:          body.buildRepositories(),
+		repos:          repos,
 		metadata:       metadata,
 	}
 }
@@ -1262,6 +1365,10 @@ func (h *TaskHandlers) httpStartQuickChat(c *gin.Context) {
 	var body httpStartQuickChatRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+	if err := body.validateRepositories(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 

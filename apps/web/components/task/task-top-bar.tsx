@@ -4,21 +4,20 @@ import { memo, type ReactNode } from "react";
 import Link from "@/components/routing/app-link";
 import { IconBug, IconCircleDot } from "@tabler/icons-react";
 import { Button } from "@kandev/ui/button";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage } from "@kandev/ui/breadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@kandev/ui/tooltip";
+import { TaskTopBarTitle } from "@/components/task/task-top-bar-title";
 import { EditorsMenu } from "@/components/task/editors-menu";
 import { LayoutPresetSelector } from "@/components/task/layout-preset-selector";
 import { DocumentControls } from "@/components/task/document/document-controls";
 import { PRTopbarButton } from "@/components/github/pr-topbar-button";
 import { MRTopbarButton } from "@/components/gitlab/mr-topbar-button";
 import { JiraTicketButton, extractJiraKey } from "@/components/jira/jira-ticket-button";
-import { JiraLinkButton } from "@/components/jira/jira-link-button";
 import { LinearIssueButton, extractLinearKey } from "@/components/linear/linear-issue-button";
-import { LinearLinkButton } from "@/components/linear/linear-link-button";
 import { useJiraAvailable } from "@/hooks/domains/jira/use-jira-availability";
 import { useLinearAvailable } from "@/hooks/domains/linear/use-linear-availability";
 import { PortForwardButton } from "@/components/task/port-forward-dialog";
 import { ExecutorSettingsButton } from "@/components/task/executor-settings-button";
+import { TaskUnarchiveButton } from "@/components/task/task-unarchive-button";
 import { WorkflowStepper, type WorkflowStepperStep } from "@/components/task/workflow-stepper";
 import { TopbarMetrics } from "@/components/system-metrics/topbar-metrics";
 import { isDebugUI } from "@/lib/config";
@@ -113,18 +112,16 @@ const TaskTopBar = memo(function TaskTopBar({
   );
 });
 
-// IssueTrackerButtons picks the right ticket button for a task. Jira and
-// Linear use the same TEAM-NUMBER identifier shape, so both `extract` calls
-// would match "ENG-123" — we resolve ambiguity by preferring whichever
-// integration is currently available for the workspace, with Jira winning the
-// tie-break since it shipped first. When the title carries no identifier,
-// both link buttons are offered (each gated on its own availability).
+// IssueTrackerButtons picks the right ticket status button for a task whose
+// title already carries an external issue key. Jira and Linear use the same
+// TEAM-NUMBER identifier shape, so both `extract` calls would match
+// "ENG-123" — we resolve ambiguity by preferring whichever integration is
+// currently available for the workspace, with Jira winning the tie-break since
+// it shipped first. Creating new links lives in the task Link menu.
 function IssueTrackerButtons({
-  taskId,
   workspaceId,
   taskTitle,
 }: {
-  taskId: string | null | undefined;
   workspaceId: string | null | undefined;
   taskTitle: string | null | undefined;
 }) {
@@ -139,12 +136,7 @@ function IssueTrackerButtons({
   if (linearKey && linearAvailable) {
     return <LinearIssueButton workspaceId={workspaceId} taskTitle={taskTitle} />;
   }
-  return (
-    <>
-      <JiraLinkButton taskId={taskId} workspaceId={workspaceId} taskTitle={taskTitle} />
-      <LinearLinkButton taskId={taskId} workspaceId={workspaceId} taskTitle={taskTitle} />
-    </>
-  );
+  return null;
 }
 
 /** Left section: task name breadcrumb + executor info. Home + integrations
@@ -158,21 +150,8 @@ function TopBarLeft({
 }: TopBarLeftProps) {
   const showExecutorSettings = shouldShowExecutorEnvironmentControls(remoteExecutorType);
   return (
-    <div className="flex items-center gap-2.5 min-w-0 overflow-hidden">
-      <Breadcrumb className="min-w-0">
-        <BreadcrumbList className="flex-nowrap text-sm min-w-0">
-          <BreadcrumbItem className="min-w-0">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <BreadcrumbPage className="font-medium truncate">
-                  {taskTitle ?? "Task details"}
-                </BreadcrumbPage>
-              </TooltipTrigger>
-              <TooltipContent>{taskTitle ?? "Task details"}</TooltipContent>
-            </Tooltip>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+    <div className="flex min-w-0 max-w-[min(44rem,45vw)] items-center gap-2.5 overflow-hidden">
+      <TaskTopBarTitle taskId={taskId} taskTitle={taskTitle} isArchived={isArchived} />
 
       {!isArchived && showExecutorSettings && (
         <ExecutorSettingsButton taskId={taskId} sessionId={activeSessionId ?? null} />
@@ -227,7 +206,6 @@ function DebugOverlayToggle({
 }
 
 function AttentionStatusGroup({
-  taskId,
   activeSessionId,
   isArchived,
   workspaceId,
@@ -237,7 +215,6 @@ function AttentionStatusGroup({
   issueUrl,
   issueNumber,
 }: {
-  taskId?: string | null;
   activeSessionId?: string | null;
   isArchived?: boolean;
   workspaceId?: string | null;
@@ -273,7 +250,7 @@ function AttentionStatusGroup({
           <GitHubIssueTopbarButton issueUrl={issueUrl} issueNumber={issueNumber} />
           <PRTopbarButton />
           <MRTopbarButton />
-          <IssueTrackerButtons taskId={taskId} workspaceId={workspaceId} taskTitle={taskTitle} />
+          <IssueTrackerButtons workspaceId={workspaceId} taskTitle={taskTitle} />
         </>
       )}
     </TopbarCluster>
@@ -375,7 +352,12 @@ function TopBarRight({
 }) {
   return (
     <div className="flex items-center justify-self-end gap-2 [&_button]:whitespace-nowrap">
-      <TopbarMetrics activeSessionId={activeSessionId} />
+      <TopbarMetrics activeSessionId={activeSessionId} size="sm" />
+      {isArchived && (
+        <TopbarCluster label="Unarchive task" className="[&_button]:h-7 [&_button]:text-xs">
+          <TaskUnarchiveButton taskId={taskId} />
+        </TopbarCluster>
+      )}
       {officeTaskHref && (
         <TopbarCluster label="Open in office view" className="[&_a]:h-7 [&_a]:text-xs">
           <Button asChild size="sm" variant="outline" className="h-7 cursor-pointer px-2">
@@ -384,7 +366,6 @@ function TopBarRight({
         </TopbarCluster>
       )}
       <AttentionStatusGroup
-        taskId={taskId}
         activeSessionId={activeSessionId}
         isArchived={isArchived}
         workspaceId={workspaceId}

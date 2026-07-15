@@ -21,6 +21,12 @@ func (s *Service) PublishTaskUpdated(ctx context.Context, task *models.Task) {
 	s.publishTaskEvent(ctx, events.TaskUpdated, task, nil)
 }
 
+// PublishTaskStateChanged publishes a task.state_changed event for callers
+// that mutate task state outside the normal task service update path.
+func (s *Service) PublishTaskStateChanged(ctx context.Context, task *models.Task, oldState v1.TaskState) {
+	s.publishTaskEvent(ctx, events.TaskStateChanged, task, &oldState)
+}
+
 // PublishTaskDeleted publishes a task.deleted event for the given task.
 // Used by cascade-delete callers (HandoffService.DeleteTaskTree) that
 // bypass Service.DeleteTask and therefore would otherwise leave WS
@@ -139,6 +145,7 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 	if !ok || sessionInfo == nil {
 		data["primary_session_id"] = nil
 		data["primary_session_state"] = nil
+		data["primary_session_pending_action"] = nil
 		return
 	}
 	data["primary_session_id"] = sessionInfo.ID
@@ -150,6 +157,7 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 	} else {
 		data["primary_session_state"] = nil
 	}
+	s.addPrimarySessionPendingActionEventField(ctx, taskID, sessionInfo, data)
 	if sessionInfo.ExecutorID != "" {
 		data["primary_executor_id"] = sessionInfo.ExecutorID
 	}
@@ -166,6 +174,27 @@ func (s *Service) addTaskSessionEventFields(ctx context.Context, taskID string, 
 	if execType != "" {
 		data["is_remote_executor"] = models.IsRemoteExecutorType(models.ExecutorType(execType))
 	}
+}
+
+func (s *Service) addPrimarySessionPendingActionEventField(ctx context.Context, taskID string, sessionInfo *models.TaskSession, data map[string]interface{}) {
+	if sessionInfo.State != models.TaskSessionStateWaitingForInput {
+		data["primary_session_pending_action"] = nil
+		return
+	}
+	actions, err := s.GetPendingActionsForSessions(ctx, []string{sessionInfo.ID})
+	if err != nil {
+		s.logger.Warn("failed to load pending action for task event",
+			zap.String("task_id", taskID),
+			zap.String("session_id", sessionInfo.ID),
+			zap.Error(err))
+		return
+	}
+	action, ok := actions[sessionInfo.ID]
+	if !ok {
+		data["primary_session_pending_action"] = nil
+		return
+	}
+	data["primary_session_pending_action"] = string(action)
 }
 
 // taskRepositoriesForEvent returns the task's full repository list, ordered by
@@ -418,6 +447,8 @@ func (s *Service) publishRepositoryEvent(ctx context.Context, eventType string, 
 		"pull_before_worktree":   repository.PullBeforeWorktree,
 		"setup_script":           repository.SetupScript,
 		"cleanup_script":         repository.CleanupScript,
+		"dev_script":             repository.DevScript,
+		"copy_files":             repository.CopyFiles,
 		"created_at":             repository.CreatedAt.Format(time.RFC3339),
 		"updated_at":             repository.UpdatedAt.Format(time.RFC3339),
 	}

@@ -83,6 +83,12 @@ func (m *mockRepository) ArchiveTask(ctx context.Context, id string) error {
 func (m *mockRepository) ListTasksForAutoArchive(ctx context.Context) ([]*models.Task, error) {
 	return nil, nil
 }
+func (m *mockRepository) ListExpiredQuickChatTasks(ctx context.Context, cutoff time.Time) ([]*models.Task, error) {
+	return nil, nil
+}
+func (m *mockRepository) DeleteExpiredQuickChatTask(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	return false, nil
+}
 func (m *mockRepository) CountOpenWatcherCreatedTasks(_ context.Context, _, _ string) (int, error) {
 	return 0, nil
 }
@@ -123,6 +129,9 @@ func (m *mockRepository) ArchiveTaskIfActive(_ context.Context, _, _ string) (bo
 	return false, nil
 }
 func (m *mockRepository) UnarchiveTaskByCascade(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockRepository) UnarchiveTask(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
 func (m *mockRepository) IncrementTaskSequence(_ context.Context, _ string) (int, error) {
@@ -196,6 +205,9 @@ func (m *mockRepository) FindMessageByPendingIDAndQuestion(ctx context.Context, 
 }
 func (m *mockRepository) FindPendingClarificationMessagesBySessionID(ctx context.Context, sessionID string) ([]*models.Message, error) {
 	return nil, nil
+}
+func (m *mockRepository) GetPendingActionsBySessionIDs(ctx context.Context, sessionIDs []string) (map[string]models.TaskPendingAction, error) {
+	return make(map[string]models.TaskPendingAction), nil
 }
 func (m *mockRepository) UpdateMessage(ctx context.Context, message *models.Message) error {
 	return nil

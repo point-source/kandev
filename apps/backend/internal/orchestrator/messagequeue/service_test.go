@@ -212,6 +212,116 @@ func TestTakeQueued(t *testing.T) {
 	})
 }
 
+// TestTakeQueuedEntry covers TakeQueuedEntry: out-of-FIFO-order removal,
+// takeability of agent-authored entries (unlike RemoveEntry), the
+// not-found (nil, false, nil) shape for a missing or foreign-session id,
+// and — distinctly — a genuine repository error propagating as a non-nil
+// error rather than being collapsed into the not-found shape.
+func TestTakeQueuedEntry(t *testing.T) {
+	t.Run("removes and returns the targeted entry regardless of FIFO position", func(t *testing.T) {
+		svc := setupService(t)
+		ctx := context.Background()
+
+		_, err := svc.QueueMessage(ctx, "s", "t", "first", "", "u", false, nil)
+		require.NoError(t, err)
+		second, err := svc.QueueMessage(ctx, "s", "t", "second", "", "u", false, nil)
+		require.NoError(t, err)
+		_, err = svc.QueueMessage(ctx, "s", "t", "third", "", "u", false, nil)
+		require.NoError(t, err)
+
+		msg, ok, err := svc.TakeQueuedEntry(ctx, "s", second.ID)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "second", msg.Content)
+
+		// The other two entries are untouched and keep their relative order.
+		status := svc.GetStatus(ctx, "s")
+		require.Equal(t, 2, status.Count)
+		assert.Equal(t, "first", status.Entries[0].Content)
+		assert.Equal(t, "third", status.Entries[1].Content)
+
+		// Taking the same id again finds nothing — it's already gone.
+		_, ok, err = svc.TakeQueuedEntry(ctx, "s", second.ID)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("takes agent-authored entries unlike RemoveEntry", func(t *testing.T) {
+		svc := setupService(t)
+		ctx := context.Background()
+
+		agentEntry, err := svc.QueueMessageWithMetadata(ctx, "s", "t", "agent entry", "", QueuedByAgent, false, nil, nil)
+		require.NoError(t, err)
+
+		msg, ok, err := svc.TakeQueuedEntry(ctx, "s", agentEntry.ID)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "agent entry", msg.Content)
+	})
+
+	t.Run("returns false for a missing or foreign-session id", func(t *testing.T) {
+		svc := setupService(t)
+		ctx := context.Background()
+
+		victim, err := svc.QueueMessage(ctx, "s-victim", "t", "victim entry", "", "u", false, nil)
+		require.NoError(t, err)
+
+		_, ok, err := svc.TakeQueuedEntry(ctx, "s-victim", "missing-id")
+		require.NoError(t, err)
+		assert.False(t, ok)
+
+		_, ok, err = svc.TakeQueuedEntry(ctx, "s-attacker", victim.ID)
+		require.NoError(t, err)
+		assert.False(t, ok)
+
+		status := svc.GetStatus(ctx, "s-victim")
+		assert.Equal(t, 1, status.Count)
+	})
+
+	t.Run("propagates a genuine repository error instead of reporting not-found", func(t *testing.T) {
+		// A repository error (e.g. a transient DB failure) must not be
+		// collapsed into the same (nil, false) shape as a legitimate
+		// not-found — InterruptForPeerMessage treats the two differently
+		// (not-found falls back to a FIFO-head drain; an error propagates
+		// without a fallback, since the error says nothing about what is
+		// actually at the FIFO head).
+		log, err := logger.NewLogger(logger.LoggingConfig{
+			Level:      "error",
+			Format:     "console",
+			OutputPath: "stderr",
+		})
+		require.NoError(t, err)
+		wantErr := errors.New("db unavailable")
+		repo := &errInjectingRepository{Repository: NewMemoryRepository(), takeByIDErr: wantErr}
+		svc := NewService(repo, DefaultMaxPerSession, log)
+		ctx := context.Background()
+
+		msg, ok, err := svc.TakeQueuedEntry(ctx, "s", "some-id")
+		assert.Nil(t, msg)
+		assert.False(t, ok)
+		assert.ErrorIs(t, err, wantErr)
+	})
+}
+
+// errInjectingRepository wraps a Repository and returns a configured error
+// from TakeByID, letting tests exercise TakeQueuedEntry's error-propagation
+// path without needing a real repository failure.
+type errInjectingRepository struct {
+	Repository
+	takeByIDErr error
+}
+
+// TakeByID returns the configured error if set, otherwise delegates to the
+// embedded Repository so the remaining repository operations (Insert,
+// ListBySession, CountBySession, ...) still work against the real
+// underlying store.
+func (r *errInjectingRepository) TakeByID(ctx context.Context, sessionID, entryID string) (*QueuedMessage, error) {
+	if r.takeByIDErr != nil {
+		return nil, r.takeByIDErr
+	}
+	return r.Repository.TakeByID(ctx, sessionID, entryID)
+}
+
 func TestUpdateMessage(t *testing.T) {
 	t.Run("updates content and survives in list", func(t *testing.T) {
 		svc := setupService(t)

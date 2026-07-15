@@ -42,6 +42,12 @@ function mergeTaskUpdate(
   ) {
     merged.primarySessionState = existing.primarySessionState;
   }
+  if (
+    !hasPayloadField(payload, "primary_session_pending_action") &&
+    nextTask.primarySessionPendingAction === undefined
+  ) {
+    merged.primarySessionPendingAction = existing.primarySessionPendingAction;
+  }
   return merged;
 }
 
@@ -64,7 +70,26 @@ function upsertMultiTask(
   payload: TaskEventPayload,
 ): AppState {
   const snapshot = state.kanbanMulti.snapshots[workflowId];
-  if (!snapshot) return state;
+  if (!snapshot) {
+    const workflowName =
+      state.workflows?.items.find((item) => item.id === workflowId)?.name ?? workflowId;
+    return {
+      ...state,
+      kanbanMulti: {
+        ...state.kanbanMulti,
+        snapshots: {
+          ...state.kanbanMulti.snapshots,
+          [workflowId]: {
+            workflowId,
+            workflowName,
+            steps: [],
+            tasks: upsertTask([], task, payload),
+            isPlaceholder: true,
+          },
+        },
+      },
+    };
+  }
   return {
     ...state,
     kanbanMulti: {
@@ -108,9 +133,7 @@ function upsertTaskInBothKanbans(
     };
   }
 
-  if (state.kanbanMulti.snapshots[wfId]) {
-    next = upsertMultiTask(next, wfId, nextTask, payload);
-  }
+  next = upsertMultiTask(next, wfId, nextTask, payload);
 
   return next;
 }
@@ -232,6 +255,24 @@ function clearRemovedTaskSelection(state: AppState, taskId: string): AppState {
     next = { ...next, tasks: { ...next.tasks, lastSessionByTaskId: rest } };
   }
   return next;
+}
+
+function clearDeletedTaskWalkthrough(state: AppState, taskId: string): AppState {
+  if (!state.walkthroughs?.byTaskId) return state;
+  if (!(taskId in state.walkthroughs.byTaskId)) return state;
+  const { [taskId]: _removedWalkthrough, ...byTaskId } = state.walkthroughs.byTaskId;
+  const { [taskId]: _removedStep, ...activeStepByTaskId } = state.walkthroughs.activeStepByTaskId;
+  const { [taskId]: _removedLastSeen, ...lastSeenUpdatedAtByTaskId } =
+    state.walkthroughs.lastSeenUpdatedAtByTaskId;
+  return {
+    ...state,
+    walkthroughs: {
+      ...state.walkthroughs,
+      byTaskId,
+      activeStepByTaskId,
+      lastSeenUpdatedAtByTaskId,
+    },
+  };
 }
 
 function removedTaskRedirectHref(pathname: string, taskId: string): string | null {
@@ -375,7 +416,10 @@ export function registerTasksHandlers(store: StoreApi<AppState>): WsHandlers {
       const wasActive = currentState.tasks.activeTaskId === deletedId;
 
       store.setState((state) =>
-        clearRemovedTaskSelection(removeTaskFromBothKanbans(state, deletedId), deletedId),
+        clearDeletedTaskWalkthrough(
+          clearRemovedTaskSelection(removeTaskFromBothKanbans(state, deletedId), deletedId),
+          deletedId,
+        ),
       );
 
       // Capture the route match before any redirect mutates the pathname. This

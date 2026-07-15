@@ -3,6 +3,29 @@ import { MobileKanbanPage } from "../../pages/mobile-kanban-page";
 import { missingGitHealth } from "./health-fixtures";
 
 test.describe("Mobile kanban view", () => {
+  test.afterEach(async ({ apiClient }) => {
+    await apiClient.rawRequest("PATCH", "/api/v1/user/settings", {
+      system_metrics_display: { show_in_topbar: false },
+    });
+  });
+
+  test("metrics match the height of the mobile topbar actions", async ({ testPage, apiClient }) => {
+    await apiClient.rawRequest("PATCH", "/api/v1/user/settings", {
+      system_metrics_display: { show_in_topbar: true },
+    });
+    const mobile = new MobileKanbanPage(testPage);
+    await mobile.goto();
+
+    const metrics = testPage.getByTestId("mobile-topbar-metrics");
+    await expect(metrics).toBeVisible();
+    await expect(mobile.mobileSearchToggle).toBeVisible();
+    const metricsBox = await metrics.boundingBox();
+    const actionBox = await mobile.mobileSearchToggle.boundingBox();
+    if (!metricsBox || !actionBox) throw new Error("topbar action has no bounding box");
+
+    expect(metricsBox.height).toBe(actionBox.height);
+  });
+
   test("renders mobile layout with column tabs and swipeable columns", async ({
     testPage,
     apiClient,
@@ -86,6 +109,29 @@ test.describe("Mobile kanban view", () => {
     // Menu sheet should open with display options
     await expect(testPage.getByRole("heading", { name: "Menu" })).toBeVisible();
     await expect(testPage.getByText("Display Options")).toBeVisible();
+  });
+
+  test("switches workspaces from the mobile menu", async ({ testPage, apiClient }) => {
+    const otherWorkspace = await apiClient.createWorkspace("Mobile Alternate Workspace");
+    await apiClient.createWorkflow(otherWorkspace.id, "Mobile Alternate Workflow", "simple");
+
+    const mobile = new MobileKanbanPage(testPage);
+    await mobile.goto();
+
+    await mobile.mobileMenuButton.click();
+    const dialog = testPage.getByRole("dialog", { name: "Menu" });
+    await expect(dialog.getByText("Workspace", { exact: true })).toBeVisible();
+    await expect(testPage.getByTestId("mobile-workspace-trigger")).toContainText("E2E Workspace");
+
+    await testPage.getByTestId("mobile-workspace-trigger").click();
+    await testPage.getByTestId(`mobile-workspace-item-${otherWorkspace.id}`).click();
+
+    await expect(dialog).not.toBeVisible();
+
+    await mobile.mobileMenuButton.click();
+    await expect(testPage.getByTestId("mobile-workspace-trigger")).toContainText(
+      "Mobile Alternate Workspace",
+    );
   });
 
   test("mobile menu exposes settings navigation", async ({ testPage }) => {
@@ -178,6 +224,32 @@ test.describe("Mobile kanban view", () => {
       // Second step task should exist in the DOM
       await expect(mobile.taskCardByTitle("Task In Second Step")).toBeVisible();
     }
+  });
+
+  test("column tabs show WIP occupancy over limit", async ({ testPage, apiClient, seedData }) => {
+    const workflow = await apiClient.createWorkflow(seedData.workspaceId, "Mobile WIP Workflow");
+    const limitedStep = await apiClient.createWorkflowStep(workflow.id, "Limited", 0, {
+      is_start_step: true,
+    });
+    await apiClient.createWorkflowStep(workflow.id, "Done", 1);
+    await apiClient.updateWorkflowStep(limitedStep.id, { wip_limit: 1 });
+    await apiClient.createTask(seedData.workspaceId, "Mobile WIP One", {
+      workflow_id: workflow.id,
+      workflow_step_id: limitedStep.id,
+    });
+    await apiClient.createTask(seedData.workspaceId, "Mobile WIP Two", {
+      workflow_id: workflow.id,
+      workflow_step_id: limitedStep.id,
+    });
+    await apiClient.saveUserSettings({
+      workspace_id: seedData.workspaceId,
+      workflow_filter_id: workflow.id,
+    });
+
+    const mobile = new MobileKanbanPage(testPage);
+    await mobile.goto();
+
+    await expect(testPage.getByTestId("column-tab-0")).toContainText("2/1");
   });
 
   test("mobile search bar filters tasks", async ({ testPage, apiClient, seedData }) => {

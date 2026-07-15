@@ -148,7 +148,7 @@ func (m *Manager) resolveLocalPID(execution *AgentExecution) int {
 		return 0
 	}
 	if execution.RuntimeName == agentruntime.RuntimeStandalone {
-		return m.standaloneHostPID
+		return int(m.standaloneHostPID.Load())
 	}
 	return 0
 }
@@ -355,6 +355,9 @@ func (m *Manager) deleteExecutorRunning(ctx context.Context, sessionID string) {
 				zap.Error(err))
 			return
 		}
+	} else {
+		m.logger.Warn("delete executors_running on cleanup: writer does not support reading; resume-safety check skipped",
+			zap.String("session_id", sessionID))
 	}
 
 	if err := m.runningWriter.DeleteExecutorRunningBySessionID(ctx, sessionID); err != nil {

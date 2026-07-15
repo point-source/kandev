@@ -285,6 +285,52 @@ func (r *Repository) UpdateTask(ctx context.Context, task *models.Task) error {
 	return tx.Commit()
 }
 
+// UpdateTaskIfWorkflowStepHasCapacity updates a task inside the same write
+// transaction that checks a WIP-limited target step's current occupancy.
+func (r *Repository) UpdateTaskIfWorkflowStepHasCapacity(ctx context.Context, task *models.Task, targetStepID, excludeTaskID string, limit int) error {
+	task.UpdatedAt = time.Now().UTC()
+	metadata, err := json.Marshal(task.Metadata)
+	if err != nil {
+		metadata = []byte("{}")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var occupants int
+	if err := tx.QueryRowContext(ctx, r.db.Rebind(`
+		SELECT COUNT(*) FROM tasks
+		WHERE workflow_step_id = ?
+		  AND id != ?
+		  AND archived_at IS NULL
+		  AND is_ephemeral = 0
+	`), targetStepID, excludeTaskID).Scan(&occupants); err != nil {
+		return err
+	}
+	if occupants >= limit {
+		return fmt.Errorf("WIP limit exceeded for workflow step %s: limit %d already occupied", targetStepID, limit)
+	}
+
+	result, err := tx.ExecContext(ctx, r.db.Rebind(`
+		UPDATE tasks SET workspace_id = ?, workflow_id = ?, workflow_step_id = ?, title = ?, description = ?, state = ?, priority = ?, position = ?, metadata = ?, parent_id = ?, updated_at = ?, origin = ?, project_id = ?, labels = ?, identifier = ?
+		WHERE id = ?
+	`), task.WorkspaceID, task.WorkflowID, task.WorkflowStepID, task.Title, task.Description, task.State, task.Priority, task.Position, string(metadata), task.ParentID, task.UpdatedAt, task.Origin, task.ProjectID, task.Labels, task.Identifier, task.ID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%w: %s", ErrTaskNotFound, task.ID)
+	}
+	if err := syncRunnerInTx(ctx, tx, task.WorkflowStepID, task.ID, task.AssigneeAgentProfileID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // DeleteTask deletes a task by ID
 func (r *Repository) DeleteTask(ctx context.Context, id string) error {
 	result, err := r.db.ExecContext(ctx, r.db.Rebind(`DELETE FROM tasks WHERE id = ?`), id)
@@ -337,6 +383,78 @@ func (r *Repository) CountTasksByWorkflowStep(ctx context.Context, stepID string
 	return count, nil
 }
 
+// CountTasksByWorkflowStepExcludingTask returns active, visible occupants in
+// a workflow step, excluding the task currently being moved.
+func (r *Repository) CountTasksByWorkflowStepExcludingTask(ctx context.Context, stepID, excludeTaskID string) (int, error) {
+	var count int
+	err := r.ro.QueryRowContext(ctx, r.ro.Rebind(`
+		SELECT COUNT(*) FROM tasks
+		WHERE workflow_step_id = ?
+		  AND id != ?
+		  AND archived_at IS NULL
+		  AND is_ephemeral = 0
+	`), stepID, excludeTaskID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// NextPullCandidate returns the next active, visible task from a feeder step.
+func (r *Repository) NextPullCandidate(ctx context.Context, stepID, excludeTaskID string) (*models.Task, error) {
+	excludeTaskIDs := []string(nil)
+	if excludeTaskID != "" {
+		excludeTaskIDs = append(excludeTaskIDs, excludeTaskID)
+	}
+	return r.NextPullCandidateExcluding(ctx, stepID, excludeTaskIDs)
+}
+
+// NextPullCandidateExcluding returns the next active, visible task from a
+// feeder step, skipping any candidate IDs the caller already tried.
+func (r *Repository) NextPullCandidateExcluding(ctx context.Context, stepID string, excludeTaskIDs []string) (*models.Task, error) {
+	args := []any{stepID}
+	excludeClause := ""
+	if len(excludeTaskIDs) > 0 {
+		placeholders := make([]string, 0, len(excludeTaskIDs))
+		for _, id := range excludeTaskIDs {
+			if id == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) > 0 {
+			excludeClause = " AND t.id NOT IN (" + strings.Join(placeholders, ", ") + ")"
+		}
+	}
+	row := r.ro.QueryRowContext(ctx, r.ro.Rebind(`
+			SELECT `+taskSelectColumns("t")+`
+			FROM tasks t
+			WHERE t.workflow_step_id = ?
+			  AND t.archived_at IS NULL
+			  AND t.is_ephemeral = 0
+			  `+excludeClause+`
+			ORDER BY
+			  t.position ASC,
+			  CASE LOWER(COALESCE(t.priority, ''))
+		    WHEN 'critical' THEN 0
+		    WHEN 'high' THEN 1
+		    WHEN 'medium' THEN 2
+		    WHEN 'low' THEN 3
+		    WHEN 'none' THEN 4
+		    ELSE 4
+		  END ASC,
+		  t.created_at ASC,
+			  t.id ASC
+			LIMIT 1
+		`), args...)
+	task, err := r.scanSingleTask(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return task, err
+}
+
 // ListChildren returns non-archived, non-ephemeral children of parentID.
 // Returns an empty list when parentID is empty (so root tasks resolve to
 // "no children" cleanly).
@@ -365,7 +483,7 @@ func (r *Repository) ListChildCompletionRows(ctx context.Context, parentID strin
 	}
 	var rows []models.ChildCompletionRow
 	err := r.ro.SelectContext(ctx, &rows, r.ro.Rebind(`
-		SELECT id, state, title, updated_at
+		SELECT id, state, title, workflow_step_id, updated_at
 		FROM tasks
 		WHERE parent_id = ? AND archived_at IS NULL AND is_ephemeral = 0
 		ORDER BY created_at ASC, id ASC
@@ -846,6 +964,25 @@ func (r *Repository) UnarchiveTaskByCascade(ctx context.Context, id, cascadeID s
 	return rows > 0, nil
 }
 
+// UnarchiveTask clears archived_at for a manually/legacy-archived task
+// (no cascade stamp). The CAS guard on archived_by_cascade_id keeps a
+// delayed manual unarchive from erasing a newer cascade archive that
+// landed between the caller's read and this update — cascade-stamped
+// rows are only restored via UnarchiveTaskByCascade. Returns whether a
+// row was actually updated.
+func (r *Repository) UnarchiveTask(ctx context.Context, id string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, r.db.Rebind(`
+		UPDATE tasks SET archived_at = NULL, archived_by_cascade_id = '', updated_at = ?
+		WHERE id = ? AND archived_at IS NOT NULL
+			AND (archived_by_cascade_id = '' OR archived_by_cascade_id IS NULL)
+	`), time.Now().UTC(), id)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
 // ListTasksForAutoArchive returns tasks eligible for auto-archiving based on workflow step settings
 func (r *Repository) ListTasksForAutoArchive(ctx context.Context) ([]*models.Task, error) {
 	drv := r.ro.DriverName()
@@ -863,6 +1000,102 @@ func (r *Repository) ListTasksForAutoArchive(ctx context.Context) ([]*models.Tas
 	}
 	defer func() { _ = rows.Close() }()
 	return r.scanTasks(rows)
+}
+
+// ListExpiredQuickChatTasks returns quick-chat tasks whose last task/session
+// activity is older than cutoff. Active sessions are excluded so in-use chats
+// are never deleted by the idle sweeper.
+func (r *Repository) ListExpiredQuickChatTasks(ctx context.Context, cutoff time.Time) ([]*models.Task, error) {
+	drv := r.ro.DriverName()
+	sessionActivity := "COALESCE(MAX(ts.updated_at), t.updated_at)"
+	lastActivity := dialect.GreatestTimestamp(drv, "t.updated_at", sessionActivity)
+	query := fmt.Sprintf(`
+		WITH candidates AS (
+			SELECT t.id, %s AS last_activity
+			FROM tasks t
+			LEFT JOIN task_sessions ts ON ts.task_id = t.id
+			WHERE t.is_ephemeral = 1
+				AND COALESCE(t.workflow_id, '') = ''
+				AND COALESCE(t.origin, '') != ?
+				AND %s
+				AND t.archived_at IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM task_sessions active
+					WHERE active.task_id = t.id
+						AND active.state IN (?, ?)
+				)
+			GROUP BY t.id, t.updated_at
+			HAVING %s < ?
+		)
+		SELECT %s
+		FROM tasks t
+		JOIN candidates c ON c.id = t.id
+		ORDER BY c.last_activity ASC
+	`,
+		lastActivity,
+		excludeConfigModePredicate(drv, "t.metadata"),
+		lastActivity,
+		taskSelectColumns("t"),
+	)
+	rows, err := r.ro.QueryContext(ctx, r.ro.Rebind(query),
+		models.TaskOriginAutomationRun,
+		models.TaskSessionStateRunning,
+		models.TaskSessionStateIdle,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return r.scanTasks(rows)
+}
+
+// DeleteExpiredQuickChatTask deletes id only when it still matches the expired
+// quick-chat predicate at delete time.
+func (r *Repository) DeleteExpiredQuickChatTask(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	drv := r.db.DriverName()
+	sessionActivity := "COALESCE(MAX(ts.updated_at), t.updated_at)"
+	lastActivity := dialect.GreatestTimestamp(drv, "t.updated_at", sessionActivity)
+	query := fmt.Sprintf(`
+		WITH candidate AS (
+			SELECT t.id, %s AS last_activity
+			FROM tasks t
+			LEFT JOIN task_sessions ts ON ts.task_id = t.id
+			WHERE t.id = ?
+				AND t.is_ephemeral = 1
+				AND COALESCE(t.workflow_id, '') = ''
+				AND COALESCE(t.origin, '') != ?
+				AND %s
+				AND t.archived_at IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM task_sessions active
+					WHERE active.task_id = t.id
+						AND active.state IN (?, ?)
+				)
+			GROUP BY t.id, t.updated_at
+			HAVING %s < ?
+		)
+		DELETE FROM tasks
+		WHERE id = ?
+			AND EXISTS (SELECT 1 FROM candidate)
+	`,
+		lastActivity,
+		excludeConfigModePredicate(drv, "t.metadata"),
+		lastActivity,
+	)
+	result, err := r.db.ExecContext(ctx, r.db.Rebind(query),
+		id,
+		models.TaskOriginAutomationRun,
+		models.TaskSessionStateRunning,
+		models.TaskSessionStateIdle,
+		cutoff,
+		id,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
 }
 
 // isSafeMetadataKey reports whether s is a safe JSON metadata key to splice

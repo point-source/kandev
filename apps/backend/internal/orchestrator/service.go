@@ -22,6 +22,7 @@ import (
 
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/events"
 	"github.com/kandev/kandev/internal/events/bus"
 	"github.com/kandev/kandev/internal/gitlab"
 	"github.com/kandev/kandev/internal/orchestrator/executor"
@@ -109,6 +110,7 @@ type TurnService interface {
 // payloads itself.
 type TaskEventPublisher interface {
 	PublishTaskUpdated(ctx context.Context, task *models.Task)
+	PublishTaskStateChanged(ctx context.Context, task *models.Task, oldState v1.TaskState)
 }
 
 // WorkflowStepGetter retrieves workflow step information for prompt building.
@@ -371,6 +373,35 @@ type Service struct {
 	// Active turns map: sessionID -> turnID
 	activeTurns sync.Map
 
+	// dispatchingQueued tracks, per session, the entry ID of whichever
+	// queued message was most recently taken and handed off to the async
+	// executeQueuedMessage goroutine, but hasn't yet reached promptTask's
+	// own setSessionRunning call — the only point at which session.State
+	// itself starts correctly reporting "busy" for that dispatch. Without
+	// this, a second take-and-dispatch decision for the same session (a
+	// workflow drain, a manual drain, or another parent interrupt) could
+	// acquire the cancelInFlight guard in that gap, see the still-idle
+	// session.State, and dispatch a second, unrelated queued entry before
+	// the first dispatch's turn has even started.
+	//
+	// Stores the entry ID (string), not a bool: a newer dispatch for the
+	// same session (e.g. a second parent interrupt cancelling and
+	// re-taking) always supersedes an older one that's still settling —
+	// markQueuedDispatchInFlight unconditionally overwrites. Each
+	// goroutine must reconfirm it still owns *its own* entry ID
+	// (isCurrentQueuedDispatch) immediately before calling
+	// setSessionRunning, and may only clear the marker via a
+	// compare-and-delete keyed on that same entry ID
+	// (clearQueuedDispatchInFlightIfCurrent) — otherwise a superseded
+	// goroutine finishing late could delete a newer dispatch's marker out
+	// from under it, or proceed to prompt after it no longer owns the
+	// session. Non-cancelling take-and-dispatch paths
+	// (drainQueuedMessageForPromptableSessionLocked, takeIfPromptableLocked)
+	// instead use isQueuedDispatchInFlight, which only asks "is *anything*
+	// still settling" — they have no cancel to supersede it with, so any
+	// in-flight dispatch at all is reason enough to defer.
+	dispatchingQueued sync.Map
+
 	// taskRuntimeStateMu serializes task-state flips derived from session
 	// runtime state. Without it, a completion/cancel path can check for active
 	// sibling sessions just before another handler marks one RUNNING, then
@@ -401,11 +432,30 @@ type Service struct {
 	// activity before triggering fallback resume.
 	clarificationWatchdogTimeout time.Duration
 
-	// cancelInFlight tracks sessionIDs whose CancelAgent call is currently in
-	// progress. It deduplicates impatient retries from the UI and lets late
-	// agent.ready/boot_ready events from the cancelled turn return before they
-	// evaluate workflow transitions or drain queued messages.
-	cancelInFlight sync.Map
+	// cancelInFlightMu guards cancelInFlight's map structure (insert/
+	// lookup/remove of *cancelInFlightGuard entries) — held only briefly
+	// for that bookkeeping, never across a caller's actual per-session
+	// critical section (which is guarded by the entry's own mutex, handed
+	// to callers by acquireCancelInFlightGuard).
+	cancelInFlightMu sync.Mutex
+	// cancelInFlight holds one *cancelInFlightGuard per session with an
+	// active reference — an in-progress or waiting claim from CancelAgent
+	// (the user cancel button — TryLock, dedup impatient retries), the
+	// natural turn-completion/boot-ready drain decision in handleAgentReady
+	// / handleAgentBootReady (TryLock, skip if a cancel/interrupt owns it),
+	// or QueueAndInterruptForPeerMessage (blocking Lock — must wait rather
+	// than work around a busy lock with an unguarded insert; see its doc
+	// comment). All of these must go through the same per-session guard —
+	// a second, independent lock for any of them would defeat the mutual
+	// exclusion the others rely on to avoid racing each other's
+	// take-and-dispatch decision for the same session.
+	//
+	// Entries are reference-counted (acquireCancelInFlightGuard /
+	// releaseCancelInFlightGuard) and pruned once nobody holds a reference,
+	// so this stays bounded by concurrently-active sessions rather than
+	// growing by one permanent entry per session ever created over a
+	// long-lived backend's lifetime.
+	cancelInFlight map[string]*cancelInFlightGuard
 
 	// transientRetries tracks in-progress transient-provider-error (529
 	// Overloaded) retry loops. key: sessionID, value: *transientRetryEntry.
@@ -610,6 +660,36 @@ func (s *Service) publishTaskUpdated(ctx context.Context, task *models.Task) {
 	s.taskEvents.PublishTaskUpdated(ctx, task)
 }
 
+func (s *Service) publishTaskStateChanged(ctx context.Context, task *models.Task, oldState v1.TaskState) {
+	if s.taskEvents == nil || task == nil {
+		return
+	}
+	s.taskEvents.PublishTaskStateChanged(ctx, task, oldState)
+}
+
+func (s *Service) publishTaskMoved(ctx context.Context, task *models.Task, fromWorkflowID, fromStepID, toStepID, sessionID string) {
+	if s.eventBus == nil || task == nil {
+		return
+	}
+	data := map[string]interface{}{
+		"task_id":                   task.ID,
+		"from_workflow_id":          fromWorkflowID,
+		"to_workflow_id":            task.WorkflowID,
+		"from_step_id":              fromStepID,
+		"to_step_id":                toStepID,
+		"session_id":                sessionID,
+		"workflow_id":               task.WorkflowID,
+		"task_description":          task.Description,
+		"parent_id":                 task.ParentID,
+		"assignee_agent_profile_id": task.AssigneeAgentProfileID,
+	}
+	event := bus.NewEvent(events.TaskMoved, "orchestrator", data)
+	if err := s.eventBus.Publish(ctx, events.TaskMoved, event); err != nil {
+		s.logger.Error("failed to publish pulled task.moved event",
+			zap.String("task_id", task.ID), zap.Error(err))
+	}
+}
+
 // StepRequiresCompletionSignal reports whether the workflow step bound to taskID
 // has `auto_advance_requires_signal = true` (ADR 0015). Used by sysprompt
 // injection sites to decide whether to expose the `step_complete_kandev` MCP
@@ -677,7 +757,7 @@ func (s *Service) initWorkflowEngine() {
 	if s.workflowStepGetter == nil {
 		return
 	}
-	store := newWorkflowStore(s.repo, s.workflowStepGetter, s.agentManager, s.publishTaskUpdated, s.logger)
+	store := newWorkflowStore(s.repo, s.workflowStepGetter, s.agentManager, s.publishTaskUpdated, s.logger, s.publishTaskMoved)
 	callbacks := buildWorkflowCallbacks(s)
 	s.workflowStore = store
 	s.workflowEngine = engine.New(store, callbacks, s.engineOptions...)
@@ -867,6 +947,106 @@ func (s *Service) getActiveTurnID(sessionID string) string {
 	// No active turn exists - start one lazily
 	// This handles edge cases like resumed sessions or race conditions
 	return s.startTurnForSession(context.Background(), sessionID)
+}
+
+// peekActiveTurnID returns sessionID's currently active turn ID, or "" if
+// none, WITHOUT creating one when none exists — unlike getActiveTurnID,
+// this never calls startTurnForSession. Used by QueueAndInterruptForPeerMessage
+// and handleAgentReady to snapshot "which turn is this?" before contending
+// for the per-session cancelInFlight guard, then re-check it once the guard
+// is held to detect whether a *different* turn has started in the
+// meantime (e.g. a workflow transition auto-started a successor while the
+// caller waited) — see their doc comments for the races this closes.
+//
+// Deliberately reads through to turnService.GetActiveTurn (the DB) rather
+// than only the activeTurns in-memory cache: completeTurnForSession's own
+// doc comment notes the cache can drift or miss turns that exist only in
+// the DB (e.g. a lazily-started turn from service.CreateMessage), and
+// missing a genuinely-active successor here would defeat the safety check
+// callers rely on this for. Returns ("", nil) when turnService is not
+// wired — callers must treat that as "no turn identity can be
+// established" and fall back to their pre-existing (turn-unaware)
+// behavior, not as a confirmed empty turn.
+func (s *Service) peekActiveTurnID(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" || s.turnService == nil {
+		return "", nil
+	}
+	turn, err := s.turnService.GetActiveTurn(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if turn == nil {
+		return "", nil
+	}
+	return turn.ID, nil
+}
+
+// markQueuedDispatchInFlight records that entryID — a specific queued
+// message — has been taken and handed off to the async
+// executeQueuedMessage goroutine for sessionID. Unconditionally
+// overwrites any previous entry for the session: a newer dispatch always
+// supersedes an older one that's still settling. See the
+// Service.dispatchingQueued field doc comment for why this exists:
+// session.State alone doesn't reflect "busy" until that goroutine's own
+// promptTask call reaches setSessionRunning, several DB round-trips
+// later — and for why the token must be the specific entry ID, not a bare
+// bool.
+func (s *Service) markQueuedDispatchInFlight(sessionID, entryID string) {
+	if sessionID == "" {
+		return
+	}
+	s.dispatchingQueued.Store(sessionID, entryID)
+}
+
+// clearQueuedDispatchInFlightIfCurrent removes sessionID's in-flight
+// marker only if it still names entryID — a compare-and-delete so a
+// goroutine whose own dispatch has since been superseded by a newer one
+// (a different entryID overwrote the marker) can never clear the
+// *newer* dispatch's marker out from under it. Called by
+// executeQueuedMessage via defer so the marker is cleared on every exit
+// path (success, transient requeue, superseded, or lost/dropped message)
+// — but only when this goroutine is still the current owner.
+func (s *Service) clearQueuedDispatchInFlightIfCurrent(sessionID, entryID string) {
+	if sessionID == "" {
+		return
+	}
+	s.dispatchingQueued.CompareAndDelete(sessionID, entryID)
+}
+
+// isCurrentQueuedDispatch reports whether entryID is still the most
+// recently handed-off in-flight dispatch for sessionID — i.e. no *other*
+// dispatch has superseded it since markQueuedDispatchInFlight was called
+// for it. A goroutine that owns entryID must confirm this immediately
+// before calling setSessionRunning (see promptTask's claimDispatch
+// parameter); if it no longer owns the token, a different dispatch has
+// already taken over the session and this one must not proceed.
+func (s *Service) isCurrentQueuedDispatch(sessionID, entryID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	v, ok := s.dispatchingQueued.Load(sessionID)
+	if !ok {
+		return false
+	}
+	current, _ := v.(string)
+	return current == entryID
+}
+
+// isQueuedDispatchInFlight reports whether *any* queued message is
+// currently in the handoff window for sessionID, regardless of which one
+// — see markQueuedDispatchInFlight. Checked by
+// drainQueuedMessageForPromptableSessionLocked and takeIfPromptableLocked
+// before either takes and directly dispatches another entry on the same
+// session without a cancel to supersede whatever is already settling; a
+// genuine cancel (cancelAndTakeForPeerMessage) is exempt — see its own
+// doc comment for why it may proceed regardless and simply overwrite the
+// token via markQueuedDispatchInFlight.
+func (s *Service) isQueuedDispatchInFlight(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	_, ok := s.dispatchingQueued.Load(sessionID)
+	return ok
 }
 
 func (s *Service) setSessionResetInProgress(sessionID string, inProgress bool) {
@@ -1087,6 +1267,15 @@ func (s *Service) reconcileOneSessionOnStartup(ctx context.Context, running *mod
 	// the chat UI render as "working" because the office session shape
 	// uses IDLE specifically to avoid that.
 	if previousState == models.TaskSessionStateIdle {
+		// Keep the IDLE session state (no flip to WAITING_FOR_INPUT), but still
+		// make the ROW true: an office turn writes IDLE and then tears down, so a
+		// crash/restart in that window leaves a row claiming status=running with a
+		// dead local_pid. If the local process is confirmed dead, repair the row
+		// in place — resume_token/worktree are preserved (RowMustBePreserved
+		// treats IDLE as resumable). Remote rows report Unknown and are untouched.
+		if s.rowLiveness(running) == models.ProcessLivenessDead {
+			s.repairDeadRowLiveness(ctx, running)
+		}
 		s.logger.Info("session reconciled for lazy recovery (idle, no state change)",
 			zap.String("session_id", sessionID),
 			zap.String("task_id", running.TaskID),

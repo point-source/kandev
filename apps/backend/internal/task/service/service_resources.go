@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/kandev/kandev/internal/task/models"
 	taskrepo "github.com/kandev/kandev/internal/task/repository"
 	"github.com/kandev/kandev/internal/worktree"
+	"github.com/kandev/kandev/internal/worktree/copyfiles"
 )
 
 const (
@@ -31,6 +33,10 @@ type workspaceDeleteTaskCleanup struct {
 	worktrees   []*worktree.Worktree
 	stopTargets []taskStopTarget
 	taskEnv     *models.TaskEnvironment
+}
+
+type repositorySessionPruner interface {
+	DeleteRepositoryIfNoActiveTaskSessions(ctx context.Context, id string) (bool, error)
 }
 
 // Workspace operations
@@ -526,27 +532,35 @@ func (s *Service) CreateRepository(ctx context.Context, req *CreateRepositoryReq
 	if prefix == "" {
 		prefix = worktree.DefaultBranchPrefix
 	}
+	template := worktree.NormalizeBranchNameTemplate(req.WorktreeBranchTemplate)
+	if err := worktree.ValidateBranchNameTemplate(template); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+	}
 	pullBeforeWorktree := true
 	if req.PullBeforeWorktree != nil {
 		pullBeforeWorktree = *req.PullBeforeWorktree
 	}
+	if err := copyfiles.ValidateSpec(req.CopyFiles); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+	}
 	repository := &models.Repository{
-		ID:                   uuid.New().String(),
-		WorkspaceID:          req.WorkspaceID,
-		Name:                 req.Name,
-		SourceType:           sourceType,
-		LocalPath:            req.LocalPath,
-		Provider:             req.Provider,
-		ProviderRepoID:       req.ProviderRepoID,
-		ProviderOwner:        req.ProviderOwner,
-		ProviderName:         req.ProviderName,
-		DefaultBranch:        req.DefaultBranch,
-		WorktreeBranchPrefix: prefix,
-		PullBeforeWorktree:   pullBeforeWorktree,
-		SetupScript:          req.SetupScript,
-		CleanupScript:        req.CleanupScript,
-		DevScript:            req.DevScript,
-		CopyFiles:            req.CopyFiles,
+		ID:                     uuid.New().String(),
+		WorkspaceID:            req.WorkspaceID,
+		Name:                   req.Name,
+		SourceType:             sourceType,
+		LocalPath:              req.LocalPath,
+		Provider:               req.Provider,
+		ProviderRepoID:         req.ProviderRepoID,
+		ProviderOwner:          req.ProviderOwner,
+		ProviderName:           req.ProviderName,
+		DefaultBranch:          req.DefaultBranch,
+		WorktreeBranchPrefix:   prefix,
+		WorktreeBranchTemplate: template,
+		PullBeforeWorktree:     pullBeforeWorktree,
+		SetupScript:            req.SetupScript,
+		CleanupScript:          req.CleanupScript,
+		DevScript:              req.DevScript,
+		CopyFiles:              req.CopyFiles,
 	}
 
 	// Auto-detect GitHub provider info from git remote if not provided
@@ -691,6 +705,13 @@ func applyRepositoryUpdates(repository *models.Repository, req *UpdateRepository
 		}
 		repository.WorktreeBranchPrefix = prefix
 	}
+	if req.WorktreeBranchTemplate != nil {
+		template := worktree.NormalizeBranchNameTemplate(*req.WorktreeBranchTemplate)
+		if err := worktree.ValidateBranchNameTemplate(template); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+		}
+		repository.WorktreeBranchTemplate = template
+	}
 	if req.PullBeforeWorktree != nil {
 		repository.PullBeforeWorktree = *req.PullBeforeWorktree
 	}
@@ -704,6 +725,9 @@ func applyRepositoryUpdates(repository *models.Repository, req *UpdateRepository
 		repository.DevScript = *req.DevScript
 	}
 	if req.CopyFiles != nil {
+		if err := copyfiles.ValidateSpec(*req.CopyFiles); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalidRepositorySettings, err)
+		}
 		repository.CopyFiles = *req.CopyFiles
 	}
 	return nil
@@ -732,7 +756,52 @@ func (s *Service) DeleteRepository(ctx context.Context, id string) error {
 }
 
 func (s *Service) ListRepositories(ctx context.Context, workspaceID string) ([]*models.Repository, error) {
-	return s.repoEntities.ListRepositories(ctx, workspaceID)
+	repositories, err := s.repoEntities.ListRepositories(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	live := make([]*models.Repository, 0, len(repositories))
+	pruner, canPrune := s.repoEntities.(repositorySessionPruner)
+	for _, repository := range repositories {
+		if repository == nil || repository.SourceType != sourceTypeLocal || !s.isKandevTaskWorktreeRepository(repository) {
+			live = append(live, repository)
+			continue
+		}
+		if _, statErr := os.Stat(repository.LocalPath); !errors.Is(statErr, os.ErrNotExist) {
+			live = append(live, repository)
+			continue
+		}
+		if !canPrune {
+			live = append(live, repository)
+			continue
+		}
+		deleted, err := pruner.DeleteRepositoryIfNoActiveTaskSessions(ctx, repository.ID)
+		if err != nil {
+			s.logger.Warn("failed to prune missing task worktree repository",
+				zap.String("repository_id", repository.ID),
+				zap.String("local_path", repository.LocalPath),
+				zap.Error(err))
+			live = append(live, repository)
+			continue
+		}
+		if deleted {
+			s.publishRepositoryEvent(ctx, events.RepositoryDeleted, repository)
+			continue
+		}
+		current, getErr := s.repoEntities.GetRepository(ctx, repository.ID)
+		if getErr == nil {
+			live = append(live, current)
+			continue
+		}
+		if !errors.Is(getErr, taskrepo.ErrRepositoryNotFound) {
+			s.logger.Warn("failed to re-read retained task worktree repository, using cached value",
+				zap.String("repository_id", repository.ID),
+				zap.Error(getErr))
+			live = append(live, repository)
+		}
+	}
+	return live, nil
 }
 
 // CountActiveSessionsByRepository returns the number of agent sessions in an

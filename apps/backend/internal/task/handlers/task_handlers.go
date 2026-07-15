@@ -148,6 +148,7 @@ func (h *TaskHandlers) registerWS(dispatcher *ws.Dispatcher) {
 	dispatcher.RegisterFunc(ws.ActionTaskPlanRevisionsList, h.wsListTaskPlanRevisions)
 	dispatcher.RegisterFunc(ws.ActionTaskPlanRevisionGet, h.wsGetTaskPlanRevision)
 	dispatcher.RegisterFunc(ws.ActionTaskPlanRevert, h.wsRevertTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanImplement, h.wsMarkTaskPlanImplementationStarted)
 }
 
 // convertToServiceRepos converts dto.TaskRepositoryInput slice to service.TaskRepositoryInput slice.
@@ -166,4 +167,17 @@ func convertToServiceRepos(repos []dto.TaskRepositoryInput) []service.TaskReposi
 		}
 	}
 	return result
+}
+
+// convertUpdateRepositories maps an update request's repositories field to the
+// service's replace semantics: an absent field (provided=false) must stay nil
+// so UpdateTask leaves task repositories untouched; a provided list — including
+// an explicitly empty one — replaces them. convertToServiceRepos alone returns
+// a non-nil empty slice for nil input, which wiped repositories on title-only
+// renames.
+func convertUpdateRepositories(provided bool, repos []dto.TaskRepositoryInput) []service.TaskRepositoryInput {
+	if !provided {
+		return nil
+	}
+	return convertToServiceRepos(repos)
 }

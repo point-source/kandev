@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,10 +19,13 @@ import (
 	"github.com/kandev/kandev/internal/orchestrator/messagequeue"
 	"github.com/kandev/kandev/internal/orchestrator/queue"
 	"github.com/kandev/kandev/internal/orchestrator/scheduler"
+	"github.com/kandev/kandev/internal/orchestrator/watcher"
 	"github.com/kandev/kandev/internal/sysprompt"
 	"github.com/kandev/kandev/internal/task/models"
 	wfmodels "github.com/kandev/kandev/internal/workflow/models"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // seedTaskAndSession inserts a workspace, workflow, task, and session with the given state.
@@ -651,6 +655,1364 @@ func TestCancelAgent_DeliversQueuedMessageOnResume(t *testing.T) {
 	status := svc.messageQueue.GetStatus(ctx, "session1")
 	if status.Count != 0 {
 		t.Fatalf("expected cancel to deliver the queued message on resume, count=%d entries=%+v", status.Count, status.Entries)
+	}
+}
+
+func TestCancelAgent_DrainsQueuedMessageAfterCancelGuardClears(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	promptDone := make(chan struct{})
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             promptDone,
+	}
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), newMockTaskRepo(), agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+	agentMgr.promptAgentFunc = func(context.Context, string, string, []v1.MessageAttachment, bool) (*executor.PromptResult, error) {
+		if svc.isCancelInFlight("session1") {
+			return nil, fmt.Errorf("prompt abandoned after cancel: %w", lifecycle.ErrCancelEscalated)
+		}
+		return &executor.PromptResult{}, nil
+	}
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+	if _, err := svc.messageQueue.QueueMessage(
+		ctx, "session1", "task1", "queued after cancel", "", messagequeue.QueuedByUser, false, nil,
+	); err != nil {
+		t.Fatalf("queue message: %v", err)
+	}
+
+	if err := svc.CancelAgent(ctx, "session1"); err != nil {
+		t.Fatalf("cancel agent: %v", err)
+	}
+
+	select {
+	case <-promptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued prompt dispatch")
+	}
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 0 {
+		t.Fatalf("expected queued prompt to stay drained after cancel guard clears, count=%d entries=%+v", status.Count, status.Entries)
+	}
+}
+
+// --- QueueAndInterruptForPeerMessage ---
+
+// TestQueueAndInterruptForPeerMessage_DeliversQueuedMessageWithoutUserCancelSideEffects
+// pins the parent -> child steering contract: QueueAndInterruptForPeerMessage
+// cancels the child's in-flight turn and drains its queue like CancelAgent
+// does, but — unlike the user-facing cancel button — it must not write a
+// visible "Turn cancelled" message and must not move the task to REVIEW
+// (writeTaskReviewStateOnCancel). Those are user-cancel-specific side effects
+// that would misrepresent an internal steering signal from the parent task.
+func TestQueueAndInterruptForPeerMessage_DeliversQueuedMessageWithoutUserCancelSideEffects(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{isAgentRunning: true, repoForExecutionLookup: repo, promptDone: make(chan struct{})}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+	msgCreator := &mockMessageCreator{}
+	svc.messageCreator = msgCreator
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	queued, dispatched, err := svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+	if err != nil {
+		t.Fatalf("queue and interrupt for peer message: %v", err)
+	}
+	if queued == nil {
+		t.Fatal("expected a queued entry")
+	}
+	if !dispatched {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to report the message as dispatched")
+	}
+
+	if got := agentMgr.cancelAgentCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 agent cancel call, got %d", got)
+	}
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 0 {
+		t.Fatalf("expected the queued message to be drained, count=%d entries=%+v", status.Count, status.Entries)
+	}
+
+	// Join the executeQueuedMessage goroutine spawned by the drain via the
+	// mock's PromptAgent signal instead of racing test teardown — this
+	// proves the parent's queued message was actually dispatched to the
+	// agent, not merely popped off the queue.
+	select {
+	case <-agentMgr.promptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupted turn's queued message to be dispatched")
+	}
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "parent steer message" {
+		t.Fatalf("expected the queued parent message to be dispatched to the agent, got prompts=%v", prompts)
+	}
+
+	// The downstream turn dispatch legitimately writes IN_PROGRESS as part of
+	// normal PromptTask semantics (unrelated to this contract) — only guard
+	// against the cancel-button-specific REVIEW write
+	// (writeTaskReviewStateOnCancel). Checking the full stateHistory (not
+	// just the latest updatedStates value) matters here: a faulty
+	// implementation could write REVIEW and then have the async-dispatched
+	// prompt legitimately overwrite it with IN_PROGRESS, which would hide
+	// the bug from a latest-value-only check.
+	for _, state := range taskRepo.stateHistory["task1"] {
+		if state == v1.TaskStateReview {
+			t.Fatalf("interrupt must never move the task to REVIEW like the cancel button does, history=%v", taskRepo.stateHistory["task1"])
+		}
+	}
+	for _, msg := range msgCreator.sessionMessages {
+		if strings.Contains(msg.content, "cancelled") {
+			t.Fatalf("interrupt must not write a visible cancel message, got %+v", msg)
+		}
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_CancelFailurePropagatesAndKeepsMessageQueued
+// pins the failure contract: a genuine cancel error (not the tolerated
+// ErrNoExecutionForSession / ErrCancelEscalated sentinels cancelAgentSilent
+// already handles) must be returned to the caller rather than swallowed —
+// silently reporting success while the interrupt failed would strand the
+// message exactly like the bug this operation exists to fix, just with an
+// invisible delay. The message must stay queued (not dropped) so the normal
+// turn-completion drain can still deliver it later.
+func TestQueueAndInterruptForPeerMessage_CancelFailurePropagatesAndKeepsMessageQueued(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		cancelAgentErr:         errors.New("agent manager unreachable"),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	queued, dispatched, err := svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+	if err == nil {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to propagate the cancel failure")
+	}
+	if queued == nil {
+		t.Fatal("expected the message to have been queued even though the interrupt failed")
+	}
+	if dispatched {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to report nothing dispatched on cancel failure")
+	}
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 1 {
+		t.Fatalf("expected the queued message to remain queued after a failed interrupt, count=%d", status.Count)
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_DeliversTargetedEntryAheadOfOlderQueuedMessages
+// pins the fix for the FIFO-head bug: when the target session already has an
+// older queued entry (e.g. from a sibling task) ahead of the parent's
+// just-queued steering message, QueueAndInterruptForPeerMessage must still
+// dispatch the parent's own entry — not whatever happens to sit at the FIFO
+// head — otherwise the interrupt cancels the turn but hands control back to
+// the older message, leaving the parent's urgent message stranded behind it
+// exactly as before the interrupt (defeating the point of interrupting at
+// all).
+func TestQueueAndInterruptForPeerMessage_DeliversTargetedEntryAheadOfOlderQueuedMessages(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{isAgentRunning: true, repoForExecutionLookup: repo, promptDone: make(chan struct{})}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	if _, err := svc.messageQueue.QueueMessage(
+		ctx, "session1", "task1", "older sibling message", "", messagequeue.QueuedByAgent, false, nil,
+	); err != nil {
+		t.Fatalf("queue older message: %v", err)
+	}
+
+	queued, dispatched, err := svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+	if err != nil {
+		t.Fatalf("queue and interrupt for peer message: %v", err)
+	}
+	if queued == nil {
+		t.Fatal("expected a queued entry")
+	}
+	if !dispatched {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to report the message as dispatched")
+	}
+
+	select {
+	case <-agentMgr.promptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupted turn's queued message to be dispatched")
+	}
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "parent steer message" {
+		t.Fatalf("expected the parent's targeted message to be dispatched ahead of the older queued entry, got prompts=%v", prompts)
+	}
+
+	// The older entry is untouched — still queued for its own natural turn.
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 1 || status.Entries[0].Content != "older sibling message" {
+		t.Fatalf("expected the older entry to remain queued alone, got count=%d entries=%+v", status.Count, status.Entries)
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_WaitsForConcurrentHolderThenDelivers
+// pins the mutual-exclusion contract: when another caller already holds the
+// session's cancelInFlight lock (mid-cancel, via a real concurrent
+// QueueAndInterruptForPeerMessage call staged with the mock's
+// cancelAgentBlock/cancelAgentEntered hooks — no sleeps), a second call must
+// block on that same lock and wait for it to free up rather than falling
+// back to an unguarded "insert and hope" — see QueueAndInterruptForPeerMessage's
+// doc comment for why a busy-skip fallback would risk orphaning the second
+// call's message with no guaranteed future drain trigger.
+func TestQueueAndInterruptForPeerMessage_WaitsForConcurrentHolderThenDelivers(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	// First call: acquires the lock, queues its message, and blocks inside
+	// CancelAgent (holding the lock the whole time).
+	firstDone := make(chan struct{})
+	go func() {
+		_, _, _ = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "first parent message", nil)
+		close(firstDone)
+	}()
+
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first call to enter CancelAgent")
+	}
+
+	// Second call starts while the first still holds the lock mid-cancel.
+	secondDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var secondErr error
+	go func() {
+		queued, dispatched, secondErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "second parent message", nil)
+		close(secondDone)
+	}()
+
+	// The second call must not have completed yet — it has to be blocked
+	// on the lock, not working around it with an unguarded insert.
+	select {
+	case <-secondDone:
+		t.Fatal("second QueueAndInterruptForPeerMessage returned before the first call released the lock")
+	default:
+	}
+
+	// Release the first call's cancel; it finishes and releases the lock,
+	// letting the second call proceed (its own CancelAgent no longer
+	// blocks either, since cancelAgentBlock is now closed).
+	close(agentMgr.cancelAgentBlock)
+
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first call to finish")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the second call to acquire the lock and finish")
+	}
+	if secondErr != nil {
+		t.Fatalf("second call: %v", secondErr)
+	}
+	if queued == nil {
+		t.Fatal("expected the second call to have queued its own message")
+	}
+	if !dispatched {
+		t.Fatal("expected the second call to deliver its own message once the lock became available")
+	}
+
+	if got := agentMgr.cancelAgentCalls.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 agent cancel calls (one per message), got %d", got)
+	}
+
+	// Join whatever executeQueuedMessage did for the second message before
+	// returning — without this, its goroutine can still be running when
+	// the test's DB closes on teardown, racing and logging a benign but
+	// noisy error. The second message's async prompt races the first
+	// message's own in-flight turn (the lock here only serializes the
+	// queue take, not the actual prompt delivery): it either lands as a
+	// second PromptAgent call, or the mock's session-busy rejection sends
+	// it through requeueMessage instead, in which case it settles back
+	// into the queue for a later drain — either is a correct outcome, the
+	// second call must simply not be lost.
+	require.Eventually(t, func() bool {
+		agentMgr.mu.Lock()
+		promptCount := len(agentMgr.capturedPrompts)
+		agentMgr.mu.Unlock()
+		if promptCount >= 2 {
+			return true
+		}
+		return svc.messageQueue.GetStatus(ctx, "session1").Count == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected the second message to either be dispatched or settle back into the queue via requeueMessage")
+}
+
+// erroringTakeByIDRepository wraps a messagequeue.Repository and returns a
+// configured error from TakeByID, letting orchestrator-level tests exercise
+// QueueAndInterruptForPeerMessage's error-propagation path without needing a
+// real repository failure. All other methods forward to the embedded
+// Repository.
+type erroringTakeByIDRepository struct {
+	messagequeue.Repository
+	takeByIDErr error
+}
+
+// TakeByID always returns the configured error, ignoring its arguments.
+func (r *erroringTakeByIDRepository) TakeByID(context.Context, string, string) (*messagequeue.QueuedMessage, error) {
+	return nil, r.takeByIDErr
+}
+
+// TestQueueAndInterruptForPeerMessage_TargetedTakeErrorPropagatesWithoutFIFOFallback
+// pins the error-vs-not-found distinction on the targeted take: a genuine
+// repository error (e.g. a transient DB failure) must propagate rather than
+// be treated like a benign "already taken" not-found. Falling back to the
+// FIFO head on a real error would risk dispatching the older sibling entry
+// instead of the parent's message while the caller still reports "sent"
+// for the parent's — the exact bug this whole path exists to fix, just
+// reached via an error instead of a race.
+func TestQueueAndInterruptForPeerMessage_TargetedTakeErrorPropagatesWithoutFIFOFallback(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{isAgentRunning: true, repoForExecutionLookup: repo}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	// Route the session's queue through an error-injecting repository so
+	// the targeted take fails; Insert/GetStatus still work normally against
+	// the same memory-backed store underneath.
+	wantErr := errors.New("db unavailable")
+	svc.messageQueue = messagequeue.NewService(
+		&erroringTakeByIDRepository{Repository: messagequeue.NewMemoryRepository(), takeByIDErr: wantErr},
+		messagequeue.DefaultMaxPerSession, testLogger(),
+	)
+
+	if _, err := svc.messageQueue.QueueMessage(
+		ctx, "session1", "task1", "older sibling message", "", messagequeue.QueuedByAgent, false, nil,
+	); err != nil {
+		t.Fatalf("queue older message: %v", err)
+	}
+
+	queued, dispatched, err := svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+	if err == nil {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to propagate the targeted-take error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected error to wrap %v, got %v", wantErr, err)
+	}
+	if queued == nil {
+		t.Fatal("expected the parent's message to have been queued even though the take failed")
+	}
+	if dispatched {
+		t.Fatal("expected QueueAndInterruptForPeerMessage to report nothing dispatched on a targeted-take error")
+	}
+
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	if len(prompts) != 0 {
+		t.Fatalf("expected no message to be dispatched via an unsafe FIFO fallback, got prompts=%v", prompts)
+	}
+
+	// Both entries remain queued — neither the parent's nor the older
+	// sibling's was dispatched.
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 2 {
+		t.Fatalf("expected both entries to remain queued, count=%d entries=%+v", status.Count, status.Entries)
+	}
+}
+
+// blockingGetTaskSessionRepo wraps a sessionExecutorStore and blocks the
+// first GetTaskSession call for sessionID until release is closed. This
+// lets tests pause handleAgentReady *before* it even reaches its pre-guard
+// RUNNING/STARTING check and turn snapshot (both of which run only once
+// this GetTaskSession call returns) — giving a concurrent interrupt a
+// deterministic window to claim the shared cancelInFlight guard first,
+// without adding any test-only hook to production code. entered is closed
+// once GetTaskSession for sessionID is first called, so callers can
+// deterministically wait for handleAgentReady to have reached (and be
+// blocked inside) that call before proceeding.
+type blockingGetTaskSessionRepo struct {
+	sessionExecutorStore
+	sessionID   string
+	entered     chan struct{}
+	release     chan struct{}
+	blockedOnce sync.Once
+}
+
+func (r *blockingGetTaskSessionRepo) GetTaskSession(ctx context.Context, id string) (*models.TaskSession, error) {
+	if id == r.sessionID {
+		r.blockedOnce.Do(func() {
+			close(r.entered)
+			<-r.release
+		})
+	}
+	return r.sessionExecutorStore.GetTaskSession(ctx, id)
+}
+
+// TestQueueAndInterruptForPeerMessage_ClosesStaleEarlyCheckRace pins the
+// exact race carlosflorencio reported on PR #1653: without the guard
+// acquired *before* any completion bookkeeping, a normal agent.ready from
+// the child's current turn could pass an early isCancelInFlight peek, then
+// go on to complete that turn and drain the queued parent message through
+// the normal FIFO path — only for the interrupt's later cancel to land on
+// and kill that very turn, orphaning the parent's message mid-delivery.
+//
+// handleAgentReady now acquires the shared per-session guard *before* any
+// bookkeeping (turn completion, pending-move application, on_turn_complete
+// evaluation) runs, and re-validates the session state and active-turn
+// identity once it holds the guard — see the handleAgentReady doc comment.
+// This forces that exact interleaving with real concurrency (no sleeps):
+// handleAgentReady is paused inside GetTaskSession while a real
+// QueueAndInterruptForPeerMessage call acquires the guard, queues its
+// message, and blocks mid-cancel (session state and active turn both still
+// unmodified). handleAgentReady is released next: it must block trying to
+// claim the same guard rather than race past it, deliver nothing while the
+// interrupt still owns the turn, and — once the interrupt finishes
+// cancelling the original turn and dispatching its own entry through a
+// brand new turn — detect via peekActiveTurnID that the active turn
+// changed out from under it and back off instead of completing (or
+// transitioning the workflow for) a turn it never actually contested.
+func TestQueueAndInterruptForPeerMessage_ClosesStaleEarlyCheckRace(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+	svc.turnService = &repoTurnService{repo: repo}
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	turnA, err := svc.turnService.StartTurn(ctx, "session1")
+	if err != nil {
+		t.Fatalf("failed to seed active turn: %v", err)
+	}
+
+	blockingRepo := &blockingGetTaskSessionRepo{
+		sessionExecutorStore: svc.repo,
+		sessionID:            "session1",
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	svc.repo = blockingRepo
+
+	readyDone := make(chan struct{})
+	go func() {
+		svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "task1", SessionID: "session1"})
+		close(readyDone)
+	}()
+
+	// Wait for handleAgentReady to have reached (and blocked inside) its
+	// first GetTaskSession call — before its pre-guard RUNNING/STARTING
+	// check or turn snapshot ever run.
+	select {
+	case <-blockingRepo.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to reach GetTaskSession")
+	}
+
+	// Now start the interrupt: it acquires the guard, queues its message,
+	// and blocks mid-cancel — the session's state (still RUNNING, per the
+	// seed above) and turnA are both untouched at this point, matching
+	// what handleAgentReady's paused GetTaskSession call is about to
+	// return.
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+		close(interruptDone)
+	}()
+
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to enter CancelAgent")
+	}
+
+	// Release handleAgentReady: GetTaskSession returns the still-RUNNING
+	// session, so it passes its pre-guard check, snapshots turnA via
+	// peekActiveTurnID (still active — the interrupt's cancel hasn't
+	// touched it yet), and then tries to acquire the same guard the
+	// interrupt already holds. It must now block there rather than racing
+	// past it via a one-time early peek.
+	close(blockingRepo.release)
+	select {
+	case <-readyDone:
+		t.Fatal("handleAgentReady must block waiting for the interrupt's guard, not finish while the interrupt still holds it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// handleAgentReady must not have touched the queue: the interrupt still
+	// owns it (still blocked mid-cancel at this point).
+	duringCancel := svc.messageQueue.GetStatus(ctx, "session1")
+	if duringCancel.Count != 1 {
+		t.Fatalf("expected handleAgentReady to leave the parent's message queued while the interrupt holds the guard, count=%d entries=%+v", duringCancel.Count, duringCancel.Entries)
+	}
+
+	// Now let the interrupt's cancel complete: it finishes cancelling
+	// turnA, then takes and dispatches its own entry through a brand new
+	// turn.
+	close(agentMgr.cancelAgentBlock)
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for QueueAndInterruptForPeerMessage to finish")
+	}
+	if interruptErr != nil {
+		t.Fatalf("interrupt for peer message: %v", interruptErr)
+	}
+	if queued == nil || !dispatched {
+		t.Fatalf("expected the interrupt to deliver the message itself, queued=%+v dispatched=%v", queued, dispatched)
+	}
+
+	select {
+	case <-agentMgr.promptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt's own dispatch to reach PromptAgent")
+	}
+
+	// handleAgentReady, unblocked once the interrupt released the guard,
+	// must have detected the turn change and backed off instead of
+	// completing (or transitioning the workflow for) the new turn the
+	// interrupt just started.
+	select {
+	case <-readyDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to finish once the interrupt released the guard")
+	}
+
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "parent steer message" {
+		t.Fatalf("expected exactly one dispatch, of the parent's own message via the interrupt path — handleAgentReady must not have stolen or double-dispatched it, got prompts=%v", prompts)
+	}
+
+	final := svc.messageQueue.GetStatus(ctx, "session1")
+	if final.Count != 0 {
+		t.Fatalf("expected the queue to be empty after the interrupt's own take, count=%d entries=%+v", final.Count, final.Entries)
+	}
+
+	activeTurn, err := svc.turnService.GetActiveTurn(ctx, "session1")
+	if err != nil {
+		t.Fatalf("get active turn: %v", err)
+	}
+	if activeTurn == nil || activeTurn.ID == turnA.ID {
+		t.Fatalf("expected handleAgentReady's stale-turn detection to leave the interrupt's new turn active and untouched (not turnA=%s), got %+v", turnA.ID, activeTurn)
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_CancelFailureDoesNotStrandMessageWhenReadyIsRacing
+// pins a corollary of ClosesStaleEarlyCheckRace above: when the interrupt's
+// own cancel genuinely fails (as opposed to the tolerated
+// ErrNoExecutionForSession/ErrCancelEscalated sentinels cancelAgentSilent
+// already swallows) while a concurrent agent.ready is blocked behind the
+// same guard, the parent's message must not be left stranded. Because
+// handleAgentReady now only ever acquires the guard *before* any
+// bookkeeping, the failed cancel leaves the original turn's state exactly
+// as the coming agent.ready will find it: still RUNNING, same turn ID. So
+// once the interrupt's failure releases the guard, handleAgentReady's own,
+// still-pending ready event is the thing that rescues the message — it
+// completes the (unchanged) original turn normally and drains the queue
+// through the ordinary FIFO path, rather than the interrupt delivering it
+// directly.
+//
+// Forces the same real interleaving as ClosesStaleEarlyCheckRace:
+// handleAgentReady is paused inside GetTaskSession while a real
+// QueueAndInterruptForPeerMessage call acquires the guard, queues its
+// message, and blocks mid-cancel. handleAgentReady is released next and
+// blocks trying to claim the same guard. Only then is the interrupt's
+// cancel released — and it fails with a hard, non-tolerated error, so the
+// interrupt itself returns without ever dispatching. handleAgentReady,
+// unblocked once the interrupt's failure releases the guard, finds the
+// session and turn exactly as it left them, proceeds normally, and
+// delivers the parent's message via its own drain.
+func TestQueueAndInterruptForPeerMessage_CancelFailureDoesNotStrandMessageWhenReadyIsRacing(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+		cancelAgentErr:         errors.New("agent manager unreachable"),
+	}
+	stepGetter := newMockStepGetter()
+	stepGetter.steps["step1"] = &wfmodels.WorkflowStep{
+		ID: "step1", WorkflowID: "wf1", Name: "Step 1", Position: 0,
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, stepGetter, taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+	svc.turnService = &repoTurnService{repo: repo}
+
+	// step1 has no on_turn_complete actions, so handleAgentReady's
+	// workflow evaluation falls through to setSessionWaitingForInput
+	// (see processOnTurnComplete) instead of skipping it entirely, which
+	// is what a task with no WorkflowStepID at all (seedTaskAndSession's
+	// default) would do.
+	seedSession(t, repo, "task1", "session1", "step1")
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	turnA, err := svc.turnService.StartTurn(ctx, "session1")
+	if err != nil {
+		t.Fatalf("failed to seed active turn: %v", err)
+	}
+
+	blockingRepo := &blockingGetTaskSessionRepo{
+		sessionExecutorStore: svc.repo,
+		sessionID:            "session1",
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	svc.repo = blockingRepo
+
+	readyDone := make(chan struct{})
+	go func() {
+		svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "task1", SessionID: "session1"})
+		close(readyDone)
+	}()
+
+	select {
+	case <-blockingRepo.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to reach GetTaskSession")
+	}
+
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+		close(interruptDone)
+	}()
+
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to enter CancelAgent")
+	}
+
+	// Release handleAgentReady: GetTaskSession returns the still-RUNNING
+	// session and turnA is still active, so it passes its pre-guard check
+	// and snapshot, then blocks trying to acquire the guard the interrupt
+	// already holds.
+	close(blockingRepo.release)
+	select {
+	case <-readyDone:
+		t.Fatal("handleAgentReady must block waiting for the interrupt's guard, not finish while the interrupt still holds it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	duringCancel := svc.messageQueue.GetStatus(ctx, "session1")
+	if duringCancel.Count != 1 {
+		t.Fatalf("expected handleAgentReady to leave the parent's message queued while the interrupt holds the guard, count=%d entries=%+v", duringCancel.Count, duringCancel.Entries)
+	}
+
+	// Now let the interrupt's cancel fail. Unlike ClosesStaleEarlyCheckRace,
+	// the interrupt itself must not deliver the message: the session and
+	// turnA are untouched, so it is not promptable, and there's a
+	// still-pending agent.ready that will legitimately complete this same
+	// turn shortly.
+	close(agentMgr.cancelAgentBlock)
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for QueueAndInterruptForPeerMessage to finish")
+	}
+	if interruptErr == nil {
+		t.Fatal("expected the interrupt to report the cancel failure instead of silently dispatching against a session it never actually made promptable")
+	}
+	if dispatched {
+		t.Fatalf("expected the interrupt to not dispatch when its cancel failed and nothing else had yet made the session promptable, queued=%+v dispatched=%v", queued, dispatched)
+	}
+
+	// handleAgentReady, unblocked once the interrupt's failure released
+	// the guard, finds turnA and the RUNNING session exactly as it left
+	// them — not stale — so it proceeds normally: completes turnA, marks
+	// the session waiting-for-input, and drains the parent's message
+	// itself.
+	select {
+	case <-readyDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to finish once the interrupt released the guard")
+	}
+
+	select {
+	case <-agentMgr.promptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady's own drain to dispatch the queued message")
+	}
+
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "parent steer message" {
+		t.Fatalf("expected exactly one dispatch, of the parent's message via handleAgentReady's own drain, got prompts=%v", prompts)
+	}
+
+	final := svc.messageQueue.GetStatus(ctx, "session1")
+	if final.Count != 0 {
+		t.Fatalf("expected the queue to be empty after handleAgentReady's own drain, count=%d entries=%+v", final.Count, final.Entries)
+	}
+
+	completedTurnA, err := svc.turnService.GetTurn(ctx, turnA.ID)
+	if err != nil {
+		t.Fatalf("get turnA: %v", err)
+	}
+	if completedTurnA.CompletedAt == nil {
+		t.Fatal("expected handleAgentReady to complete turnA normally since it was never actually stale")
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_CancelFailureLeavesMessageQueuedWhenStillRunning
+// is the control case for the test above: when the cancel genuinely fails
+// and the session is still actively RUNNING (the turn cancelAgentSilent
+// tried and failed to stop is still genuinely in progress), the message
+// must NOT be force-dispatched — that would race the still-running turn.
+// It stays queued for that turn's own eventual natural completion, per the
+// pre-existing, already-accepted fallback contract.
+func TestQueueAndInterruptForPeerMessage_CancelFailureLeavesMessageQueuedWhenStillRunning(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		cancelAgentErr:         errors.New("agent manager unreachable"),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	queued, dispatched, err := svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+	if err == nil {
+		t.Fatal("expected the genuine cancel failure to propagate while the session is still RUNNING")
+	}
+	if dispatched {
+		t.Fatal("expected nothing to be dispatched while the session is still actively running")
+	}
+	if queued == nil {
+		t.Fatal("expected the message to still be queued despite the cancel failure")
+	}
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	if status.Count != 1 {
+		t.Fatalf("expected the message to remain queued for the still-running turn's own eventual completion, count=%d entries=%+v", status.Count, status.Entries)
+	}
+}
+
+// TestQueueAndInterruptForPeerMessage_DoesNotCancelUnrelatedSuccessorTurn
+// drives the active-turn revalidation race through the *public* interrupt
+// API (QueueAndInterruptForPeerMessage), with a real TurnService, rather
+// than the lower-level manual turn-replacement used by
+// TestHandleAgentReadyGuards_ConcurrentInterruptRaces in
+// event_handlers_test.go — covering the actual queue-then-check-then-
+// cancel-or-fallback control flow inside QueueAndInterruptForPeerMessage
+// itself, not just handleAgentReady's side of the race.
+//
+// Forces a *different* turn to become active in the window between this
+// call's pre-wait peekActiveTurnID snapshot and the point where it holds
+// the guard and re-checks — simulating a workflow transition auto-starting
+// an unrelated successor for the same session while the interrupt waited.
+// The interrupt must never call agentManager.CancelAgent in that case: the
+// active turn no longer belongs to whatever the parent originally meant to
+// interrupt, so cancelling it would kill unrelated work. It also must not
+// simply proceed with an unconditioned direct dispatch — since the
+// successor is (as here) still genuinely running, the parent's message
+// stays safely queued instead.
+func TestQueueAndInterruptForPeerMessage_DoesNotCancelUnrelatedSuccessorTurn(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{isAgentRunning: true, repoForExecutionLookup: repo}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	turnSync := &turnSnapshotSyncTurnService{
+		repoTurnService: &repoTurnService{repo: repo},
+		sessionID:       "session1",
+		snapshotTaken:   make(chan struct{}),
+	}
+	svc.turnService = turnSync
+	turnA, err := turnSync.StartTurn(ctx, "session1")
+	require.NoError(t, err)
+
+	lock, release := svc.acquireCancelInFlightGuard("session1")
+	lock.Lock()
+
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+		close(interruptDone)
+	}()
+
+	select {
+	case <-turnSync.snapshotTaken:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to snapshot the original active turn")
+	}
+	select {
+	case <-interruptDone:
+		t.Fatal("QueueAndInterruptForPeerMessage returned before the guard was released")
+	default:
+	}
+
+	// Simulate an unrelated workflow transition auto-starting a successor
+	// turn on this same session while the interrupt waited for the guard.
+	svc.completeTurnForSession(ctx, "session1")
+	turnB, err := turnSync.StartTurn(ctx, "session1")
+	require.NoError(t, err)
+
+	lock.Unlock()
+	release()
+
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to finish")
+	}
+
+	require.NoError(t, interruptErr)
+	require.NotNil(t, queued)
+	assert.False(t, dispatched, "expected the message to stay queued rather than be dispatched over the still-running successor")
+	assert.Equal(t, int32(0), agentMgr.cancelAgentCalls.Load(), "must never cancel the unrelated successor turn")
+
+	active, err := turnSync.GetActiveTurn(ctx, "session1")
+	require.NoError(t, err)
+	require.NotNil(t, active)
+	assert.Equal(t, turnB.ID, active.ID, "the successor turn must remain untouched")
+	assert.NotEqual(t, turnA.ID, active.ID)
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	require.Equal(t, 1, status.Count, "the parent's message must remain queued for the successor's own eventual natural drain")
+}
+
+// TestQueueAndInterruptForPeerMessage_RacesManualDrainForSameSession pins
+// the first of the two race scenarios carlosflorencio's review requested
+// for the centralized guard on PR #1653: a parent interrupt racing a
+// manual/workflow-triggered drain (DrainQueuedMessage) for the same
+// session. Exactly one of them must deliver the parent's message; the
+// drain must never double-dispatch or drop the sibling entry that was
+// already queued ahead of it.
+func TestQueueAndInterruptForPeerMessage_RacesManualDrainForSameSession(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}, 4),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	sibling, err := svc.messageQueue.QueueMessage(ctx, "session1", "task1", "sibling message", "", messagequeue.QueuedByAgent, false, nil)
+	require.NoError(t, err)
+
+	// The interrupt claims the guard, queues the parent's own message, and
+	// blocks mid-cancel.
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+		close(interruptDone)
+	}()
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to enter cancel")
+	}
+
+	// A manual/workflow drain request races in while the interrupt still
+	// holds the guard mid-cancel.
+	drainDone := make(chan struct{})
+	var drained bool
+	var drainErr error
+	go func() {
+		drained, drainErr = svc.DrainQueuedMessage(ctx, "session1")
+		close(drainDone)
+	}()
+
+	select {
+	case <-drainDone:
+		t.Fatal("DrainQueuedMessage returned before the interrupt released the guard — it must block, not work around it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(agentMgr.cancelAgentBlock)
+
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to finish")
+	}
+	require.NoError(t, interruptErr)
+	require.NotNil(t, queued)
+	require.True(t, dispatched, "expected the interrupt to deliver its own message")
+
+	select {
+	case <-drainDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the manual drain to finish")
+	}
+	// Whether the drain observes the session as already RUNNING again
+	// (the interrupt's own dispatch landed first) or briefly promptable
+	// but with a dispatch already in flight (see the Service.dispatchingQueued
+	// field doc comment), it must never itself report a successful drain —
+	// only one of the two callers may ever deliver a message for the same
+	// take decision.
+	assert.False(t, drained, "the manual drain must never also report a dispatch for the same session")
+	if drainErr != nil {
+		assert.ErrorIs(t, drainErr, ErrAgentPromptInProgress, "if the manual drain sees an error at all, it must be the ordinary busy signal — not some other failure")
+	}
+
+	require.Eventually(t, func() bool {
+		agentMgr.mu.Lock()
+		defer agentMgr.mu.Unlock()
+		return len(agentMgr.capturedPrompts) == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected exactly one prompt dispatched between the interrupt and the drain")
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	require.Equal(t, 1, status.Count, "the sibling's message must remain queued — neither dropped nor double-dispatched")
+	assert.Equal(t, sibling.ID, status.Entries[0].ID)
+}
+
+// TestQueueAndInterruptForPeerMessage_RacesClarificationTimeoutRecovery
+// pins the second requested race: a parent interrupt racing clarification-
+// timeout recovery (retryClarificationAfterCancel) for the same session.
+// Whichever wins the shared guard must complete its own cancel-and-dispatch
+// without the other stomping on it mid-flight; the loser must observe the
+// winner's fresh turn and back off rather than cancel it.
+func TestQueueAndInterruptForPeerMessage_RacesClarificationTimeoutRecovery(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}, 4),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	turnSync := &turnSnapshotSyncTurnService{
+		repoTurnService: &repoTurnService{repo: repo},
+		sessionID:       "session1",
+		snapshotTaken:   make(chan struct{}),
+	}
+	svc.turnService = turnSync
+	_, err := turnSync.StartTurn(ctx, "session1")
+	require.NoError(t, err)
+
+	// Clarification-timeout recovery claims the guard first and blocks
+	// mid-cancel.
+	recoveryDone := make(chan struct{})
+	var recovered bool
+	go func() {
+		recovered = svc.retryClarificationAfterCancel(ctx, clarificationAnsweredData{
+			TaskID: "task1", SessionID: "session1",
+		}, "the clarification answer", fmt.Errorf("wrap: %w", ErrAgentPromptInProgress))
+		close(recoveryDone)
+	}()
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for clarification recovery to enter cancel")
+	}
+
+	// The parent's interrupt snapshots the (still-original) active turn,
+	// then blocks trying to claim the same guard.
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(ctx, "task1", "session1", "parent steer message", nil)
+		close(interruptDone)
+	}()
+	select {
+	case <-turnSync.snapshotTaken:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to snapshot the active turn")
+	}
+	select {
+	case <-interruptDone:
+		t.Fatal("the interrupt returned before clarification recovery released the guard")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Release clarification recovery's cancel; it completes, marks the
+	// session busy under the guard, then hands its retry prompt off to the
+	// async take-and-dispatch path and RELEASES the guard before that
+	// (potentially long-blocking) prompt runs — so a jammed agent can no
+	// longer starve the user's Cancel button. retryClarificationAfterCancel
+	// therefore returns promptly rather than blocking on executor.Prompt.
+	close(agentMgr.cancelAgentBlock)
+	select {
+	case <-recoveryDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for clarification recovery to finish")
+	}
+	require.True(t, recovered, "expected clarification recovery to succeed")
+
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the interrupt to finish")
+	}
+	require.NoError(t, interruptErr)
+	require.NotNil(t, queued)
+	assert.False(t, dispatched, "the interrupt must not dispatch over clarification recovery's freshly-started turn")
+
+	// Exactly one cancel call happened (clarification recovery's); the
+	// interrupt must have detected the turn change and skipped its own
+	// cancel attempt entirely rather than stomping on the recovery's fresh
+	// turn.
+	assert.Equal(t, int32(1), agentMgr.cancelAgentCalls.Load())
+
+	// The retry prompt is dispatched on the async executeQueuedMessage
+	// goroutine (off the guard), so wait for it to land rather than reading
+	// synchronously.
+	require.Eventually(t, func() bool {
+		agentMgr.mu.Lock()
+		defer agentMgr.mu.Unlock()
+		return len(agentMgr.capturedPrompts) == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected exactly one prompt — clarification recovery's retry")
+
+	agentMgr.mu.Lock()
+	prompts := append([]string(nil), agentMgr.capturedPrompts...)
+	agentMgr.mu.Unlock()
+	require.Len(t, prompts, 1, "expected exactly one prompt — clarification recovery's retry")
+	assert.Equal(t, "the clarification answer", prompts[0])
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	require.Equal(t, 1, status.Count, "the parent's message stays queued for the recovered turn's own natural drain")
+}
+
+func TestClarificationRecovery_ReleasesGuardAfterRetryDispatch(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	retryAccepted := make(chan struct{})
+	promptAccepted := make(chan promptCall, 2)
+	turnComplete := make(chan struct{})
+	var retryAcceptedOnce sync.Once
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptAgentFunc: func(_ context.Context, executionID string, prompt string, _ []v1.MessageAttachment, dispatchOnly bool) (*executor.PromptResult, error) {
+			promptAccepted <- promptCall{ExecutionID: executionID, Prompt: prompt, DispatchOnly: dispatchOnly}
+			if prompt == "clarification answer" {
+				retryAcceptedOnce.Do(func() { close(retryAccepted) })
+			}
+			if !dispatchOnly {
+				<-turnComplete
+			}
+			return &executor.PromptResult{}, nil
+		},
+	}
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), newMockTaskRepo(), agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+	turnSync := &turnSnapshotSyncTurnService{
+		repoTurnService: &repoTurnService{repo: repo},
+		sessionID:       "session1",
+		snapshotTaken:   make(chan struct{}),
+	}
+	svc.turnService = turnSync
+	_, err := turnSync.StartTurn(ctx, "session1")
+	require.NoError(t, err)
+
+	recoveryDone := make(chan bool, 1)
+	go func() {
+		recoveryDone <- svc.retryClarificationAfterCancel(ctx, clarificationAnsweredData{
+			TaskID: "task1", SessionID: "session1",
+		}, "clarification answer", fmt.Errorf("wrap: %w", ErrAgentPromptInProgress))
+	}()
+	<-retryAccepted
+
+	interruptDone := make(chan struct{})
+	var queued *messagequeue.QueuedMessage
+	var dispatched bool
+	var interruptErr error
+	go func() {
+		queued, dispatched, interruptErr = svc.QueueAndInterruptForPeerMessage(
+			ctx, "task1", "session1", "parent steer", nil,
+		)
+		close(interruptDone)
+	}()
+	<-turnSync.snapshotTaken
+
+	select {
+	case <-interruptDone:
+	case <-time.After(2 * time.Second):
+		close(turnComplete)
+		<-interruptDone
+		t.Fatal("parent interrupt remained blocked on clarification recovery until the recovered turn completed")
+	}
+
+	select {
+	case recovered := <-recoveryDone:
+		require.True(t, recovered)
+	default:
+		close(turnComplete)
+		t.Fatal("clarification recovery must return after retry dispatch acceptance")
+	}
+	close(turnComplete)
+
+	require.NoError(t, interruptErr)
+	require.NotNil(t, queued)
+	require.True(t, dispatched, "interrupt begun after retry acceptance must interrupt the recovered turn")
+	require.Equal(t, int32(2), agentMgr.cancelAgentCalls.Load(), "recovery and parent interrupt each cancel their owned turn")
+
+	firstPrompt := <-promptAccepted
+	secondPrompt := <-promptAccepted
+	require.Equal(t, "clarification answer", firstPrompt.Prompt)
+	// The clarification retry no longer relies on dispatchOnly to avoid
+	// starving the guard: it is handed to the async take-and-dispatch path
+	// (executeQueuedMessage) on a background goroutine, so
+	// retryClarificationAfterCancel returns before executor.Prompt runs even
+	// though the queued dispatch itself keeps the normal completion-wait
+	// (dispatchOnly=false) behavior.
+	require.False(t, firstPrompt.DispatchOnly, "queue-dispatched retry keeps the normal completion-wait behavior; the guard is released via the async hand-off, not dispatchOnly")
+	require.Equal(t, "parent steer", secondPrompt.Prompt)
+	require.False(t, secondPrompt.DispatchOnly, "normal queued dispatch keeps its existing completion-wait behavior")
+
+	agentMgr.mu.Lock()
+	promptCalls := append([]promptCall(nil), agentMgr.capturedPromptCalls...)
+	agentMgr.mu.Unlock()
+	require.Len(t, promptCalls, 2, "clarification retry and parent message must each dispatch exactly once")
+
+	active, err := svc.turnService.GetActiveTurn(ctx, "session1")
+	require.NoError(t, err)
+	require.NotNil(t, active, "parent interrupt replacement turn must remain active")
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	require.Equal(t, 0, status.Count, "accepted parent message must be removed from the queue exactly once")
+}
+
+// TestCancelAgent_RacesHandleAgentReady_QueuedMessageStillDelivered covers a
+// real cross-goroutine race at the orchestrator level: a user's Cancel-button
+// click (Service.CancelAgent) racing the same agent's own asynchronous
+// ready/complete event (handleAgentReady) for the same session, with a
+// message already queued while the turn was running. CancelAgent's own doc
+// comment claims its synchronous drainQueuedMessageForPromptableSessionLocked
+// call — made while still holding the per-session cancelInFlight guard —
+// delivers the queued message even when no agent.ready fires; this pins that
+// the queued message is *actually* delivered exactly once even when a real
+// handleAgentReady call for this exact cancellation *does* arrive
+// concurrently, mid-cancel, rather than being stranded because neither side
+// ends up taking it.
+//
+// This does NOT reproduce the #1653 E2E CI regression (a same-goroutine
+// reentrant deadlock inside the real agent lifecycle manager's escalation
+// path — see lifecycle.TestManager_CancelAgent_EscalationDoesNotDeadlockOnReentrantReadySubscriber
+// for that). mockAgentManager's CancelAgent is a simple synchronous mock
+// that never triggers a reentrant handleAgentReady call on this same
+// goroutine the way the real lifecycle.Manager's escalateStuckCancel does;
+// handleAgentReady here always runs on its own, genuinely separate goroutine.
+func TestCancelAgent_RacesHandleAgentReady_QueuedMessageStillDelivered(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	agentMgr := &mockAgentManager{
+		isAgentRunning:         true,
+		repoForExecutionLookup: repo,
+		promptDone:             make(chan struct{}, 4),
+		cancelAgentBlock:       make(chan struct{}),
+		cancelAgentEntered:     make(chan struct{}, 1),
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	seedTaskAndSession(t, repo, "task1", "session1", models.TaskSessionStateRunning)
+	seedExecutorRunning(t, repo, "session1", "task1", "exec-1")
+
+	turnSync := &turnSnapshotSyncTurnService{
+		repoTurnService: &repoTurnService{repo: repo},
+		sessionID:       "session1",
+		snapshotTaken:   make(chan struct{}),
+	}
+	svc.turnService = turnSync
+	_, err := turnSync.StartTurn(ctx, "session1")
+	require.NoError(t, err)
+
+	_, err = svc.messageQueue.QueueMessage(ctx, "session1", "task1", "queued while busy", "", messagequeue.QueuedByAgent, false, nil)
+	require.NoError(t, err)
+
+	// The Cancel button click claims the guard first and blocks mid-cancel
+	// inside the agent manager's own CancelAgent call.
+	cancelDone := make(chan struct{})
+	var cancelErr error
+	go func() {
+		cancelErr = svc.CancelAgent(ctx, "session1")
+		close(cancelDone)
+	}()
+	select {
+	case <-agentMgr.cancelAgentEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for CancelAgent to enter cancel")
+	}
+
+	// The same agent's own asynchronous ready event for this exact turn
+	// races in concurrently, snapshotting the still-original active turn
+	// before blocking on the same guard.
+	readyDone := make(chan struct{})
+	go func() {
+		svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "task1", SessionID: "session1"})
+		close(readyDone)
+	}()
+	select {
+	case <-turnSync.snapshotTaken:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to snapshot the active turn")
+	}
+	select {
+	case <-readyDone:
+		t.Fatal("handleAgentReady returned before CancelAgent released the guard — it must block, not work around it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(agentMgr.cancelAgentBlock)
+
+	select {
+	case <-cancelDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for CancelAgent to finish")
+	}
+	require.NoError(t, cancelErr)
+
+	select {
+	case <-readyDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handleAgentReady to finish once the guard was released")
+	}
+
+	require.Eventually(t, func() bool {
+		agentMgr.mu.Lock()
+		defer agentMgr.mu.Unlock()
+		return len(agentMgr.capturedPrompts) == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected the queued message to be dispatched exactly once")
+
+	status := svc.messageQueue.GetStatus(ctx, "session1")
+	require.Equal(t, 0, status.Count, "the queued message must not be stranded when a concurrent agent.ready races the cancel button's own drain")
+}
+
+// TestAcquireCancelInFlightGuard_PrunesEntryWhenNoLongerReferenced pins the
+// cubic-dev-ai / coderabbitai leak report: getCancelInFlightLock's original
+// LoadOrStore left one permanent *sync.Mutex behind per session ever
+// probed — including read-only isCancelInFlight peeks and every busy-skip
+// in handleAgentReady/handleAgentBootReady — with no path to remove it.
+// acquireCancelInFlightGuard/releaseCancelInFlightGuard must keep the
+// registry bounded by concurrently-active sessions instead: every acquire
+// (successful lock, failed TryLock, or a passive isCancelInFlight peek)
+// must be paired with a release that prunes the entry once nobody
+// references it anymore.
+func TestAcquireCancelInFlightGuard_PrunesEntryWhenNoLongerReferenced(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), newMockTaskRepo(), &mockAgentManager{})
+
+	// A round trip through acquire and release — without needing to
+	// contend the mutex itself, which is exercised separately below —
+	// leaves nothing behind.
+	_, release := svc.acquireCancelInFlightGuard("s1")
+	release()
+	if got := len(svc.cancelInFlight); got != 0 {
+		t.Fatalf("expected the registry to be pruned after a used-and-released claim, got %d entries", got)
+	}
+
+	// A losing TryLock — the busy-skip path every guard claim site takes —
+	// must still release its reference without ever calling Unlock.
+	holderLock, holderRelease := svc.acquireCancelInFlightGuard("s2")
+	holderLock.Lock()
+	waiterLock, waiterRelease := svc.acquireCancelInFlightGuard("s2")
+	if waiterLock.TryLock() {
+		t.Fatal("expected TryLock to fail while the holder still owns the guard")
+	}
+	waiterRelease()
+	if got := len(svc.cancelInFlight); got != 1 {
+		t.Fatalf("expected the still-held session's entry to remain while its holder is active, got %d entries", got)
+	}
+	holderLock.Unlock()
+	holderRelease()
+	if got := len(svc.cancelInFlight); got != 0 {
+		t.Fatalf("expected the registry to be pruned once the holder also releases, got %d entries", got)
+	}
+
+	// isCancelInFlight's own passive peek must not leave an entry behind.
+	if svc.isCancelInFlight("s3") {
+		t.Fatal("expected isCancelInFlight to report false for a session nobody has claimed")
+	}
+	if got := len(svc.cancelInFlight); got != 0 {
+		t.Fatalf("expected isCancelInFlight's probe to leave no entry behind, got %d entries", got)
 	}
 }
 

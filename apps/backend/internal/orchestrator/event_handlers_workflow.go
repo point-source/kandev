@@ -224,16 +224,6 @@ func (s *Service) ProcessOnTurnStart(ctx context.Context, taskID, sessionID stri
 // If triggerOnEnter is true, on_enter actions (like auto_start_agent) are processed.
 // If false, only the step change is applied (used for on_turn_start where the user is about to send a message).
 func (s *Service) executeStepTransition(ctx context.Context, taskID, sessionID string, fromStep *wfmodels.WorkflowStep, toStepID string, triggerOnEnter bool) {
-	// Process on_exit actions for the step we're leaving (before the step change).
-	// Freshly load the session since the caller may not have it (legacy path).
-	exitSession, exitErr := s.repo.GetTaskSession(ctx, sessionID)
-	if exitErr != nil {
-		s.logger.Warn("failed to load session for on_exit",
-			zap.String("session_id", sessionID), zap.Error(exitErr))
-	} else {
-		s.processOnExit(ctx, taskID, exitSession, fromStep)
-	}
-
 	// Get the target step
 	targetStep, err := s.workflowStepGetter.GetStep(ctx, toStepID)
 	if err != nil {
@@ -253,6 +243,24 @@ func (s *Service) executeStepTransition(ctx context.Context, taskID, sessionID s
 		s.setSessionWaitingForInput(ctx, taskID, sessionID)
 		return
 	}
+	if err := s.validateTransitionWIPLimit(ctx, task, targetStep); err != nil {
+		s.logger.Warn("workflow transition rejected by WIP limit",
+			zap.String("task_id", taskID),
+			zap.String("to_step_id", toStepID),
+			zap.Error(err))
+		s.setSessionWaitingForInput(ctx, taskID, sessionID)
+		return
+	}
+
+	// Process on_exit actions for the step we're leaving (before the step change).
+	// Freshly load the session since the caller may not have it (legacy path).
+	exitSession, exitErr := s.repo.GetTaskSession(ctx, sessionID)
+	if exitErr != nil {
+		s.logger.Warn("failed to load session for on_exit",
+			zap.String("session_id", sessionID), zap.Error(exitErr))
+	} else {
+		s.processOnExit(ctx, taskID, exitSession, fromStep)
+	}
 
 	// Update the task's workflow step
 	task.WorkflowStepID = toStepID
@@ -270,6 +278,7 @@ func (s *Service) executeStepTransition(ctx context.Context, taskID, sessionID s
 	// Publish task updated event via the task service so the payload carries
 	// the full context (session counts, primary session, repositories).
 	s.publishTaskUpdated(ctx, task)
+	s.processParentChildrenCompletedForTerminalStepMove(ctx, taskID, toStepID)
 
 	s.logger.Info("workflow transition completed",
 		zap.String("task_id", taskID),
@@ -277,6 +286,10 @@ func (s *Service) executeStepTransition(ctx context.Context, taskID, sessionID s
 		zap.String("from_step", fromStep.Name),
 		zap.String("to_step", targetStep.Name),
 		zap.Bool("trigger_on_enter", triggerOnEnter))
+
+	if s.workflowStore != nil {
+		s.workflowStore.pullNextTaskOnVacate(ctx, fromStep.ID, taskID)
+	}
 
 	if triggerOnEnter {
 		// ADR 0015 — clear any pending completion-signal bag for the
@@ -311,6 +324,24 @@ func (s *Service) executeStepTransition(ctx context.Context, taskID, sessionID s
 	}
 }
 
+func (s *Service) validateTransitionWIPLimit(ctx context.Context, task *models.Task, targetStep *wfmodels.WorkflowStep) error {
+	if targetStep == nil || targetStep.WIPLimit <= 0 || task.WorkflowStepID == targetStep.ID {
+		return nil
+	}
+	limitsRepo, ok := s.repo.(workflowMoveLimitsRepository)
+	if !ok {
+		return fmt.Errorf("WIP limit cannot be checked for workflow step %s", targetStep.ID)
+	}
+	occupants, err := limitsRepo.CountTasksByWorkflowStepExcludingTask(ctx, targetStep.ID, task.ID)
+	if err != nil {
+		return fmt.Errorf("count target workflow step tasks: %w", err)
+	}
+	if occupants >= targetStep.WIPLimit {
+		return fmt.Errorf("WIP limit exceeded for workflow step %s: limit %d already occupied", targetStep.ID, targetStep.WIPLimit)
+	}
+	return nil
+}
+
 // handleTaskMoved handles manual task step changes (drag-and-drop, stepper "Move here").
 // It processes on_exit for the source step and on_enter for the target step,
 // including auto_start_agent, enable_plan_mode, and reset_agent_context.
@@ -326,6 +357,8 @@ func (s *Service) handleTaskMoved(ctx context.Context, data watcher.TaskMovedEve
 	if s.workflowStepGetter == nil {
 		return
 	}
+
+	s.processParentChildrenCompletedForTerminalStepMove(ctx, data.TaskID, data.ToStepID)
 
 	// No session yet — check if we need to create one via auto-start
 	if data.SessionID == "" {
@@ -1010,7 +1043,7 @@ func (s *Service) applyPendingMove(ctx context.Context, taskID, sessionID string
 		s.logger.Info("pending move target equals current step; skipping transition",
 			zap.String("task_id", taskID),
 			zap.String("step_id", fromStepID))
-		s.drainQueuedMessageForPromptableSession(ctx, sessionID)
+		s.drainQueuedMessageForPromptableSessionLocked(ctx, sessionID)
 		return
 	}
 
@@ -1055,6 +1088,8 @@ func (s *Service) applyPendingMove(ctx context.Context, taskID, sessionID string
 		zap.String("from_step_id", fromStepID),
 		zap.String("to_step_id", move.WorkflowStepID))
 
+	s.syncTaskStateForPendingMove(ctx, taskID, fromStepID, move.WorkflowStepID)
+
 	// Run on_exit + on_enter asynchronously. This call originated from
 	// handleAgentReady on the WS event reader goroutine; processStepExitAndEnter
 	// can take many seconds (resume + agentctl bootstrap) and would otherwise
@@ -1066,17 +1101,117 @@ func (s *Service) applyPendingMove(ctx context.Context, taskID, sessionID string
 	go s.processStepExitAndEnter(context.WithoutCancel(ctx), taskID, session, fromStepID, move.WorkflowStepID, taskDescription)
 }
 
-// drainQueuedMessageForPromptableSession takes the next queued message and dispatches
-// it for execution. Callers must ensure the session is ready for input first.
+func (s *Service) syncTaskStateForPendingMove(ctx context.Context, taskID, fromStepID, toStepID string) {
+	if s.workflowStepIsTerminal(ctx, toStepID) {
+		s.markTaskCompletedForTerminalStep(ctx, taskID, toStepID)
+		return
+	}
+	if fromStepID == toStepID || !s.workflowStepIsTerminal(ctx, fromStepID) {
+		return
+	}
+
+	s.taskRuntimeStateMu.Lock()
+	task, err := s.repo.GetTask(ctx, taskID)
+	if err != nil {
+		s.taskRuntimeStateMu.Unlock()
+		s.logger.Warn("pending move state sync: failed to load task",
+			zap.String("task_id", taskID),
+			zap.Error(err))
+		return
+	}
+	if task.WorkflowStepID != toStepID || task.State != v1.TaskStateCompleted {
+		s.taskRuntimeStateMu.Unlock()
+		return
+	}
+
+	oldState := task.State
+	task.State = v1.TaskStateTODO
+	task.UpdatedAt = time.Now().UTC()
+	if err := s.repo.UpdateTask(ctx, task); err != nil {
+		s.taskRuntimeStateMu.Unlock()
+		s.logger.Warn("pending move state sync: failed to reopen completed task",
+			zap.String("task_id", taskID),
+			zap.Error(err))
+		return
+	}
+	s.taskRuntimeStateMu.Unlock()
+	s.publishTaskUpdated(ctx, task)
+	s.publishTaskStateChanged(ctx, task, oldState)
+}
+
+// drainQueuedMessageForPromptableSession acquires sessionID's cancelInFlight
+// guard and takes+dispatches the next queued message, blocking until any
+// concurrent cancel/interrupt/drain for the same session finishes first —
+// see the Service.cancelInFlight field doc comment for why every
+// take-and-dispatch decision must serialize through this one guard rather
+// than risk two callers racing to steal the same entry. Blocking (not
+// skipping on contention) matters here because, unlike
+// handleAgentReady/handleAgentBootReady's own take-decision (where a losing
+// side can rely on the winning side's take-and-dispatch, or a future turn's
+// own agent.ready, to eventually retry), callers of this function —
+// workflow on_enter branches, manual drain requests, CI automation — have
+// no other future trigger that would retry a skipped drain; skipping on
+// contention here could strand an already-queued message.
 //
-// Used by processOnEnter branches that don't auto-start the agent, manual
-// drain requests, and cancel recovery. Without this, the message is orphaned
-// because handleAgentReady only drains from a normal turn-end event.
+// Callers must ensure the session is ready for input *before* calling this
+// — exactly as before this was guarded — but must not have already claimed
+// the guard themselves; use drainQueuedMessageForPromptableSessionLocked
+// instead when the guard is already held (e.g. inside CancelAgent,
+// cancelAndTakeForPeerMessage, handleAgentBootReady, handleAgentReady,
+// applyPendingMove).
+//
+// Reloads the session and re-confirms promptability *after* acquiring the
+// guard rather than trusting the caller's own earlier check: callers like
+// processOnEnter typically call setSessionWaitingForInput and then this
+// function without holding the guard across both, so a concurrent
+// cancel/interrupt for the same session could land in between and this
+// call would otherwise blindly take a message for a session that turned
+// out to no longer be idle.
 func (s *Service) drainQueuedMessageForPromptableSession(ctx context.Context, sessionID string) bool {
-	if s.messageQueue == nil {
+	lock, release := s.acquireCancelInFlightGuard(sessionID)
+	defer release()
+	lock.Lock()
+	defer lock.Unlock()
+
+	session, err := s.repo.GetTaskSession(ctx, sessionID)
+	if err != nil {
+		s.logger.Warn("failed to reload session before drain",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return false
+	}
+	if err := s.checkSessionPromptable(session.TaskID, sessionID, session.State); err != nil {
+		s.logger.Debug("skipping drain: session is not promptable once the guard is held",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return false
+	}
+	return s.drainQueuedMessageForPromptableSessionLocked(ctx, sessionID)
+}
+
+// drainQueuedMessageForPromptableSessionLocked takes the next queued
+// message and dispatches it for execution. Callers must ensure the session
+// is ready for input first, AND must already hold sessionID's
+// cancelInFlight lock — this neither acquires nor releases it. Use the
+// public drainQueuedMessageForPromptableSession instead when the guard is
+// not already held.
+//
+// Backs off without taking anything when isQueuedDispatchInFlight reports
+// a different dispatch already handed off for this session — see the
+// Service.dispatchingQueued field doc comment for the double-dispatch
+// window this closes.
+func (s *Service) drainQueuedMessageForPromptableSessionLocked(ctx context.Context, sessionID string) bool {
+	if s.messageQueue == nil || s.isQueuedDispatchInFlight(sessionID) {
 		return false
 	}
 	queuedMsg, ok := s.messageQueue.TakeQueued(ctx, sessionID)
+	return s.dispatchTakenQueuedMessage(ctx, sessionID, queuedMsg, ok)
+}
+
+// dispatchTakenQueuedMessage publishes the queue-status update and dispatches
+// queuedMsg for execution, given the (message, ok) pair returned by a Take*
+// call on the message queue (TakeQueued or TakeQueuedEntry). Shared so
+// InterruptForPeerMessage's targeted-entry take gets the same empty-message
+// guard and dispatch behavior as the FIFO-head drain.
+func (s *Service) dispatchTakenQueuedMessage(ctx context.Context, sessionID string, queuedMsg *messagequeue.QueuedMessage, ok bool) bool {
 	if !ok || queuedMsg == nil {
 		return false
 	}
@@ -1087,6 +1222,12 @@ func (s *Service) drainQueuedMessageForPromptableSession(ctx context.Context, se
 			zap.String("queue_id", queuedMsg.ID))
 		return false
 	}
+	// Reserve entryID as sessionID's "dispatch in flight" token *before*
+	// handing off to the async goroutine — see the Service.dispatchingQueued
+	// field doc comment for why session.State alone isn't a reliable busy
+	// signal until executeQueuedMessage's own promptTask call reaches its
+	// guarded claim step, several DB round-trips later.
+	s.markQueuedDispatchInFlight(sessionID, queuedMsg.ID)
 	go s.executeQueuedMessage(sessionID, queuedMsg)
 	return true
 }
@@ -2107,6 +2248,8 @@ func (s *Service) applyEngineTransition(
 		}
 	}
 
+	terminalTarget := s.workflowStepIsTerminal(ctx, targetStep.ID)
+
 	fromStep, err := s.workflowStepGetter.GetStep(ctx, result.FromStepID)
 	if err != nil {
 		s.logger.Warn("failed to load from-step for on_exit",
@@ -2138,6 +2281,10 @@ func (s *Service) applyEngineTransition(
 				zap.String("session_id", session.ID),
 				zap.Error(err))
 		}
+	}
+
+	if terminalTarget {
+		s.markTaskCompletedForTerminalStep(ctx, taskID, targetStep.ID)
 	}
 
 	if !triggerOnEnter {
@@ -2172,7 +2319,9 @@ func (s *Service) applyEngineTransition(
 	if session.State == models.TaskSessionStateRunning || session.State == models.TaskSessionStateStarting {
 		s.updateTaskSessionState(ctx, taskID, session.ID, models.TaskSessionStateWaitingForInput, "", false, session)
 		session.State = models.TaskSessionStateWaitingForInput
-		s.writeTaskReviewState(ctx, taskID, session.ID)
+		if !terminalTarget {
+			s.writeTaskReviewState(ctx, taskID, session.ID)
+		}
 	}
 
 	// Launch processOnEnter asynchronously to avoid blocking the stream reader goroutine.

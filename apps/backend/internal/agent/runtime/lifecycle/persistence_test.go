@@ -123,7 +123,7 @@ func TestMarkReadyPersistsReadyExecutorRunningStatus(t *testing.T) {
 }
 
 // TestLocalStandaloneRowCarriesLocalPID is the characterization test for the
-// §1597 symptom "every local row reports pid=0 with no local liveness handle".
+// #1597 symptom "every local row reports pid=0 with no local liveness handle".
 // A standalone execution persisted through the manager must carry the host-local
 // agentctl PID in executors_running.local_pid, an observed last_seen_at, and a
 // live endpoint — so a dead row is distinguishable from a live one.

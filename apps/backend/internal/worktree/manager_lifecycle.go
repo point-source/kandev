@@ -637,16 +637,30 @@ func parseCheckedOutPath(gitOutput string) string {
 func (m *Manager) buildWorktreeNames(req CreateRequest) (dirName, branchName string) {
 	dirSuffix := uuid.New().String()[:8] // Use first 8 chars of UUID for worktree dir uniqueness
 	branchSuffix := SmallSuffix(3)
-	prefix := NormalizeBranchPrefix(req.WorktreeBranchPrefix)
 
 	if req.TaskTitle != "" {
 		// Use semantic naming: {sanitized-title}_{suffix}
 		dirName = SemanticWorktreeName(req.TaskTitle, dirSuffix)
-		branchName = TaskBranchNameWithSuffix(req.TaskTitle, req.TaskID, prefix, branchSuffix)
 	} else {
 		// Fallback to task ID based naming
 		dirName = req.TaskID + "_" + dirSuffix
-		branchName = TaskBranchNameWithSuffix("", req.TaskID, prefix, branchSuffix)
+	}
+	branchName = TaskBranchNameWithSuffix(req.TaskTitle, req.TaskID, req.WorktreeBranchPrefix, branchSuffix)
+	if req.WorktreeBranchTemplate != "" {
+		if rendered, err := RenderTaskBranchName(BranchNameTemplateInput{
+			Template: req.WorktreeBranchTemplate,
+			TaskID:   req.TaskID,
+			Title:    req.TaskTitle,
+			Ticket:   req.WorktreeBranchTicket,
+			Suffix:   branchSuffix,
+		}); err == nil {
+			branchName = rendered
+		} else {
+			m.logger.Warn("worktree branch template render failed; using fallback branch name",
+				zap.String("task_id", req.TaskID),
+				zap.String("template", req.WorktreeBranchTemplate),
+				zap.Error(err))
+		}
 	}
 	return dirName, branchName
 }
@@ -791,11 +805,11 @@ func (m *Manager) copyConfiguredFiles(ctx context.Context, req CreateRequest, wt
 	if repo == nil || repo.CopyFiles == "" {
 		return
 	}
-	patterns := copyfiles.Parse(repo.CopyFiles)
-	if len(patterns) == 0 {
+	specs := copyfiles.ParseSpecs(repo.CopyFiles)
+	if len(specs) == 0 {
 		return
 	}
-	copied, warnings, err := copyfiles.Copy(ctx, req.RepositoryPath, wt.Path, patterns, m.logger.Zap())
+	copied, warnings, err := copyfiles.Copy(ctx, req.RepositoryPath, wt.Path, specs, m.logger.Zap())
 	if err != nil {
 		m.logger.Warn("worktree copy-files failed",
 			zap.String("session_id", req.SessionID),
@@ -841,6 +855,34 @@ func (m *Manager) recreate(ctx context.Context, existing *Worktree, req CreateRe
 	worktreePath := existing.Path
 	if worktreePath == "" {
 		return nil, fmt.Errorf("cannot recreate worktree: existing record has no path")
+	}
+
+	// Archive deletes the local branch (removeWorktree runs `git branch -D`),
+	// so a recreate after unarchive must restore it first. fetchBranchToLocal
+	// fetches origin <branch>:<branch> — or pull/<N>/head for fork PRs, whose
+	// head branch never exists on origin by name — and only errors when the
+	// branch exists neither locally nor on the remote.
+	exists, probeErr := m.branchExists(ctx, req.RepositoryPath, existing.Branch)
+	if probeErr != nil {
+		// "Could not tell" (timeout / fs stall) is not "missing" — reporting
+		// ErrBranchUnrecoverable here would misclassify recoverable work as
+		// gone. Propagate so the caller can retry the recreate.
+		return nil, fmt.Errorf("cannot verify worktree branch %q: %w", existing.Branch, probeErr)
+	}
+	if !exists {
+		if _, fetchErr := m.fetchBranchToLocal(ctx, req.RepositoryPath, existing.Branch, req.PRNumber); fetchErr != nil {
+			m.logger.Warn("failed to restore worktree branch during recreate",
+				zap.String("worktree_id", existing.ID),
+				zap.String("branch", existing.Branch),
+				zap.Error(fetchErr))
+			// Only a confirmed-missing remote ref means the work is gone;
+			// transient fetch failures (network, auth) keep their own error
+			// so callers don't treat a reachable branch as unrecoverable.
+			if isRemoteRefMissingError(fetchErr) {
+				return nil, fmt.Errorf("%w: %q", ErrBranchUnrecoverable, existing.Branch)
+			}
+			return nil, fetchErr
+		}
 	}
 
 	// Try to add worktree using existing branch

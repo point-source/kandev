@@ -32,6 +32,8 @@ export function registerKanbanHandlers(store: StoreApi<AppState>): WsHandlers {
         events: step.events,
         show_in_command_panel: step.show_in_command_panel,
         agent_profile_id: step.agent_profile_id,
+        wip_limit: step.wip_limit,
+        pull_from_step_id: step.pull_from_step_id ?? null,
       }));
 
       store.setState((state) => {
@@ -58,6 +60,7 @@ export function registerKanbanHandlers(store: StoreApi<AppState>): WsHandlers {
               ...repoFields,
               primarySessionId: existing?.primarySessionId,
               primarySessionState: existing?.primarySessionState,
+              primarySessionPendingAction: existing?.primarySessionPendingAction,
             };
           });
 
@@ -86,6 +89,10 @@ export function registerKanbanHandlers(store: StoreApi<AppState>): WsHandlers {
                 t.primarySessionState === undefined
                   ? fallback?.primarySessionState
                   : t.primarySessionState,
+              primarySessionPendingAction:
+                t.primarySessionPendingAction === undefined
+                  ? fallback?.primarySessionPendingAction
+                  : t.primarySessionPendingAction,
             };
           });
           return {

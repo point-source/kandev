@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
 	"github.com/kandev/kandev/internal/github"
 	"github.com/kandev/kandev/internal/orchestrator/executor"
 	"github.com/kandev/kandev/internal/orchestrator/messagequeue"
@@ -53,6 +55,50 @@ func TestExecuteQueuedMessage_RequeuesWhenResetInProgress(t *testing.T) {
 	}
 }
 
+func TestExecuteQueuedMessage_RequeuesCancelReleaseFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	seedSession(t, repo, "t1", "s1", "step1")
+
+	session, err := repo.GetTaskSession(ctx, "s1")
+	if err != nil {
+		t.Fatalf("failed to get session: %v", err)
+	}
+	session.State = models.TaskSessionStateWaitingForInput
+	session.AgentExecutionID = "exec-1"
+	seedExecutorRunning(t, repo, session.ID, session.TaskID, "exec-1")
+	if err := repo.UpdateTaskSession(ctx, session); err != nil {
+		t.Fatalf("failed to update session: %v", err)
+	}
+
+	taskRepo := newMockTaskRepo()
+	agentMgr := &mockAgentManager{
+		isAgentRunning: true,
+		promptErr:      fmt.Errorf("failed to trigger prompt: prompt abandoned after cancel: %w", lifecycle.ErrCancelEscalated),
+	}
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), taskRepo, agentMgr)
+	svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+
+	queuedMsg := &messagequeue.QueuedMessage{
+		ID:        "q-cancel",
+		SessionID: "s1",
+		TaskID:    "t1",
+		Content:   "hello after cancel",
+		QueuedBy:  "test",
+	}
+
+	svc.markQueuedDispatchInFlight("s1", queuedMsg.ID)
+	svc.executeQueuedMessage("s1", queuedMsg)
+
+	status := svc.messageQueue.GetStatus(ctx, "s1")
+	if status.Count != 1 {
+		t.Fatalf("expected queued message to be requeued after cancel-release failure, count=%d", status.Count)
+	}
+	if status.Entries[0].Content != "hello after cancel" {
+		t.Fatalf("expected queued content to be preserved, got %q", status.Entries[0].Content)
+	}
+}
+
 // TestExecuteQueuedMessage_SkipsUserMessageWhenAlreadyRecorded pins the
 // duplicate-prompt fix: when a queued workflow auto-start carries
 // metadata[user_message_recorded]=true (set by autoStartStepPrompt's
@@ -95,6 +141,7 @@ func TestExecuteQueuedMessage_SkipsUserMessageWhenAlreadyRecorded(t *testing.T) 
 		},
 	}
 
+	svc.markQueuedDispatchInFlight("s1", queuedMsg.ID)
 	svc.executeQueuedMessage("s1", queuedMsg)
 
 	if len(mc.userMessages) != 0 {
@@ -147,6 +194,7 @@ func TestExecuteQueuedMessage_RecordsCIAutomationPromptOnDrain(t *testing.T) {
 		},
 	}
 
+	svc.markQueuedDispatchInFlight("s1", queuedMsg.ID)
 	svc.executeQueuedMessage("s1", queuedMsg)
 
 	if len(mc.userMessages) != 1 {

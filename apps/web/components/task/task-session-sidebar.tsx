@@ -29,6 +29,7 @@ import { buildPendingFlags, readPendingFlags } from "./task-session-sidebar-aggr
 import { useGroupedSidebarView } from "./task-session-sidebar-grouped-view";
 import { useSidebarLinkActions } from "./task-session-sidebar-link-actions";
 import { buildArchivedSidebarItem } from "./task-session-sidebar-archived-item";
+import { useSidebarTaskLinking } from "./task-session-sidebar-task-linking";
 import { useShallow } from "zustand/react/shallow";
 import { type AgentErrorOptions, agentErrorMessageForTask } from "@/lib/task-agent-error";
 import {
@@ -97,7 +98,6 @@ function toIssueInfo(
     : undefined;
 }
 
-/** Map a kanban task to a sidebar item with session info and repository metadata. */
 function toSidebarItem(
   task: KanbanState["tasks"][number] & { _workflowId: string },
   ctx: SidebarCtx,
@@ -113,7 +113,10 @@ function toSidebarItem(
   const repoSlug = task.repositoryId ? ctx.repositorySlugById.get(task.repositoryId) : undefined;
   // Sidebar shows just one slot; pick the primary PR (first by created_at).
   const pr = ctx.taskPRsByTaskId[task.id]?.[0];
-  const pending = readPendingFlags(ctx.pendingFlags, task.primarySessionId);
+  const pending = readPendingFlags(ctx.pendingFlags, task.primarySessionId, {
+    primarySessionState: resolvedSessionState,
+    primarySessionPendingAction: task.primarySessionPendingAction,
+  });
 
   const diffStats = resolveDiffStats(
     sessionInfo.diffStats,
@@ -189,9 +192,7 @@ function useSidebarData(workspaceId: string | null) {
     isLoading: isLoadingWorkflow,
   } = useWorkspaceSidebarTasks(workspaceId);
 
-  // Stable list of primary session IDs for the bulk-subscribe effect and the
-  // narrow pending-flag selector below. Derived from kanban tasks (always
-  // available) rather than sessionsByTaskId (loaded on-demand).
+  // Stable primary session IDs from kanban tasks feed subscriptions and pending-flag selectors.
   const primarySessionIds = useStablePrimarySessionIds(allTasks);
   const acknowledgementSessionIds = useMemo(
     () => agentErrorAcknowledgementSessionIds(allTasks, sessionsByTaskId),
@@ -436,7 +437,7 @@ function useDeleteActions(
   };
 }
 
-function useSidebarActions(store: StoreApi) {
+export function useSidebarActions(store: StoreApi) {
   const setActiveTask = useAppStore((state) => state.setActiveTask);
   const setActiveSession = useAppStore((state) => state.setActiveSession);
   const [preparingTaskId, setPreparingTaskId] = useState<string | null>(null);
@@ -528,7 +529,6 @@ function useBulkGitStatusSubscription(primarySessionIds: string[]) {
     if (connectionStatus !== "connected" || primarySessionIds.length === 0) return;
     const client = getWebSocketClient();
     if (!client) return;
-    // Skip active session — it's already subscribed + focused by the task page hooks
     const backgroundIds = activeSessionId
       ? primarySessionIds.filter((id) => id !== activeSessionId)
       : primarySessionIds;
@@ -556,9 +556,7 @@ export const TaskSessionSidebar = memo(function TaskSessionSidebar({
     primarySessionIds,
   } = useSidebarData(workspaceId);
 
-  // The sidebar is global, so `activeTaskId` lingers after navigating Home.
-  // Only highlight a task while actually viewing a task route — otherwise the
-  // last-opened task stays visually "selected" on Home and elsewhere.
+  // Only highlight while viewing a task route; AppSidebar is global and activeTaskId lingers.
   const onTaskRoute =
     !!pathname && (pathname.startsWith("/t/") || pathname.startsWith("/office/tasks/"));
   const highlightedTaskId = onTaskRoute ? activeTaskId : null;
@@ -575,9 +573,8 @@ export const TaskSessionSidebar = memo(function TaskSessionSidebar({
     handleDeleteTask,
     handleMoveToStep,
     handleRenameTask,
-    handleLinkPullRequestTask,
-    handleLinkIssueTask,
   } = sidebarActions;
+  const taskLinkHandlers = useSidebarTaskLinking(workspaceId, sidebarActions);
   const repositories =
     useAppStore((state) =>
       workspaceId ? state.repositories.itemsByWorkspaceId[workspaceId] : undefined,
@@ -626,8 +623,7 @@ export const TaskSessionSidebar = memo(function TaskSessionSidebar({
           onRenameTask={handleRenameTask}
           onArchiveTask={handleArchiveTask}
           onDeleteTask={handleDeleteTask}
-          onLinkPullRequest={handleLinkPullRequestTask}
-          onLinkIssue={handleLinkIssueTask}
+          {...taskLinkHandlers}
           onMoveToStep={handleMoveToStep}
           onTogglePin={togglePinnedTask}
           onReorderGroup={handleReorderGroup}
@@ -639,7 +635,11 @@ export const TaskSessionSidebar = memo(function TaskSessionSidebar({
           {...selection.switcherProps}
         />
       </PanelBody>
-      <SidebarDialogs actions={sidebarActions} repositories={repositories} />
+      <SidebarDialogs
+        actions={sidebarActions}
+        repositories={repositories}
+        workspaceId={workspaceId}
+      />
       <SidebarBulkDialogs selection={selection} />
     </PanelRoot>
   );

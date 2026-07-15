@@ -81,6 +81,42 @@ func TestPendingMove_ReviewToInProgress_OneTransitionOnly(t *testing.T) {
 	sc.assertOneTransitionToInProgress(t, *stepHistory)
 }
 
+func TestPendingMove_OutOfTerminalStepReopensCompletedTask(t *testing.T) {
+	sc := buildPendingMoveScenario(t)
+	sc.stepGetter.steps[stepReviewedID].Name = "Done"
+
+	task, err := sc.repo.GetTask(sc.ctx, "task-1")
+	if err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	task.WorkflowStepID = stepReviewedID
+	task.State = v1.TaskStateCompleted
+	if err := sc.repo.UpdateTask(sc.ctx, task); err != nil {
+		t.Fatalf("seed terminal task state: %v", err)
+	}
+
+	session, err := sc.repo.GetTaskSession(sc.ctx, sc.reviewSessionID)
+	if err != nil {
+		t.Fatalf("load review session: %v", err)
+	}
+	sc.svc.applyPendingMove(sc.ctx, "task-1", sc.reviewSessionID, session, &messagequeue.PendingMove{
+		TaskID:         "task-1",
+		WorkflowID:     "wf1",
+		WorkflowStepID: stepInProgressID,
+	})
+
+	task, err = sc.repo.GetTask(sc.ctx, "task-1")
+	if err != nil {
+		t.Fatalf("load moved task: %v", err)
+	}
+	if task.WorkflowStepID != stepInProgressID {
+		t.Fatalf("workflow_step_id = %q, want %q", task.WorkflowStepID, stepInProgressID)
+	}
+	if task.State != v1.TaskStateTODO {
+		t.Fatalf("state = %q, want TODO after pending move out of terminal step", task.State)
+	}
+}
+
 // --- Pending-move scenario builder & assertions ---
 
 const (
@@ -818,8 +854,10 @@ func TestHandleAgentBootReady_DoesNotDrainWhileCancelInFlight(t *testing.T) {
 	); err != nil {
 		t.Fatalf("queue prompt: %v", err)
 	}
-	svc.cancelInFlight.Store("s1", struct{}{})
-	defer svc.cancelInFlight.Delete("s1")
+	lock, release := svc.acquireCancelInFlightGuard("s1")
+	defer release()
+	lock.Lock()
+	defer lock.Unlock()
 
 	svc.handleAgentBootReady(ctx, watcher.AgentEventData{TaskID: "t1", SessionID: "s1"})
 

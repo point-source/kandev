@@ -1,4 +1,4 @@
-import { fetchJson, ApiError, type ApiRequestOptions } from "../client";
+import { fetchJson, fetchJsonWithRetry, ApiError, type ApiRequestOptions } from "../client";
 import type {
   GitHubStatusResponse,
   GitHubOrg,
@@ -21,6 +21,7 @@ import type {
   TriggerIssueResponse,
   GitHubIssue,
   TaskIssueLink,
+  TaskIssueLinksResponse,
   SearchPRsResponse,
   SearchIssuesResponse,
   GitHubPRStatus,
@@ -101,6 +102,13 @@ export async function linkTaskIssue(
       body: JSON.stringify(data),
     },
   });
+}
+
+export async function listWorkspaceTaskIssues(workspaceId: string, options?: ApiRequestOptions) {
+  return fetchJson<TaskIssueLinksResponse>(
+    `/api/v1/github/task-issues?workspace_id=${encodeURIComponent(workspaceId)}`,
+    options,
+  );
 }
 
 export async function unlinkTaskIssue(taskId: string, options?: ApiRequestOptions) {
@@ -435,7 +443,7 @@ export async function fetchPRInfo(
   number: number,
   options?: ApiRequestOptions,
 ) {
-  return fetchJson<GitHubPR>(
+  return fetchJsonWithRetry<GitHubPR>(
     `/api/v1/github/prs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/info`,
     options,
   );
@@ -448,7 +456,7 @@ export async function fetchIssueInfo(
   number: number,
   options?: ApiRequestOptions,
 ) {
-  return fetchJson<GitHubIssue>(
+  return fetchJsonWithRetry<GitHubIssue>(
     `/api/v1/github/issues/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/info`,
     options,
   );
@@ -456,7 +464,7 @@ export async function fetchIssueInfo(
 
 // Remote repo branches
 export async function fetchRepoBranches(owner: string, repo: string, options?: ApiRequestOptions) {
-  return fetchJson<{ branches: { name: string }[] }>(
+  return fetchJsonWithRetry<{ branches: { name: string }[] }>(
     `/api/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
     options,
   );
@@ -652,6 +660,30 @@ export async function updateGitHubWorkspaceSettings(
     ...options,
     init: { ...(options?.init ?? {}), method: "PUT", body: JSON.stringify(payload) },
   });
+}
+
+// copyGitHubWorkspaceSettings copies the per-workspace GitHub settings (repo
+// scope + presets) from the source workspace (options.workspaceId) to
+// targetWorkspaceId. GitHub auth is install-wide, so there are no credentials to
+// copy. The signature mirrors the other integrations' copy helpers
+// (targetWorkspaceId first, source via options) for consistency.
+export async function copyGitHubWorkspaceSettings(
+  targetWorkspaceId: string,
+  options: { workspaceId: string } & ApiRequestOptions,
+) {
+  const { workspaceId: sourceWorkspaceId, ...requestOptions } = options;
+  const query = new URLSearchParams({ workspace_id: sourceWorkspaceId });
+  return fetchJson<GitHubWorkspaceSettings>(
+    `/api/v1/github/workspace-settings/copy?${query.toString()}`,
+    {
+      ...requestOptions,
+      init: {
+        ...(requestOptions.init ?? {}),
+        method: "POST",
+        body: JSON.stringify({ targetWorkspaceId }),
+      },
+    },
+  );
 }
 
 // Action presets (quick-launch prompts on the /github page).

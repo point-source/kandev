@@ -1,18 +1,18 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/components/state-provider";
 import { useToast } from "@/components/toast-provider";
-import { startQuickChat } from "@/lib/api/domains/workspace-api";
+import { startQuickChat, type QuickChatRepositoryInput } from "@/lib/api/domains/workspace-api";
 
 async function deleteQuickChatTask(taskId: string) {
   const { deleteTask } = await import("@/lib/api/domains/kanban-api");
   await deleteTask(taskId);
 }
 
-function useQuickChatStore() {
-  return useAppStore(
+function useQuickChatStore(workspaceId: string) {
+  const store = useAppStore(
     useShallow((s) => ({
       isOpen: s.quickChat.isOpen,
       sessions: s.quickChat.sessions,
@@ -26,18 +26,31 @@ function useQuickChatStore() {
       taskSessions: s.taskSessions.items || {},
     })),
   );
+  return useMemo(
+    () => ({
+      ...store,
+      sessions: store.sessions.filter((session) => session.workspaceId === workspaceId),
+    }),
+    [store, workspaceId],
+  );
 }
 
 type QuickChatStore = ReturnType<typeof useQuickChatStore>;
 
 /** POSTs to start a quick-chat session and returns the response. */
-async function startQuickChatForAgent(workspaceId: string, agentId: string, store: QuickChatStore) {
+async function startQuickChatForAgent(
+  workspaceId: string,
+  agentId: string,
+  store: QuickChatStore,
+  repositories: QuickChatRepositoryInput[],
+) {
   const agent = store.agentProfiles.find((p) => p.id === agentId);
   const sessionCount = store.sessions.filter((s) => s.sessionId !== "").length + 1;
   const initialName = `${agent?.label || "Agent"} - Chat ${sessionCount}`;
   const response = await startQuickChat(workspaceId, {
     agent_profile_id: agentId,
     title: initialName,
+    repositories: repositories.length > 0 ? repositories : undefined,
   });
   return { sessionId: response.session_id, name: initialName, taskId: response.task_id };
 }
@@ -65,11 +78,11 @@ export function useAgentSelection(workspaceId: string, store: QuickChatStore) {
   }, []);
 
   const handleSelectAgent = useCallback(
-    async (agentId: string, onSuccess: () => void) => {
+    async (agentId: string, repositories: QuickChatRepositoryInput[] = []) => {
       const requestId = ++latestRequestId.current;
       setPendingAgentId(agentId);
       try {
-        const result = await startQuickChatForAgent(workspaceId, agentId, store);
+        const result = await startQuickChatForAgent(workspaceId, agentId, store, repositories);
         if (latestRequestId.current !== requestId) {
           // A newer pick superseded us — the backend already booted this
           // agent, so delete the orphan task. Best-effort: ignore failures.
@@ -81,7 +94,6 @@ export function useAgentSelection(workspaceId: string, store: QuickChatStore) {
         if (store.activeSessionId === "") store.closeQuickChatSession("");
         store.openQuickChat(result.sessionId, workspaceId, agentId);
         store.renameQuickChatSession(result.sessionId, result.name);
-        onSuccess();
       } catch (error) {
         if (latestRequestId.current !== requestId) return;
         toast({
@@ -103,8 +115,8 @@ export function useAgentSelection(workspaceId: string, store: QuickChatStore) {
 
 export function useQuickChatModal(workspaceId: string) {
   const { toast } = useToast();
-  const store = useQuickChatStore();
-  const [showAgentPicker, setShowAgentPicker] = useState(false);
+  const store = useQuickChatStore(workspaceId);
+  const [setupKey, setSetupKey] = useState(0);
   const [sessionToClose, setSessionToClose] = useState<string | null>(null);
   const {
     pendingAgentId,
@@ -116,8 +128,10 @@ export function useQuickChatModal(workspaceId: string) {
     (open: boolean) => {
       if (open) return;
       reset();
+      if (store.sessions.some((session) => session.sessionId === "")) {
+        store.closeQuickChatSession("");
+      }
       store.closeQuickChat();
-      setShowAgentPicker(false);
     },
     [store, reset],
   );
@@ -127,11 +141,13 @@ export function useQuickChatModal(workspaceId: string) {
   // instead of yanking the user back to that session.
   const handleNewChat = useCallback(() => {
     reset();
+    setSetupKey((key) => key + 1);
     store.openQuickChat("", workspaceId);
   }, [reset, store, workspaceId]);
 
   const handleSelectAgent = useCallback(
-    (agentId: string) => doSelectAgent(agentId, () => setShowAgentPicker(false)),
+    (agentId: string, repositories: QuickChatRepositoryInput[] = []) =>
+      doSelectAgent(agentId, repositories),
     [doSelectAgent],
   );
 
@@ -187,7 +203,8 @@ export function useQuickChatModal(workspaceId: string) {
     sessions: store.sessions,
     activeSessionId: store.activeSessionId,
     sessionToClose,
-    activeSessionNeedsAgent: store.activeSessionId === "" || showAgentPicker,
+    setupKey,
+    activeSessionNeedsAgent: store.activeSessionId === "",
     pendingAgentId,
     setActiveQuickChatSession,
     setSessionToClose,

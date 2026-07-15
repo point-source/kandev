@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/pkg/agent"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
 	ws "github.com/kandev/kandev/pkg/websocket"
 )
 
@@ -889,6 +891,52 @@ func TestSendPrompt_DispatchOnlyReturnsWithoutWaiting(t *testing.T) {
 	}
 }
 
+func TestSendPrompt_AdvancesGenerationForEveryDispatch(t *testing.T) {
+	mock := newMockAgentServer(t)
+	t.Cleanup(mock.Close)
+
+	log := newSessionTestLogger()
+	sm := NewSessionManager(log, make(chan struct{}))
+	store := NewExecutionStore()
+	sm.SetDependencies(nil, nil, store, nil)
+
+	client := createTestClient(t, mock.server.URL)
+	t.Cleanup(client.Close)
+
+	ctx := context.Background()
+	if err := client.StreamUpdates(ctx, func(event agentctl.AgentEvent) {}, nil, nil); err != nil {
+		t.Fatalf("failed to connect stream: %v", err)
+	}
+	waitForWSConnected(t, mock)
+
+	execution := &AgentExecution{
+		ID:            "test-exec",
+		TaskID:        "test-task",
+		SessionID:     "test-session",
+		WorkspacePath: "/workspace",
+		Status:        v1.AgentStatusRunning,
+		agentctl:      client,
+		promptDoneCh:  make(chan PromptCompletionSignal, 1),
+	}
+	if err := store.Add(execution); err != nil {
+		t.Fatalf("add execution: %v", err)
+	}
+
+	if _, err := sm.SendPrompt(ctx, execution, "initial", false, nil, true); err != nil {
+		t.Fatalf("dispatch initial prompt: %v", err)
+	}
+	if !store.OwnsPromptGeneration(execution.SessionID, execution.ID, 1) {
+		t.Fatal("initial prompt must own generation 1 even when execution starts running")
+	}
+
+	if _, err := sm.SendPrompt(ctx, execution, "replacement", true, nil, true); err != nil {
+		t.Fatalf("dispatch replacement prompt: %v", err)
+	}
+	if !store.OwnsPromptGeneration(execution.SessionID, execution.ID, 2) {
+		t.Fatal("replacement prompt must advance generation while execution remains running")
+	}
+}
+
 // TestSendPrompt_DrainsStaleSignalFromPriorDispatchOnly verifies that a leftover
 // completion signal from a previous dispatch-only prompt does not cause the next
 // (waiting) SendPrompt to return immediately with a stale result.
@@ -932,6 +980,65 @@ func TestSendPrompt_DrainsStaleSignalFromPriorDispatchOnly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
 		t.Fatalf("expected deadline exceeded error, got: %v", err)
+	}
+}
+
+func TestWaitForPromptDone_TreatsPromptAbandonedAfterCancelAsCancelEscalated(t *testing.T) {
+	log := newSessionTestLogger()
+	sm := NewSessionManager(log, make(chan struct{}))
+	execution := &AgentExecution{
+		ID:           "test-exec",
+		promptDoneCh: make(chan PromptCompletionSignal, 1),
+	}
+	execution.promptDoneCh <- PromptCompletionSignal{
+		IsError: true,
+		Error:   "prompt abandoned after cancel",
+	}
+
+	_, err := sm.waitForPromptDone(context.Background(), execution)
+	if !errors.Is(err, ErrCancelEscalated) {
+		t.Fatalf("expected ErrCancelEscalated, got: %v", err)
+	}
+	if !errors.Is(err, ErrAgentReported) {
+		t.Fatalf("expected ErrAgentReported wrapper, got: %v", err)
+	}
+}
+
+func TestSendPrompt_TriggerTimeCancelReleaseReturnsErrCancelEscalated(t *testing.T) {
+	mock := newMockAgentServer(t)
+	defer mock.Close()
+	mock.handler = func(msg ws.Message) *ws.Message {
+		if msg.Action == "agent.prompt" {
+			resp, _ := ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "prompt abandoned after cancel", nil)
+			return resp
+		}
+		return mock.defaultHandler(msg)
+	}
+
+	log := newSessionTestLogger()
+	sm := NewSessionManager(log, make(chan struct{}))
+
+	client := createTestClient(t, mock.server.URL)
+	defer client.Close()
+
+	ctx := context.Background()
+	if err := client.StreamUpdates(ctx, func(event agentctl.AgentEvent) {}, nil, nil); err != nil {
+		t.Fatalf("failed to connect stream: %v", err)
+	}
+	waitForWSConnected(t, mock)
+
+	execution := &AgentExecution{
+		ID:            "test-exec",
+		TaskID:        "test-task",
+		SessionID:     "test-session",
+		WorkspacePath: "/workspace",
+		agentctl:      client,
+		promptDoneCh:  make(chan PromptCompletionSignal, 1),
+	}
+
+	_, err := sm.SendPrompt(ctx, execution, "hello", false, nil, true)
+	if !errors.Is(err, ErrCancelEscalated) {
+		t.Fatalf("expected ErrCancelEscalated, got: %v", err)
 	}
 }
 

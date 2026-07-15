@@ -5,12 +5,16 @@ vi.mock("@/lib/config", () => ({
 }));
 
 import {
+  copyGitHubWorkspaceSettings,
   createTaskPR,
   fetchAccessibleRepos,
   fetchIssueInfo,
+  fetchPRInfo,
+  fetchRepoBranches,
   getTaskCIAutomationOptions,
   GitHubUnavailableError,
   linkTaskIssue,
+  listWorkspaceTaskIssues,
   unlinkTaskIssue,
   updateTaskCIAutomationOptions,
   type AccessibleRepo,
@@ -19,7 +23,7 @@ import {
 type FetchInput = Parameters<typeof fetch>[0];
 type FetchInit = Parameters<typeof fetch>[1];
 
-const fetchSpy = vi.fn<[FetchInput, FetchInit?], Promise<Response>>();
+const fetchSpy = vi.fn<(...args: [FetchInput, FetchInit?]) => Promise<Response>>();
 
 beforeEach(() => {
   fetchSpy.mockReset();
@@ -43,6 +47,29 @@ function lastCallUrl(): string {
   if (!call) throw new Error("expected fetch to have been called");
   return String(call[0]);
 }
+
+describe("remote repository reads", () => {
+  it("retries a transient network failure when loading branches", async () => {
+    fetchSpy.mockRejectedValueOnce(new TypeError("fetch failed"));
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ branches: [{ name: "main" }] }));
+
+    await expect(fetchRepoBranches("acme", "site")).resolves.toEqual({
+      branches: [{ name: "main" }],
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a transient network failure when loading PR title metadata", async () => {
+    fetchSpy.mockRejectedValueOnce(new TypeError("fetch failed"));
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ number: 42, title: "Recovered" }));
+
+    await expect(fetchPRInfo("acme", "site", 42)).resolves.toMatchObject({
+      number: 42,
+      title: "Recovered",
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("fetchAccessibleRepos — URL & parsing", () => {
   it("builds the correct URL with both q and limit", async () => {
@@ -132,6 +159,18 @@ describe("fetchIssueInfo", () => {
 });
 
 describe("task issue link helpers", () => {
+  it("lists task issue links for a workspace", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ task_issues: {} }));
+
+    await listWorkspaceTaskIssues("workspace/1", { cache: "no-store" });
+
+    const call = fetchSpy.mock.calls.at(-1);
+    expect(String(call?.[0])).toBe(
+      "http://api.test/api/v1/github/task-issues?workspace_id=workspace%2F1",
+    );
+    expect(call?.[1]).toMatchObject({ cache: "no-store" });
+  });
+
   it("links a GitHub pull request to a task", async () => {
     fetchSpy.mockResolvedValueOnce(
       jsonResponse({
@@ -315,5 +354,20 @@ describe("task CI automation options", () => {
       auto_merge_enabled: true,
       auto_fix_prompt_override: null,
     });
+  });
+});
+
+describe("copyGitHubWorkspaceSettings", () => {
+  it("POSTs targetWorkspaceId to /workspace-settings/copy scoped to the source", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ workspace_id: "ws-dst" }));
+
+    await copyGitHubWorkspaceSettings("ws-dst", { workspaceId: "ws-src" });
+
+    const call = fetchSpy.mock.calls.at(-1);
+    expect(String(call?.[0])).toBe(
+      "http://api.test/api/v1/github/workspace-settings/copy?workspace_id=ws-src",
+    );
+    expect(call?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ targetWorkspaceId: "ws-dst" });
   });
 });

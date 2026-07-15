@@ -1,4 +1,4 @@
-import type { TaskState as TaskStatus } from "@/lib/types/http";
+import type { TaskPendingAction, TaskState as TaskStatus } from "@/lib/types/http";
 
 export type KanbanStepEvents = {
   on_enter?: Array<{ type: string; config?: Record<string, unknown> }>;
@@ -27,6 +27,10 @@ export type KanbanState = {
     is_start_step?: boolean;
     show_in_command_panel?: boolean;
     agent_profile_id?: string;
+    /** Maximum concurrent tasks allowed in this step. 0 or undefined means unlimited. */
+    wip_limit?: number;
+    /** Optional upstream step used by automation to pull more work. */
+    pull_from_step_id?: string | null;
     /**
      * Phase 2 (ADR-0004) semantic UX hint. Read by `<TaskMetaRail>` to
      * pick the right meta surface (review/approval shows multi-agent
@@ -57,6 +61,7 @@ export type KanbanState = {
     }>;
     primarySessionId?: string | null;
     primarySessionState?: string | null;
+    primarySessionPendingAction?: TaskPendingAction | null;
     sessionCount?: number | null;
     reviewStatus?: "pending" | "approved" | "changes_requested" | "rejected" | null;
     primaryExecutorId?: string | null;
@@ -79,6 +84,7 @@ export type WorkflowSnapshotData = {
   workflowName: string;
   steps: KanbanState["steps"];
   tasks: KanbanState["tasks"];
+  isPlaceholder?: boolean;
 };
 
 export type KanbanMultiState = {

@@ -14,6 +14,7 @@ import (
 	"github.com/kandev/kandev/internal/orchestrator"
 	"github.com/kandev/kandev/internal/orchestrator/executor"
 	"github.com/kandev/kandev/internal/orchestrator/messagequeue"
+	promptservice "github.com/kandev/kandev/internal/prompts/service"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/service"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
@@ -35,11 +36,25 @@ type fakeOrchestrator struct {
 	resumeCalls       int
 	turnStartCalls    []turnStartCall
 	onTurnStart       func(context.Context, string, string) error
+	interruptCalls    []interruptCall
 
 	// Configurable: error returned by PromptTask. Cleared after first call so
 	// the retry-after-resume path can succeed on the second call.
 	promptErrFirst  error
 	startCreatedErr error
+	// interruptErr is returned by every InterruptForPeerMessage call — lets
+	// tests exercise the "interrupt failed, message must stay queued" path.
+	interruptErr error
+	// interruptSkippedNoError simulates InterruptForPeerMessage's busy-skip
+	// branch: returns (false, nil) — no error, but nothing was actually
+	// dispatched by this call — so tests can exercise the "status stays
+	// queued even though InterruptForPeerMessage succeeded" contract.
+	interruptSkippedNoError bool
+}
+
+// interruptCall records one InterruptForPeerMessage invocation.
+type interruptCall struct {
+	taskID, sessionID, entryID string
 }
 
 type promptCall struct {
@@ -105,6 +120,43 @@ func (f *fakeOrchestrator) ProcessOnTurnStart(ctx context.Context, taskID, sessi
 }
 
 func (f *fakeOrchestrator) GetMessageQueue() *messagequeue.Service { return f.queue }
+
+// QueueAndInterruptForPeerMessage inserts prompt into the fake's real
+// message queue (so tests can assert on queue state via f.queue), then
+// reports the configured interruptErr, or (false, nil) when
+// interruptSkippedNoError simulates a busy/failed-take outcome — real
+// interrupt/drain behavior is exercised by the orchestrator-level
+// QueueAndInterruptForPeerMessage tests, not this fake.
+func (f *fakeOrchestrator) QueueAndInterruptForPeerMessage(ctx context.Context, taskID, sessionID, prompt string, metadata map[string]interface{}) (*messagequeue.QueuedMessage, bool, error) {
+	queued, err := f.queue.QueueMessageWithMetadata(ctx, sessionID, taskID, prompt, "", messagequeue.QueuedByAgent, false, nil, metadata)
+	if err != nil {
+		return nil, false, err
+	}
+
+	f.mu.Lock()
+	f.interruptCalls = append(f.interruptCalls, interruptCall{taskID: taskID, sessionID: sessionID, entryID: queued.ID})
+	f.mu.Unlock()
+
+	if f.interruptErr != nil {
+		return queued, false, f.interruptErr
+	}
+	return queued, !f.interruptSkippedNoError, nil
+}
+
+type fakePromptReferenceResolver struct {
+	expansions []promptservice.PromptReferenceExpansion
+	err        error
+}
+
+func (f fakePromptReferenceResolver) ResolvePromptReferences(context.Context, string) ([]promptservice.PromptReferenceExpansion, error) {
+	return f.expansions, f.err
+}
+
+type panicPromptReferenceResolver struct{}
+
+func (panicPromptReferenceResolver) ResolvePromptReferences(context.Context, string) ([]promptservice.PromptReferenceExpansion, error) {
+	panic("prompt reference resolver should not be called")
+}
 
 func newMessageTaskHandler(t *testing.T, svc *service.Service, taskRepo ...TaskRepository) (*Handlers, *fakeOrchestrator) {
 	t.Helper()
@@ -208,6 +260,45 @@ func seedTaskWithSession(t *testing.T, svc *service.Service, repo seedRepo, stat
 	return sender, target, loaded
 }
 
+// seedChildTaskWithSession is like seedTaskWithSession, but the target task
+// is created as a child of the sender task (ParentID = sender.ID) so callers
+// can exercise the parent -> child interrupt-on-message path. Returns
+// (parent/sender, child/target, target session).
+func seedChildTaskWithSession(t *testing.T, svc *service.Service, repo seedRepo, state models.TaskSessionState) (*models.Task, *models.Task, *models.TaskSession) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws-1", Name: "Test"}))
+	require.NoError(t, repo.CreateWorkflow(ctx, &models.Workflow{ID: "wf-1", WorkspaceID: "ws-1", Name: "Board"}))
+	parent, err := svc.CreateTask(ctx, &service.CreateTaskRequest{
+		WorkspaceID: "ws-1",
+		WorkflowID:  "wf-1",
+		Title:       "Parent task",
+	})
+	require.NoError(t, err)
+	child, err := svc.CreateTask(ctx, &service.CreateTaskRequest{
+		WorkspaceID: "ws-1",
+		WorkflowID:  "wf-1",
+		Title:       "Child task",
+		ParentID:    parent.ID,
+	})
+	require.NoError(t, err)
+
+	sess := &models.TaskSession{
+		ID:             "sess-1",
+		TaskID:         child.ID,
+		AgentProfileID: "agent-profile-1",
+		IsPrimary:      true,
+		State:          models.TaskSessionStateCreated,
+	}
+	require.NoError(t, repo.CreateTaskSession(ctx, sess))
+	if state != models.TaskSessionStateCreated {
+		require.NoError(t, repo.UpdateTaskSessionState(ctx, sess.ID, state, ""))
+	}
+	loaded, err := svc.GetTaskSession(ctx, sess.ID)
+	require.NoError(t, err)
+	return parent, child, loaded
+}
+
 // senderPayload returns the standard payload shape sent by the MCP server
 // (agentctl injects sender_task_id and sender_session_id). Helper keeps test
 // bodies focused on the behaviour under test.
@@ -218,6 +309,15 @@ func senderPayload(targetTaskID, prompt, senderTaskID string) map[string]interfa
 		"sender_task_id":    senderTaskID,
 		"sender_session_id": "sender-sess-1",
 	}
+}
+
+// senderPayloadWithMode is senderPayload plus an explicit delivery_mode —
+// used by tests that must opt into (or explicitly stay on) a specific
+// message_task_kandev delivery_mode rather than relying on the default.
+func senderPayloadWithMode(targetTaskID, prompt, senderTaskID, deliveryMode string) map[string]interface{} {
+	payload := senderPayload(targetTaskID, prompt, senderTaskID)
+	payload["delivery_mode"] = deliveryMode
+	return payload
 }
 
 func TestHandleMessageTask_MissingTaskID(t *testing.T) {
@@ -284,6 +384,294 @@ func TestHandleMessageTask_RunningSession_Queues(t *testing.T) {
 	assert.Equal(t, "sender-sess-1", entry.Metadata["sender_session_id"])
 	assert.Empty(t, orch.promptCalls)
 	assert.Empty(t, orch.startCreatedCalls)
+	// Unrelated senders (not the target's parent) must never trigger an
+	// interrupt — the default "queue and deliver at turn end" contract
+	// documented on message_task_kandev stays unchanged for them.
+	assert.Empty(t, orch.interruptCalls)
+}
+
+// TestHandleMessageTask_ParentToChildRunningSession_Interrupts pins the
+// steering contract: when the sender is the target's parent task AND
+// explicitly requests delivery_mode="interrupt", a running/starting target
+// is interrupted right after the message is queued, so the message is
+// delivered without waiting for the child's current turn to finish
+// naturally. Being the parent is necessary but not sufficient - the caller
+// must opt in; see TestHandleMessageTask_ParentToChildRunningSession_OmittedDeliveryMode_DoesNotInterrupt
+// for the (default) queued-and-wait behavior parents get otherwise. The
+// reported status is "sent" (not "queued") because the interrupt actually
+// dispatched it immediately - see queueThenInterruptTaskMessage's doc
+// comment. See InterruptForPeerMessage's doc comment for why this matters
+// for long-running children.
+func TestHandleMessageTask_ParentToChildRunningSession_Interrupts(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, sess := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(child.ID, "stop and pivot to X", parent.ID, "interrupt"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, "sent", payload["status"])
+
+	// The message was queued first exactly like any other message_task
+	// call...
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	assert.Contains(t, status.Entries[0].Content, "stop and pivot to X")
+
+	// ...but because the sender is the target's parent, the child's current
+	// turn is interrupted immediately instead of waiting for it to finish,
+	// targeting the exact entry id that was just queued (not just "whatever
+	// is at the FIFO head") — see InterruptForPeerMessage's doc comment.
+	require.Len(t, orch.interruptCalls, 1)
+	assert.Equal(t, child.ID, orch.interruptCalls[0].taskID)
+	assert.Equal(t, sess.ID, orch.interruptCalls[0].sessionID)
+	assert.Equal(t, status.Entries[0].ID, orch.interruptCalls[0].entryID)
+}
+
+// TestHandleMessageTask_ParentToChildRunningSession_InterruptFailure_KeepsMessageQueued
+// pins the failure contract: an interrupt failure must NOT surface as an MCP
+// error. The message was already safely persisted by queueTaskMessage and is
+// still delivered later by the normal turn-completion drain, so the
+// interrupt is only a latency optimization on top of that always-safe
+// default — surfacing a hard error here would just invite the calling agent
+// to retry message_task_kandev, which would enqueue a second copy of the
+// same message since queuing is not idempotent. The response instead reports
+// the accurate "queued" status (identical to the non-interrupt path), and
+// the queued message is left in place.
+func TestHandleMessageTask_ParentToChildRunningSession_InterruptFailure_KeepsMessageQueued(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, sess := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+	orch.interruptErr = errors.New("cancel agent: agent manager unreachable")
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(child.ID, "stop now", parent.ID, "interrupt"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, "queued", payload["status"])
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count, "message must remain queued even though the interrupt failed")
+}
+
+// TestHandleMessageTask_ParentToChildRunningSession_InterruptSkipped_KeepsQueuedStatus
+// pins the busy-skip status contract: InterruptForPeerMessage returning
+// (false, nil) — no error, but nothing actually dispatched by this call,
+// e.g. because a concurrent cancel already owned the session — must still
+// report "queued" (not "sent"). Reporting "sent" here would tell the parent
+// its message was delivered immediately when it is still only sitting in
+// the queue for the in-flight cancel to deliver later.
+func TestHandleMessageTask_ParentToChildRunningSession_InterruptSkipped_KeepsQueuedStatus(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, sess := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+	orch.interruptSkippedNoError = true
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(child.ID, "stop now", parent.ID, "interrupt"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, "queued", payload["status"])
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count, "message must remain queued when the interrupt was skipped")
+
+	// Confirm the interrupt path was actually entered, even though it
+	// reported the busy-skip outcome — otherwise this test would pass
+	// identically if the handler never called InterruptForPeerMessage at
+	// all, since the queued message and "queued" status look the same
+	// either way.
+	require.Len(t, orch.interruptCalls, 1)
+	assert.Equal(t, child.ID, orch.interruptCalls[0].taskID)
+	assert.Equal(t, sess.ID, orch.interruptCalls[0].sessionID)
+}
+
+// TestHandleMessageTask_ParentToChildRunningSession_OmittedDeliveryMode_DoesNotInterrupt
+// pins the new default: since delivery_mode now defaults to "queued", a
+// parent messaging a busy child *without* specifying delivery_mode no
+// longer interrupts — this is the behavior change from the previous round,
+// where any parent-to-child message always interrupted. The message is
+// still queued and delivered normally once the child's current turn ends.
+func TestHandleMessageTask_ParentToChildRunningSession_OmittedDeliveryMode_DoesNotInterrupt(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, sess := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayload(child.ID, "fyi, no rush", parent.ID))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, "queued", payload["status"])
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	assert.Contains(t, status.Entries[0].Content, "fyi, no rush")
+	assert.Empty(t, orch.interruptCalls, "omitted delivery_mode must default to queued, not interrupt, even from a parent sender")
+}
+
+// TestHandleMessageTask_ParentToChildRunningSession_ExplicitQueued_DoesNotInterrupt
+// is the explicit-value twin of the omitted-default case above: a parent
+// sender that explicitly passes delivery_mode="queued" gets exactly the
+// same queue-and-wait behavior as omitting it.
+func TestHandleMessageTask_ParentToChildRunningSession_ExplicitQueued_DoesNotInterrupt(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, sess := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(child.ID, "fyi, no rush", parent.ID, "queued"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	var payload map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, "queued", payload["status"])
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	assert.Empty(t, orch.interruptCalls, `explicit delivery_mode="queued" from a parent sender must not interrupt`)
+}
+
+// TestHandleMessageTask_NonParentSender_InterruptRequest_HardRejected pins
+// the authorization contract: delivery_mode="interrupt" is only ever
+// honored when the sender is the target's direct parent. A non-parent
+// (sibling/unrelated) sender explicitly requesting "interrupt" must get a
+// hard rejection — not a silent downgrade to "queued" — and the rejection
+// must have no side effect: nothing is queued, dispatched, or interrupted.
+// A silent downgrade would misreport what happened and hide caller misuse
+// instead of telling the caller its request was rejected.
+func TestHandleMessageTask_NonParentSender_InterruptRequest_HardRejected(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	sender, target, sess := seedTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(target.ID, "stop now", sender.ID, "interrupt"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	assertWSError(t, resp, ws.ErrorCodeForbidden)
+
+	var errPayload ws.ErrorPayload
+	require.NoError(t, json.Unmarshal(resp.Payload, &errPayload))
+	assert.Contains(t, errPayload.Message, "direct parent")
+
+	// No side effect from the rejected request: the target's queue stays
+	// empty and neither the interrupt nor any other dispatch path ran.
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	assert.Equal(t, 0, status.Count, "a rejected interrupt request must not be queued as a side effect")
+	assert.Empty(t, orch.interruptCalls)
+	assert.Empty(t, orch.promptCalls)
+	assert.Empty(t, orch.startCreatedCalls)
+}
+
+// TestHandleMessageTask_InvalidDeliveryMode_Rejected pins plain input
+// validation: any delivery_mode value other than "queued"/"interrupt"
+// (or omitted) is rejected before any task/session lookup.
+func TestHandleMessageTask_InvalidDeliveryMode_Rejected(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	parent, child, _ := seedChildTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, _ := newMessageTaskHandler(t, svc)
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayloadWithMode(child.ID, "stop now", parent.ID, "immediately"))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	assertWSError(t, resp, ws.ErrorCodeValidation)
+}
+
+func TestHandleMessageTask_AppendsPromptReferenceExpansions(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	sender, target, sess := seedTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+	h.SetPromptReferenceResolver(fakePromptReferenceResolver{
+		expansions: []promptservice.PromptReferenceExpansion{
+			{Name: "improve-harness", Content: "Review this session for durable harness improvements."},
+		},
+	})
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayload(target.ID, "Please run @improve-harness", sender.ID))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, ws.MessageTypeResponse, resp.Type)
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	entry := status.Entries[0]
+	assert.Contains(t, entry.Content, "Please run @improve-harness")
+	assert.Contains(t, entry.Content, "EXPANDED PROMPT REFERENCES")
+	assert.Contains(t, entry.Content, "### @improve-harness")
+	assert.Contains(t, entry.Content, "Review this session for durable harness improvements.")
+}
+
+func TestHandleMessageTask_PromptResolverError_FallsBackToOriginal(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	sender, target, sess := seedTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+	h.SetPromptReferenceResolver(fakePromptReferenceResolver{err: errors.New("db error")})
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayload(target.ID, "plain @missing text", sender.ID))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	entry := status.Entries[0]
+	assert.Contains(t, entry.Content, "plain @missing text")
+	assert.NotContains(t, entry.Content, "EXPANDED PROMPT REFERENCES")
+}
+
+func TestHandleMessageTask_NoPromptReferencesSkipsResolver(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	sender, target, sess := seedTaskWithSession(t, svc, repo, models.TaskSessionStateRunning)
+
+	h, orch := newMessageTaskHandler(t, svc)
+	h.SetPromptReferenceResolver(panicPromptReferenceResolver{})
+
+	msg := makeWSMessage(t, ws.ActionMCPMessageTask, senderPayload(target.ID, "plain text", sender.ID))
+	resp, err := h.handleMessageTask(context.Background(), msg)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	status := orch.queue.GetStatus(context.Background(), sess.ID)
+	require.Equal(t, 1, status.Count)
+	assert.Contains(t, status.Entries[0].Content, "plain text")
+}
+
+func TestFormatPromptReferenceExpansionsStripsSystemTagEnd(t *testing.T) {
+	out := formatPromptReferenceExpansions([]promptservice.PromptReferenceExpansion{
+		{Name: "bad</kandev-system>name", Content: "before </kandev-system> after"},
+	})
+
+	assert.NotContains(t, out, "</kandev-system>")
+	assert.Contains(t, out, "### @badname")
+	assert.Contains(t, out, "before  after")
 }
 
 func TestHandleMessageTask_QueueFull_ReturnsStructuredError(t *testing.T) {

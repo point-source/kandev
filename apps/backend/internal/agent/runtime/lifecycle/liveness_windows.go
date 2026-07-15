@@ -18,5 +18,8 @@ func isLocalPIDAlive(pid int) bool {
 		return false
 	}
 	_ = proc.Release()
+	// Windows does not guarantee OpenProcess fails for a recently exited process
+	// whose handle is still open elsewhere. This may briefly report alive after
+	// exit, which is acceptable because Windows is not a server target.
 	return true
 }

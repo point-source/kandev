@@ -3,11 +3,13 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/orchestrator/messagequeue"
+	"github.com/kandev/kandev/internal/task/dto"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/service"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
@@ -533,6 +535,37 @@ func TestHandleUpdateTaskState_MissingState(t *testing.T) {
 	assertWSError(t, resp, ws.ErrorCodeValidation)
 }
 
+func TestHandleUpdateTask_PersistsState(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, repo.CreateWorkspace(ctx, &models.Workspace{
+		ID: "ws-update-state", Name: "Update State", CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, repo.CreateWorkflow(ctx, &models.Workflow{
+		ID: "wf-update-state", WorkspaceID: "ws-update-state", Name: "Board", CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, repo.CreateTask(ctx, &models.Task{
+		ID: "task-update-state", WorkspaceID: "ws-update-state", WorkflowID: "wf-update-state",
+		Title: "Stateful", State: v1.TaskStateReview, CreatedAt: now, UpdatedAt: now,
+	}))
+
+	h := &Handlers{taskSvc: svc, logger: testLogger(t).WithFields()}
+	msg := makeWSMessage(t, ws.ActionMCPUpdateTask, map[string]interface{}{
+		"task_id": "task-update-state",
+		"state":   "COMPLETED",
+	})
+
+	resp, err := h.handleUpdateTask(ctx, msg)
+	require.NoError(t, err)
+	assert.NotEqual(t, ws.MessageTypeError, resp.Type)
+
+	task, err := svc.GetTask(ctx, "task-update-state")
+	require.NoError(t, err)
+	assert.Equal(t, v1.TaskStateCompleted, task.State)
+}
+
 // TestHandleMoveTask_ActiveSessionWithoutPrompt_DefersMove pins the production
 // bug where an agent on Work called move_task_kandev → Done without a prompt
 // mid-turn. The immediate path hit validateMoveSessions (RUNNING session) and
@@ -586,6 +619,21 @@ func TestHandleMoveTask_ActiveSessionWithoutPrompt_DefersMove(t *testing.T) {
 	assert.Equal(t, "step-work", task.WorkflowStepID, "deferred move must not apply immediately")
 }
 
+func TestMoveTaskErrorMessage_SanitizesClassifiedErrors(t *testing.T) {
+	assert.Equal(t,
+		"Move task conflicts with the current task or workflow state",
+		moveTaskErrorMessage(fmt.Errorf("WIP limit exceeded for workflow step secret-step")),
+	)
+	assert.Equal(t,
+		"Invalid move_task request",
+		moveTaskErrorMessage(fmt.Errorf("workflow_step_id is required")),
+	)
+	assert.Equal(t,
+		"Failed to move task",
+		moveTaskErrorMessage(fmt.Errorf("database path /tmp/private failed")),
+	)
+}
+
 func TestNormalizeTaskState_AcceptsCommonAliases(t *testing.T) {
 	assert.Equal(t, v1.TaskStateCompleted, normalizeTaskState("complete"))
 	assert.Equal(t, v1.TaskStateCompleted, normalizeTaskState("DONE"))
@@ -616,6 +664,34 @@ func TestRegisterHandlers_NilDeps_DoesNotPanic(t *testing.T) {
 
 	// Should not panic with nil config/task deps — handlers simply not registered.
 	assert.NotPanics(t, func() { h.RegisterHandlers(d) })
+}
+
+func TestRegisterHandlers_ListExecutorsActionDispatches(t *testing.T) {
+	svc, _ := newTestTaskService(t)
+	h := &Handlers{taskSvc: svc, logger: testLogger(t).WithFields()}
+	d := ws.NewDispatcher()
+	h.RegisterHandlers(d)
+
+	msg := makeWSMessage(t, ws.ActionMCPListExecutors, map[string]interface{}{})
+	resp, err := d.Dispatch(context.Background(), msg)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, ws.MessageTypeResponse, resp.Type)
+	assert.Equal(t, ws.ActionMCPListExecutors, resp.Action)
+
+	var payload dto.ListExecutorsResponse
+	require.NoError(t, json.Unmarshal(resp.Payload, &payload))
+	assert.Equal(t, len(payload.Executors), payload.Total)
+	assert.Contains(t, executorIDs(payload.Executors), models.ExecutorIDLocal)
+}
+
+func executorIDs(executors []dto.ExecutorDTO) []string {
+	ids := make([]string, 0, len(executors))
+	for _, executor := range executors {
+		ids = append(ids, executor.ID)
+	}
+	return ids
 }
 
 // --- Helper function tests ---

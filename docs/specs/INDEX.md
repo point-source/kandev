@@ -48,7 +48,11 @@ Kandev's task model: documents, execution stages, labels, blocker escalation, su
 | [blocked-task-escalation](tasks/blocked-task-escalation.md) | draft |
 | [runtime-cleanup](tasks/runtime-cleanup.md) | draft |
 | [link-existing-task-github-issue](tasks/link-existing-task-github-issue.md) | building |
+| [wip-limit-pull-system](tasks/wip-limit-pull-system.md) | building |
 | [multi-branch](tasks/multi-branch/spec.md) | shipped |
+| [quick-chat-expiration](tasks/quick-chat-expiration.md) | draft |
+| [quick-chat-repository-context](tasks/quick-chat-repository-context.md) | shipped |
+| [parent-child-message-interrupt](tasks/parent-child-message-interrupt.md) | shipped |
 
 ## agents/ — agent governance
 
@@ -93,6 +97,8 @@ Subscription quota tracking and per-agent cheap-model profile routing.
 | [ci-pr-automation](ui/ci-pr-automation.md) | draft |
 | [comment-markdown](ui/comment-markdown.md) | shipped |
 | [empty-turn-notice](ui/empty-turn-notice.md) | shipped |
+| [acp-shell-command-output](ui/acp-shell-command-output.md) | shipped |
+| [review-file-status](ui/review-file-status.md) | building |
 | [slash-command-composer](ui/slash-command-composer.md) | shipped |
 
 ## system-page/ — operational diagnostics & maintenance UI
