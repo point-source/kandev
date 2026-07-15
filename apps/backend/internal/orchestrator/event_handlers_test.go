@@ -19,6 +19,8 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/db"
+	"github.com/kandev/kandev/internal/events"
+	eventbus "github.com/kandev/kandev/internal/events/bus"
 	"github.com/kandev/kandev/internal/orchestrator/executor"
 	"github.com/kandev/kandev/internal/orchestrator/messagequeue"
 	"github.com/kandev/kandev/internal/orchestrator/queue"
@@ -29,6 +31,7 @@ import (
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 	wfmodels "github.com/kandev/kandev/internal/workflow/models"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Mocks ---
@@ -87,7 +90,13 @@ type mockTaskRepo struct {
 	tasks         map[string]*v1.Task
 	updatedStates map[string]v1.TaskState
 	stateWrites   map[string]int // per-task UpdateTaskState call count for dedup tests
-	getTaskErr    error          // if set, GetTask returns this error
+	// stateHistory records every state actually written per task, in order.
+	// updatedStates only keeps the latest value, which hides a transient
+	// write (e.g. a REVIEW write later overwritten by an async prompt
+	// dispatch's IN_PROGRESS write) — tests asserting a state was NEVER
+	// written at any point must check stateHistory, not updatedStates.
+	stateHistory map[string][]v1.TaskState
+	getTaskErr   error // if set, GetTask returns this error
 }
 
 func newMockTaskRepo() *mockTaskRepo {
@@ -95,6 +104,7 @@ func newMockTaskRepo() *mockTaskRepo {
 		tasks:         make(map[string]*v1.Task),
 		updatedStates: make(map[string]v1.TaskState),
 		stateWrites:   make(map[string]int),
+		stateHistory:  make(map[string][]v1.TaskState),
 	}
 }
 
@@ -119,6 +129,7 @@ func (m *mockTaskRepo) UpdateTaskState(_ context.Context, taskID string, state v
 	defer m.mu.Unlock()
 	m.updatedStates[taskID] = state
 	m.stateWrites[taskID]++
+	m.stateHistory[taskID] = append(m.stateHistory[taskID], state)
 	if t, ok := m.tasks[taskID]; ok {
 		t.State = state
 	}
@@ -140,6 +151,7 @@ func (m *mockTaskRepo) UpdateTaskStateIfCurrentIn(
 		}
 		m.updatedStates[taskID] = state
 		m.stateWrites[taskID]++
+		m.stateHistory[taskID] = append(m.stateHistory[taskID], state)
 		t.State = state
 		return true, nil
 	}
@@ -215,6 +227,14 @@ type mockAgentManager struct {
 	cancelAgentCalls   atomic.Int32
 	cancelAgentBlock   chan struct{}
 	cancelAgentEntered chan struct{}
+	// cancelAgentErr, when set, is returned by CancelAgent instead of nil —
+	// lets tests exercise callers that must react to a genuine cancel
+	// failure (as opposed to the tolerated ErrNoExecutionForSession /
+	// ErrCancelEscalated sentinels handled inside cancelAgentSilent).
+	cancelAgentErr error
+
+	currentPromptGeneration  atomic.Uint64
+	currentPromptExecutionID string
 
 	// set_session_mode tracking (issue #1183). Records (sessionID, modeID) for
 	// every SetSessionModeBySessionID call. setSessionModeErr, when set, is
@@ -261,6 +281,7 @@ func (m *mockAgentManager) LaunchAgent(ctx context.Context, req *executor.Launch
 	return nil, nil
 }
 func (m *mockAgentManager) StartAgentProcess(_ context.Context, _ string) error { return nil }
+func (m *mockAgentManager) IsAgentCommandConfigured(_ string) bool              { return true }
 func (m *mockAgentManager) StopAgent(_ context.Context, agentExecutionID string, force bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -317,7 +338,7 @@ func (m *mockAgentManager) CancelAgent(_ context.Context, _ string) error {
 	if m.cancelAgentBlock != nil {
 		<-m.cancelAgentBlock
 	}
-	return nil
+	return m.cancelAgentErr
 }
 func (m *mockAgentManager) RespondToPermissionBySessionID(_ context.Context, _, _, _ string, _ bool) error {
 	return nil
@@ -333,6 +354,10 @@ func (m *mockAgentManager) IsAgentReadyForPrompt(ctx context.Context, sessionID 
 		return m.isAgentReadyFn(ctx, sessionID)
 	}
 	return m.IsAgentRunningForSession(ctx, sessionID)
+}
+
+func (m *mockAgentManager) OwnsPromptGeneration(_ string, executionID string, generation uint64) bool {
+	return executionID == m.currentPromptExecutionID && generation == m.currentPromptGeneration.Load()
 }
 
 // RowLiveness makes the mock satisfy the orchestrator's optional
@@ -720,7 +745,17 @@ func TestHandleAgentReadyGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores ready while cancel is in flight", func(t *testing.T) {
+	t.Run("waits for an in-flight cancel/interrupt then proceeds once it clears", func(t *testing.T) {
+		// This is the "no transition" side of the parent-interrupt vs.
+		// agent.ready race (see the reviewed PR #1653 discussion): once
+		// handleAgentReady acquires the guard *before* any bookkeeping, a
+		// concurrent holder no longer causes it to skip forever — it waits,
+		// then (since nothing about this turn actually changed while it
+		// waited) proceeds exactly as it would have uncontended, draining
+		// the queued message. TestHandleAgentReadyGuards_ConcurrentInterruptRaces
+		// below covers the cases where the guard holder *does* change
+		// something (a redispatched successor turn) that handleAgentReady
+		// must detect and back off from instead.
 		repo := setupTestRepo(t)
 		seedSession(t, repo, "t1", "s1", "step1")
 
@@ -728,23 +763,52 @@ func TestHandleAgentReadyGuards(t *testing.T) {
 		stepGetter.steps["step1"] = &wfmodels.WorkflowStep{
 			ID: "step1", WorkflowID: "wf1", Name: "Step 1", Position: 0,
 		}
-		agentMgr := &mockAgentManager{isAgentRunning: true}
+		agentMgr := &mockAgentManager{isAgentRunning: true, repoForExecutionLookup: repo, promptDone: make(chan struct{})}
 		svc := createTestServiceWithAgent(repo, stepGetter, newMockTaskRepo(), agentMgr)
+		svc.executor = executor.NewExecutor(agentMgr, repo, testLogger(), executor.ExecutorConfig{})
+		seedExecutorRunning(t, repo, "s1", "t1", "exec-1")
 
 		if _, err := svc.messageQueue.QueueMessage(ctx, "s1", "t1", "queued", "", messagequeue.QueuedByUser, false, nil); err != nil {
 			t.Fatalf("failed to queue message: %v", err)
 		}
-		svc.cancelInFlight.Store("s1", struct{}{})
-		defer svc.cancelInFlight.Delete("s1")
 
-		svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "t1", SessionID: "s1"})
+		lock, release := svc.acquireCancelInFlightGuard("s1")
+		lock.Lock()
+
+		readyDone := make(chan struct{})
+		go func() {
+			svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "t1", SessionID: "s1"})
+			close(readyDone)
+		}()
+
+		select {
+		case <-readyDone:
+			t.Fatal("handleAgentReady returned before the guard was released — it must block, not skip")
+		case <-time.After(100 * time.Millisecond):
+		}
 
 		status := svc.messageQueue.GetStatus(ctx, "s1")
 		if status.Count != 1 {
-			t.Fatalf("expected queued message to remain parked during cancel, count=%d entries=%+v", status.Count, status.Entries)
+			t.Fatalf("expected queued message to remain parked while the guard is held, count=%d entries=%+v", status.Count, status.Entries)
 		}
-		if len(agentMgr.capturedPrompts) != 0 {
-			t.Fatalf("expected no queued prompt dispatch during cancel, got %d prompts", len(agentMgr.capturedPrompts))
+
+		lock.Unlock()
+		release()
+
+		select {
+		case <-readyDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for handleAgentReady to finish once the guard was released")
+		}
+
+		final := svc.messageQueue.GetStatus(ctx, "s1")
+		if final.Count != 0 {
+			t.Fatalf("expected handleAgentReady to drain the queued message once unblocked, count=%d entries=%+v", final.Count, final.Entries)
+		}
+		select {
+		case <-agentMgr.promptDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the queued message to be dispatched")
 		}
 	})
 
@@ -815,6 +879,289 @@ func TestHandleAgentReadyGuards(t *testing.T) {
 	// that makes it unnecessary.
 }
 
+// turnSnapshotSyncTurnService wraps repoTurnService so tests can
+// deterministically wait for handleAgentReady's pre-lock
+// peekActiveTurnID(sessionID) call to have actually captured the
+// *original* active turn before the test mutates it. Without this, the
+// goroutine in raceGuardAgainstTurnReplacement below is scheduler-
+// dependent: nothing guarantees handleAgentReady's first GetActiveTurn
+// call has actually run (vs. merely been scheduled) before the test
+// replaces the turn — a descheduled goroutine that captures the
+// *replacement* turn as its own baseline would make the "must detect
+// staleness" assertion pass for the wrong reason (no real race exercised)
+// instead of failing when the guard's revalidation regresses.
+// snapshotTaken closes once, on the first GetActiveTurn(sessionID) call
+// (handleAgentReady's pre-lock snapshot is always its first turn lookup).
+type turnSnapshotSyncTurnService struct {
+	*repoTurnService
+	sessionID     string
+	snapshotTaken chan struct{}
+	once          sync.Once
+}
+
+func (s *turnSnapshotSyncTurnService) GetActiveTurn(ctx context.Context, sessionID string) (*models.Turn, error) {
+	turn, err := s.repoTurnService.GetActiveTurn(ctx, sessionID)
+	if sessionID == s.sessionID {
+		s.once.Do(func() { close(s.snapshotTaken) })
+	}
+	return turn, err
+}
+
+// TestHandleAgentReadyGuards_ConcurrentInterruptRaces extends the
+// no-transition guard coverage above ("waits for an in-flight
+// cancel/interrupt then proceeds once it clears") with the two races
+// carlosflorencio's review explicitly called out as missing on PR #1653:
+// an actual on_turn_complete transition, and a pending move, each racing a
+// concurrent parent interrupt that cancels-and-redispatches the session
+// *before* handleAgentReady's blocked guard acquisition returns.
+//
+// Each subtest manually replaces the active turn (completeTurnForSession +
+// startTurnForSession) while holding the guard, mirroring exactly what a
+// real QueueAndInterruptForPeerMessage call does internally (cancel the
+// old turn, dispatch a new one) without needing to drive the full
+// mockAgentManager cancel/prompt round trip — the property under test is
+// specifically handleAgentReady's own post-guard revalidation, not the
+// interrupt's own dispatch mechanics (covered separately by the
+// TestQueueAndInterruptForPeerMessage_* suite in task_operations_test.go,
+// including TestQueueAndInterruptForPeerMessage_DoesNotCancelUnrelatedSuccessorTurn
+// which drives the same race through the public interrupt API instead).
+func TestHandleAgentReadyGuards_ConcurrentInterruptRaces(t *testing.T) {
+	ctx := context.Background()
+
+	// raceGuardAgainstTurnReplacement claims sessionID's cancelInFlight
+	// guard first (simulating an interrupt already in flight), starts
+	// handleAgentReady in a goroutine, deterministically waits for it to
+	// have snapshotted the *original* active turn (via
+	// turnSnapshotSyncTurnService, not a sleep) before replacing the
+	// active turn with a *different* one while still holding the guard
+	// (simulating the interrupt's own cancel-and-redispatch), then
+	// releases and waits for handleAgentReady to finish. Returns the turn
+	// that replaced the original. svc.turnService must already be a
+	// *turnSnapshotSyncTurnService for sessionID.
+	raceGuardAgainstTurnReplacement := func(t *testing.T, svc *Service, sessionID string) *models.Turn {
+		t.Helper()
+		turnSync, ok := svc.turnService.(*turnSnapshotSyncTurnService)
+		if !ok || turnSync.sessionID != sessionID {
+			t.Fatalf("test setup bug: svc.turnService must be a *turnSnapshotSyncTurnService for %q", sessionID)
+		}
+
+		lock, release := svc.acquireCancelInFlightGuard(sessionID)
+		lock.Lock()
+
+		readyDone := make(chan struct{})
+		go func() {
+			svc.handleAgentReady(ctx, watcher.AgentEventData{TaskID: "t1", SessionID: sessionID})
+			close(readyDone)
+		}()
+
+		select {
+		case <-turnSync.snapshotTaken:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for handleAgentReady to snapshot the original active turn")
+		}
+		select {
+		case <-readyDone:
+			t.Fatal("handleAgentReady returned before the guard was released — it must block on a concurrent interrupt")
+		default:
+		}
+
+		svc.completeTurnForSession(ctx, sessionID)
+		turnB, err := svc.turnService.StartTurn(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("start replacement turn: %v", err)
+		}
+
+		lock.Unlock()
+		release()
+
+		select {
+		case <-readyDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for handleAgentReady to finish once the guard was released")
+		}
+		return turnB
+	}
+
+	t.Run("actual on_turn_complete transition: stale ready must not apply it", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		seedSession(t, repo, "t1", "s1", "step1")
+
+		stepGetter := newMockStepGetter()
+		stepGetter.steps["step1"] = &wfmodels.WorkflowStep{
+			ID: "step1", WorkflowID: "wf1", Name: "Step 1", Position: 0,
+			Events: wfmodels.StepEvents{
+				OnTurnComplete: []wfmodels.OnTurnCompleteAction{{Type: wfmodels.OnTurnCompleteMoveToNext}},
+			},
+		}
+		stepGetter.steps["step2"] = &wfmodels.WorkflowStep{ID: "step2", WorkflowID: "wf1", Name: "Step 2", Position: 1}
+		taskRepo := newMockTaskRepo()
+		seedMockTaskState(taskRepo, "t1", v1.TaskStateInProgress)
+		svc := createTestService(repo, stepGetter, taskRepo)
+		svc.turnService = &turnSnapshotSyncTurnService{
+			repoTurnService: &repoTurnService{repo: repo},
+			sessionID:       "s1",
+			snapshotTaken:   make(chan struct{}),
+		}
+
+		if _, err := svc.turnService.StartTurn(ctx, "s1"); err != nil {
+			t.Fatalf("seed original turn: %v", err)
+		}
+
+		turnB := raceGuardAgainstTurnReplacement(t, svc, "s1")
+
+		active, err := svc.turnService.GetActiveTurn(ctx, "s1")
+		if err != nil {
+			t.Fatalf("get active turn: %v", err)
+		}
+		if active == nil || active.ID != turnB.ID {
+			t.Fatalf("expected the replacement turn %q to still be open, got %+v", turnB.ID, active)
+		}
+
+		updatedTask, err := repo.GetTask(ctx, "t1")
+		if err != nil {
+			t.Fatalf("get task: %v", err)
+		}
+		if updatedTask.WorkflowStepID != "step1" {
+			t.Fatalf("a stale ready event must not apply the on_turn_complete transition for a turn it no longer owns; workflow step moved to %q", updatedTask.WorkflowStepID)
+		}
+	})
+
+	t.Run("pending move: stale ready must leave it for the replacement turn", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		seedSession(t, repo, "t1", "s1", "step1")
+
+		stepGetter := newMockStepGetter()
+		stepGetter.steps["step1"] = &wfmodels.WorkflowStep{ID: "step1", WorkflowID: "wf1", Name: "Step 1", Position: 0}
+		stepGetter.steps["step2"] = &wfmodels.WorkflowStep{ID: "step2", WorkflowID: "wf1", Name: "Step 2", Position: 1}
+		taskRepo := newMockTaskRepo()
+		seedMockTaskState(taskRepo, "t1", v1.TaskStateInProgress)
+		svc := createTestService(repo, stepGetter, taskRepo)
+		svc.turnService = &turnSnapshotSyncTurnService{
+			repoTurnService: &repoTurnService{repo: repo},
+			sessionID:       "s1",
+			snapshotTaken:   make(chan struct{}),
+		}
+
+		if _, err := svc.turnService.StartTurn(ctx, "s1"); err != nil {
+			t.Fatalf("seed original turn: %v", err)
+		}
+		svc.messageQueue.SetPendingMove(ctx, "s1", &messagequeue.PendingMove{
+			TaskID: "t1", WorkflowID: "wf1", WorkflowStepID: "step2",
+		})
+
+		turnB := raceGuardAgainstTurnReplacement(t, svc, "s1")
+
+		active, err := svc.turnService.GetActiveTurn(ctx, "s1")
+		if err != nil {
+			t.Fatalf("get active turn: %v", err)
+		}
+		if active == nil || active.ID != turnB.ID {
+			t.Fatalf("expected the replacement turn %q to still be open, got %+v", turnB.ID, active)
+		}
+
+		move, exists := svc.messageQueue.GetPendingMove(ctx, "s1")
+		if !exists {
+			t.Fatal("a stale ready event must not consume the pending move meant for the replacement turn")
+		}
+		if move.WorkflowStepID != "step2" {
+			t.Fatalf("expected the pending move to still target step2, got %q", move.WorkflowStepID)
+		}
+	})
+}
+
+func TestHandleAgentReady_DelayedOldGenerationDoesNotCompleteReplacementTurn(t *testing.T) {
+	ctx := context.Background()
+
+	runScenario := func(t *testing.T, withPendingMove bool) {
+		t.Helper()
+		repo := setupTestRepo(t)
+		seedSession(t, repo, "t1", "s1", "step1")
+
+		stepGetter := newMockStepGetter()
+		stepGetter.steps["step1"] = &wfmodels.WorkflowStep{
+			ID: "step1", WorkflowID: "wf1", Name: "Step 1", Position: 0,
+		}
+		taskRepo := newMockTaskRepo()
+		seedMockTaskState(taskRepo, "t1", v1.TaskStateInProgress)
+		agentMgr := &mockAgentManager{isAgentRunning: true}
+		agentMgr.currentPromptExecutionID = "exec-1"
+		agentMgr.currentPromptGeneration.Store(2)
+		svc := createTestServiceWithAgent(repo, stepGetter, taskRepo, agentMgr)
+		svc.turnService = &repoTurnService{repo: repo}
+
+		oldTurn, err := svc.turnService.StartTurn(ctx, "s1")
+		require.NoError(t, err)
+
+		memoryBus := eventbus.NewMemoryEventBus(testLogger())
+		t.Cleanup(memoryBus.Close)
+		eventWatcher := watcher.NewWatcher(memoryBus, watcher.EventHandlers{
+			OnAgentReady: svc.handleAgentReady,
+		}, "stale-ready-regression", testLogger())
+		require.NoError(t, eventWatcher.Start(ctx))
+		t.Cleanup(func() { require.NoError(t, eventWatcher.Stop()) })
+
+		oldReady := eventbus.NewEvent(events.AgentReady, "agent-manager", map[string]interface{}{
+			"task_id":            "t1",
+			"session_id":         "s1",
+			"agent_execution_id": "exec-1",
+			"prompt_generation":  1,
+		})
+		publishWaiting := make(chan struct{})
+		releaseOldReady := make(chan struct{})
+		publishDone := make(chan error, 1)
+		go func() {
+			close(publishWaiting)
+			<-releaseOldReady
+			publishDone <- memoryBus.Publish(ctx, events.AgentReady, oldReady)
+		}()
+		<-publishWaiting
+
+		svc.completeTurnForSession(ctx, "s1")
+		replacementTurn, err := svc.turnService.StartTurn(ctx, "s1")
+		require.NoError(t, err)
+		require.NotEqual(t, oldTurn.ID, replacementTurn.ID)
+		if withPendingMove {
+			svc.messageQueue.SetPendingMove(ctx, "s1", &messagequeue.PendingMove{
+				TaskID: "t1", WorkflowID: "wf1", WorkflowStepID: "missing-step",
+			})
+		}
+
+		close(releaseOldReady)
+		select {
+		case err := <-publishDone:
+			require.NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out releasing the delayed old-generation ready event")
+		}
+
+		active, err := svc.turnService.GetActiveTurn(ctx, "s1")
+		require.NoError(t, err)
+		require.NotNil(t, active, "replacement turn must remain open")
+		require.Equal(t, replacementTurn.ID, active.ID)
+
+		updatedTask, err := repo.GetTask(ctx, "t1")
+		require.NoError(t, err)
+		require.Equal(t, "step1", updatedTask.WorkflowStepID,
+			"old ready must not evaluate on_turn_complete for the replacement turn")
+		updatedSession, err := repo.GetTaskSession(ctx, "s1")
+		require.NoError(t, err)
+		require.Equal(t, models.TaskSessionStateRunning, updatedSession.State,
+			"old ready must not run replacement-turn completion bookkeeping")
+		if withPendingMove {
+			move, exists := svc.messageQueue.GetPendingMove(ctx, "s1")
+			require.True(t, exists, "old ready must not consume the replacement turn's pending move")
+			require.Equal(t, "missing-step", move.WorkflowStepID)
+		}
+	}
+
+	t.Run("on_turn_complete remains unevaluated", func(t *testing.T) {
+		runScenario(t, false)
+	})
+	t.Run("pending move remains untouched", func(t *testing.T) {
+		runScenario(t, true)
+	})
+}
+
 func TestExecuteQueuedMessage_RequeuesTransientPromptFailure(t *testing.T) {
 	ctx := context.Background()
 	repo := setupTestRepo(t)
@@ -847,6 +1194,7 @@ func TestExecuteQueuedMessage_RequeuesTransientPromptFailure(t *testing.T) {
 		QueuedBy:  "test",
 	}
 
+	svc.markQueuedDispatchInFlight("s1", queuedMsg.ID)
 	svc.executeQueuedMessage("s1", queuedMsg)
 
 	status := svc.messageQueue.GetStatus(ctx, "s1")
@@ -894,6 +1242,7 @@ func TestExecuteQueuedMessage_RequeuesCoalescedMessageWithOriginalSender(t *test
 		t.Fatalf("seed newer coalesced message: %v", err)
 	}
 
+	svc.markQueuedDispatchInFlight("s1", queuedMsg.ID)
 	svc.executeQueuedMessage("s1", queuedMsg)
 
 	status := svc.messageQueue.GetStatus(ctx, "s1")

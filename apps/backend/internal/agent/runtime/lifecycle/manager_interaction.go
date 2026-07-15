@@ -180,6 +180,18 @@ func (m *Manager) CancelAgent(ctx context.Context, executionID string) error {
 // exit and close promptFinished, and marks the execution ready so the workflow
 // leaves the running state. Returns ErrCancelEscalated so callers know the ACP
 // cancel did not get a clean acknowledgement.
+//
+// The ready-event publish below is dispatched asynchronously (asyncPublish=true
+// on markReadyEventWithContext), not inline: every caller that can reach this
+// escalation path (Service.CancelAgent, and cancelAgentSilent's callers —
+// QueueAndInterruptForPeerMessage, retryClarificationAfterCancel,
+// PauseForClarificationInput) does so while still holding sessionID's
+// per-session cancelInFlightGuard, and the in-memory event bus delivers to
+// the orchestrator's handleAgentReady (a queue subscriber for this event
+// type) *synchronously*, on this same goroutine. An inline publish would
+// have handleAgentReady try to re-acquire that same guard reentrantly and
+// deadlock forever on the non-reentrant sync.Mutex. See
+// markReadyEventWithContext's doc comment for the full explanation.
 func (m *Manager) escalateStuckCancel(ctx context.Context, execution *AgentExecution, ch <-chan struct{}) error {
 	m.logger.Warn("timed out waiting for in-flight prompt to finish after cancel; escalating",
 		zap.String("execution_id", execution.ID),
@@ -208,7 +220,7 @@ func (m *Manager) escalateStuckCancel(ctx context.Context, execution *AgentExecu
 		// breaks the next PromptAgent call.
 	}
 
-	if err := m.MarkReady(execution.ID); err != nil {
+	if err := m.markReadyEventWithContext(context.Background(), execution.ID, events.AgentReady, true); err != nil {
 		m.logger.Warn("failed to mark execution ready after cancel escalation",
 			zap.String("execution_id", execution.ID),
 			zap.Error(err))
@@ -1063,6 +1075,28 @@ func (m *Manager) updateStatusAndPersist(ctx context.Context, executionID string
 	return nil
 }
 
+// BeginPrompt advances prompt ownership and marks the execution running before dispatch.
+func (m *Manager) BeginPrompt(executionID string) (uint64, error) {
+	generation, err := m.executionStore.BeginPrompt(executionID)
+	if err != nil {
+		if errors.Is(err, ErrExecutionNotFound) {
+			return 0, fmt.Errorf("execution %q not found", executionID)
+		}
+		return 0, err
+	}
+
+	if updated, exists := m.executionStore.Get(executionID); exists {
+		m.persistExecutorRunning(context.Background(), updated)
+	}
+	return generation, nil
+}
+
+// OwnsPromptGeneration reports whether a ready event's immutable execution and
+// prompt generation still identify the lifecycle prompt active for sessionID.
+func (m *Manager) OwnsPromptGeneration(sessionID, executionID string, generation uint64) bool {
+	return m.executionStore.OwnsPromptGeneration(sessionID, executionID, generation)
+}
+
 // MarkReady marks an execution as ready for follow-up prompts AFTER A TURN.
 // Use MarkBootReady instead when the agent has just initialized and hasn't yet
 // processed a turn — orchestrator subscribers rely on the distinction.
@@ -1094,13 +1128,13 @@ func (m *Manager) MarkReady(executionID string) error {
 //
 // Publishes events.AgentBootReady. Returns error if execution not found.
 func (m *Manager) MarkBootReady(executionID string) error {
-	return m.markReadyEventWithContext(context.Background(), executionID, events.AgentBootReady)
+	return m.markReadyEventWithContext(context.Background(), executionID, events.AgentBootReady, false)
 }
 
 // markReadyEvent is the shared body of MarkReady / MarkBootReady — both flip
 // the execution to the Ready status and publish their respective event type.
 func (m *Manager) markReadyEvent(executionID, eventType string) error {
-	return m.markReadyEventWithContext(context.Background(), executionID, eventType)
+	return m.markReadyEventWithContext(context.Background(), executionID, eventType, false)
 }
 
 func (m *Manager) markBootReadyFromFailed(ctx context.Context, executionID string) error {
@@ -1111,31 +1145,61 @@ func (m *Manager) markBootReadyFromFailed(ctx context.Context, executionID strin
 	if execution.Status != v1.AgentStatusFailed {
 		return nil
 	}
-	return m.markReadyEventWithContext(ctx, executionID, events.AgentBootReady)
+	return m.markReadyEventWithContext(ctx, executionID, events.AgentBootReady, false)
 }
 
-func (m *Manager) markReadyEventWithContext(ctx context.Context, executionID, eventType string) error {
-	execution, exists := m.executionStore.Get(executionID)
-	if !exists {
-		return fmt.Errorf("execution %q not found", executionID)
-	}
-
-	// Skip if already ready (prevents duplicate events). This guard is shared
-	// across MarkReady and MarkBootReady — once Ready is set, neither type fires
-	// again until the next status transition (Running on prompt, Stopped on stop).
-	if execution.Status == v1.AgentStatusReady {
-		return nil
-	}
-
-	if err := m.updateStatusAndPersist(ctx, executionID, v1.AgentStatusReady); err != nil {
+// markReadyEventWithContext flips executionID to Ready and publishes
+// eventType. When asyncPublish is false (MarkReady, MarkBootReady, and
+// markBootReadyFromFailed all pass false — unchanged behavior), the publish
+// happens inline before this returns, matching the event bus's synchronous,
+// order-preserving delivery to registered subscribers.
+//
+// When asyncPublish is true (escalateStuckCancel only — see its own doc
+// comment), the publish is dispatched on its own goroutine instead. That
+// caller is reached from Service.CancelAgent (and cancelAgentSilent's other
+// guard-holding callers) while still holding sessionID's per-session
+// cancelInFlightGuard: the in-memory event bus delivers to a queue
+// subscription's handler *synchronously*, on the publishing goroutine, and
+// the orchestrator's handleAgentReady is registered on exactly such a queue
+// subscription for this event type. An inline publish here would have
+// handleAgentReady try to re-acquire that same guard from the very same
+// goroutine that is already holding it — sync.Mutex is not reentrant, so
+// that blocks forever. Deferring the publish lets the guard-holding caller
+// finish (and release the guard) first. The detached publish receives the
+// immutable payload captured while Ready was set, so handleAgentReady can
+// reject it if another prompt generation starts before delivery.
+func (m *Manager) markReadyEventWithContext(ctx context.Context, executionID, eventType string, asyncPublish bool) error {
+	var payload AgentEventPayload
+	var updated *AgentExecution
+	var alreadyReady bool
+	if err := m.executionStore.WithLock(executionID, func(execution *AgentExecution) {
+		if execution.Status == v1.AgentStatusReady {
+			alreadyReady = true
+			return
+		}
+		execution.Status = v1.AgentStatusReady
+		payload = newAgentEventPayload(execution)
+		updated = execution
+	}); err != nil {
+		if errors.Is(err, ErrExecutionNotFound) {
+			return fmt.Errorf("execution %q not found", executionID)
+		}
 		return err
 	}
+	if alreadyReady {
+		return nil
+	}
+	m.persistExecutorRunning(context.WithoutCancel(ctx), updated)
 
 	m.logger.Info("execution ready",
 		zap.String("execution_id", executionID),
 		zap.String("event_type", eventType))
 
-	m.eventPublisher.PublishAgentEvent(ctx, eventType, execution)
+	if asyncPublish {
+		go m.eventPublisher.publishAgentEventPayload(context.Background(), eventType, payload)
+	} else {
+		m.eventPublisher.publishAgentEventPayload(ctx, eventType, payload)
+	}
 	return nil
 }
 

@@ -66,6 +66,10 @@ type lifecycleAdapter struct {
 	logger   *logger.Logger
 }
 
+var _ interface {
+	OwnsPromptGeneration(sessionID, executionID string, generation uint64) bool
+} = (*lifecycleAdapter)(nil)
+
 // newLifecycleAdapter creates a new lifecycle adapter
 func newLifecycleAdapter(mgr *lifecycle.Manager, reg *registry.Registry, log *logger.Logger) *lifecycleAdapter {
 	return &lifecycleAdapter{
@@ -270,6 +274,10 @@ func (a *lifecycleAdapter) StartAgentProcess(ctx context.Context, agentInstanceI
 	return a.mgr.StartAgentProcess(ctx, agentInstanceID)
 }
 
+func (a *lifecycleAdapter) IsAgentCommandConfigured(agentInstanceID string) bool {
+	return a.mgr.IsAgentCommandConfigured(agentInstanceID)
+}
+
 // StopAgent stops a running agent
 func (a *lifecycleAdapter) StopAgent(ctx context.Context, agentInstanceID string, force bool) error {
 	return a.mgr.StopAgent(ctx, agentInstanceID, force)
@@ -333,6 +341,10 @@ func (a *lifecycleAdapter) ListAgentTypes(ctx context.Context) ([]*v1.AgentType,
 
 func (a *lifecycleAdapter) WasSessionInitialized(executionID string) bool {
 	return a.mgr.WasSessionInitialized(executionID)
+}
+
+func (a *lifecycleAdapter) OwnsPromptGeneration(sessionID, executionID string, generation uint64) bool {
+	return a.mgr.OwnsPromptGeneration(sessionID, executionID, generation)
 }
 
 func (a *lifecycleAdapter) GetSessionAuthMethods(sessionID string) []streams.AuthMethodInfo {

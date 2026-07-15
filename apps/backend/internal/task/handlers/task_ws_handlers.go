@@ -285,7 +285,7 @@ func (h *TaskHandlers) wsUpdateTask(ctx context.Context, msg *ws.Message) (*ws.M
 		Description:  description,
 		Priority:     req.Priority,
 		State:        req.State,
-		Repositories: convertToServiceRepos(repos),
+		Repositories: convertUpdateRepositories(req.Repositories != nil, repos),
 		Position:     req.Position,
 		Metadata:     req.Metadata,
 	})
@@ -309,6 +309,17 @@ func (h *TaskHandlers) wsDeleteTask(ctx context.Context, msg *ws.Message) (*ws.M
 func (h *TaskHandlers) wsArchiveTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
 	return wsHandleIDRequest(ctx, msg, h.logger, "failed to archive task",
 		func(ctx context.Context, id string) (any, error) {
+			// Route through HandoffService when wired (parity with the HTTP
+			// handler) so the archive gets a cascade stamp and group
+			// memberships are released — keeping WS-archived tasks fully
+			// unarchivable. cascade=false matches the WS payload, which has
+			// no cascade flag.
+			if h.handoffSvc != nil {
+				if _, err := h.handoffSvc.ArchiveTaskTree(ctx, id, false); err != nil {
+					return nil, err
+				}
+				return dto.SuccessResponse{Success: true}, nil
+			}
 			if err := h.service.ArchiveTask(ctx, id); err != nil {
 				return nil, err
 			}

@@ -52,7 +52,7 @@ func bootInitialState(
 	if route.Route == webapp.RouteOffice {
 		builder.addOfficeRouteState(ctx, req, state)
 	}
-	builder.addQuickChatState(ctx, req, state)
+	builder.addQuickChatState(ctx, req, state, route)
 	return state
 }
 
@@ -266,8 +266,13 @@ func (b bootStateBuilder) addRepositoriesState(ctx context.Context, state map[st
 	}
 }
 
-func (b bootStateBuilder) addQuickChatState(ctx context.Context, req *http.Request, state map[string]any) {
-	workspaceID := b.resolveQuickChatWorkspaceID(ctx, req, state)
+func (b bootStateBuilder) addQuickChatState(
+	ctx context.Context,
+	req *http.Request,
+	state map[string]any,
+	route webapp.RouteClassification,
+) {
+	workspaceID := b.resolveQuickChatWorkspaceID(ctx, req, state, route)
 	if workspaceID == "" {
 		return
 	}
@@ -284,7 +289,15 @@ func (b bootStateBuilder) addQuickChatState(ctx context.Context, req *http.Reque
 	mergeBootTaskSessionItems(state, quickChat.taskSessions)
 }
 
-func (b bootStateBuilder) resolveQuickChatWorkspaceID(ctx context.Context, req *http.Request, state map[string]any) string {
+func (b bootStateBuilder) resolveQuickChatWorkspaceID(
+	ctx context.Context,
+	req *http.Request,
+	state map[string]any,
+	route webapp.RouteClassification,
+) string {
+	if workspaceID := b.quickChatTaskRouteWorkspaceID(ctx, route); workspaceID != "" {
+		return workspaceID
+	}
 	if active := activeWorkspaceIDFromState(state); active != "" {
 		return active
 	}
@@ -310,6 +323,28 @@ func (b bootStateBuilder) resolveQuickChatWorkspaceID(ctx context.Context, req *
 	)
 }
 
+func (b bootStateBuilder) quickChatTaskRouteWorkspaceID(
+	ctx context.Context,
+	route webapp.RouteClassification,
+) string {
+	if b.p.taskSvc == nil || (route.Route != webapp.RouteTaskDetail && route.Route != webapp.RouteOffice) {
+		return ""
+	}
+	taskID := route.Params["taskId"]
+	if taskID == "" {
+		return ""
+	}
+	task, err := b.p.taskSvc.GetTask(ctx, taskID)
+	if err != nil {
+		b.logBootError("get quick-chat task route workspace", err)
+		return ""
+	}
+	if task == nil {
+		return ""
+	}
+	return task.WorkspaceID
+}
+
 func activeWorkspaceIDFromState(state map[string]any) string {
 	workspaces, ok := state["workspaces"].(map[string]any)
 	if !ok {
@@ -328,10 +363,6 @@ func (b bootStateBuilder) quickChatSessions(ctx context.Context, workspaceID str
 		return quickChatBootState{sessions: []map[string]any{}}, nil
 	}
 	taskIDs := taskIDs(tasks)
-	sessionsByTask, err := b.p.taskSvc.BatchGetSessionsForTasks(ctx, taskIDs)
-	if err != nil {
-		return quickChatBootState{}, err
-	}
 	primaryByTask, err := b.p.taskSvc.GetPrimarySessionInfoForTasks(ctx, taskIDs)
 	if err != nil {
 		return quickChatBootState{}, err
@@ -348,13 +379,13 @@ func (b bootStateBuilder) quickChatSessions(ctx context.Context, workspaceID str
 			continue
 		}
 		items = append(items, quickChatBootSession{
-			state:        mapQuickChatSessionState(task, primary),
-			lastActivity: quickChatLastActivity(task, sessionsByTask[task.ID]),
+			state:     mapQuickChatSessionState(task, primary),
+			createdAt: task.CreatedAt,
 		})
 		taskSessions[primary.ID] = taskdto.FromTaskSession(primary)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].lastActivity.After(items[j].lastActivity)
+		return items[i].createdAt.Before(items[j].createdAt)
 	})
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -379,8 +410,8 @@ func (b bootStateBuilder) listQuickChatTasks(ctx context.Context, workspaceID st
 }
 
 type quickChatBootSession struct {
-	state        map[string]any
-	lastActivity time.Time
+	state     map[string]any
+	createdAt time.Time
 }
 
 type quickChatBootState struct {
@@ -455,19 +486,6 @@ func quickChatAgentProfileID(task *taskmodels.Task, primary *taskmodels.TaskSess
 		return primary.AgentProfileID
 	}
 	return ""
-}
-
-func quickChatLastActivity(task *taskmodels.Task, sessions []*taskmodels.TaskSession) time.Time {
-	last := time.Time{}
-	if task != nil {
-		last = task.UpdatedAt
-	}
-	for _, session := range sessions {
-		if session != nil && session.UpdatedAt.After(last) {
-			last = session.UpdatedAt
-		}
-	}
-	return last
 }
 
 func (b bootStateBuilder) addKanbanSnapshotsState(

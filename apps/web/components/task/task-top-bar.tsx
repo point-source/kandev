@@ -4,8 +4,8 @@ import { memo, type ReactNode } from "react";
 import Link from "@/components/routing/app-link";
 import { IconBug, IconCircleDot } from "@tabler/icons-react";
 import { Button } from "@kandev/ui/button";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage } from "@kandev/ui/breadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@kandev/ui/tooltip";
+import { TaskTopBarTitle } from "@/components/task/task-top-bar-title";
 import { EditorsMenu } from "@/components/task/editors-menu";
 import { LayoutPresetSelector } from "@/components/task/layout-preset-selector";
 import { DocumentControls } from "@/components/task/document/document-controls";
@@ -17,6 +17,7 @@ import { useJiraAvailable } from "@/hooks/domains/jira/use-jira-availability";
 import { useLinearAvailable } from "@/hooks/domains/linear/use-linear-availability";
 import { PortForwardButton } from "@/components/task/port-forward-dialog";
 import { ExecutorSettingsButton } from "@/components/task/executor-settings-button";
+import { TaskUnarchiveButton } from "@/components/task/task-unarchive-button";
 import { WorkflowStepper, type WorkflowStepperStep } from "@/components/task/workflow-stepper";
 import { TopbarMetrics } from "@/components/system-metrics/topbar-metrics";
 import { isDebugUI } from "@/lib/config";
@@ -94,6 +95,7 @@ const TaskTopBar = memo(function TaskTopBar({
         )}
       </div>
       <TopBarRight
+        taskId={taskId}
         activeSessionId={activeSessionId}
         showDebugOverlay={showDebugOverlay}
         onToggleDebugOverlay={onToggleDebugOverlay}
@@ -149,20 +151,7 @@ function TopBarLeft({
   const showExecutorSettings = shouldShowExecutorEnvironmentControls(remoteExecutorType);
   return (
     <div className="flex min-w-0 max-w-[min(44rem,45vw)] items-center gap-2.5 overflow-hidden">
-      <Breadcrumb className="min-w-0 max-w-full">
-        <BreadcrumbList className="min-w-0 max-w-full flex-nowrap text-sm">
-          <BreadcrumbItem className="min-w-0 max-w-full">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <BreadcrumbPage className="block max-w-full truncate font-medium">
-                  {taskTitle ?? "Task details"}
-                </BreadcrumbPage>
-              </TooltipTrigger>
-              <TooltipContent>{taskTitle ?? "Task details"}</TooltipContent>
-            </Tooltip>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+      <TaskTopBarTitle taskId={taskId} taskTitle={taskTitle} isArchived={isArchived} />
 
       {!isArchived && showExecutorSettings && (
         <ExecutorSettingsButton taskId={taskId} sessionId={activeSessionId ?? null} />
@@ -335,6 +324,7 @@ function TopbarToolsGroup({
  *  The former overflow popover was removed in the UI overhaul — every cluster
  *  is always visible so users don't have to discover the dots menu. */
 function TopBarRight({
+  taskId,
   activeSessionId,
   showDebugOverlay,
   onToggleDebugOverlay,
@@ -347,6 +337,7 @@ function TopBarRight({
   issueNumber,
   officeTaskHref,
 }: {
+  taskId?: string | null;
   activeSessionId?: string | null;
   showDebugOverlay?: boolean;
   onToggleDebugOverlay?: () => void;
@@ -361,7 +352,12 @@ function TopBarRight({
 }) {
   return (
     <div className="flex items-center justify-self-end gap-2 [&_button]:whitespace-nowrap">
-      <TopbarMetrics activeSessionId={activeSessionId} />
+      <TopbarMetrics activeSessionId={activeSessionId} size="sm" />
+      {isArchived && (
+        <TopbarCluster label="Unarchive task" className="[&_button]:h-7 [&_button]:text-xs">
+          <TaskUnarchiveButton taskId={taskId} />
+        </TopbarCluster>
+      )}
       {officeTaskHref && (
         <TopbarCluster label="Open in office view" className="[&_a]:h-7 [&_a]:text-xs">
           <Button asChild size="sm" variant="outline" className="h-7 cursor-pointer px-2">
