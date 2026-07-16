@@ -1,3 +1,8 @@
+---
+title: "WebSocket API"
+description: "Reference for Kandev WebSocket messages and API behavior."
+---
+
 # Kandev WebSocket API
 
 This page documents the WebSocket envelope, current domain model, and the request actions used by the main task and agent workflow. It is not a substitute for the Go request types: payloads evolve with the application.
@@ -175,6 +180,7 @@ Direct create, update, delete, and reorder operations for individual workflow st
 | `session.delete` | Delete a session. |
 | `session.set_primary` | Set the primary session for a task. |
 | `session.set_plan_mode` | Enable or disable plan mode. |
+| `session.rename` | Set or clear a session's custom tab name. |
 | `message.add` | Persist a user message and forward it to the session when appropriate. |
 | `message.list` | List session messages. |
 | `message.search` | Search messages. |
