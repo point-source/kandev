@@ -1,4 +1,4 @@
-# 0043: Fine-grained foreground-idle busy signal
+# 0046: Fine-grained foreground-idle busy signal
 
 **Status:** accepted
 **Date:** 2026-07-11

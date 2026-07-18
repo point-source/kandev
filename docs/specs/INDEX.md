@@ -37,6 +37,7 @@ Product-wide capabilities that are not tied to a single feature area.
 | Spec | Status |
 |---|---|
 | [plugins](plugins/spec.md) | draft |
+| [fine-grained background-running status indicator](fine-grained-background-running-status-indicator/spec.md) | shipped |
 
 ## tasks/ — task & workflow model
 
