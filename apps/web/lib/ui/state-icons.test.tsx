@@ -4,6 +4,7 @@ import {
   IconCheck,
   IconCircleCheck,
   IconCircleFilled,
+  IconLoader,
   IconLoader2,
   IconMessageQuestion,
 } from "@tabler/icons-react";
@@ -33,8 +34,75 @@ describe("getTaskStateIcon", () => {
   });
 });
 
+describe("getTaskStateIcon — task-level activity tri-state", () => {
+  //  (a) generating → the established running spinner (IconLoader2)
+  //  (b) background → a distinct spinner (IconLoader), NEVER the done check
+  //  (c) done       → the coarse check (IconCheck)
+  it("(a) generating shows the running spinner even when the coarse state is done", () => {
+    // Most-active-wins: a generating session outranks a finished primary that
+    // would otherwise render the done check.
+    expect(iconType(getTaskStateIcon("COMPLETED", undefined, false, "generating"))).toBe(
+      IconLoader2,
+    );
+  });
+
+  it("(b) background shows a working spinner — never the done check — over a done coarse state", () => {
+    const bg = getTaskStateIcon("COMPLETED", undefined, false, "background");
+    expect(iconType(bg)).toBe(IconLoader);
+    expect(iconType(bg)).not.toBe(IconCheck);
+  });
+
+  it("(c) falls through to the coarse task state when no session is active", () => {
+    expect(iconType(getTaskStateIcon("COMPLETED", undefined, false, null))).toBe(IconCheck);
+    expect(iconType(getTaskStateIcon("COMPLETED", undefined, false, undefined))).toBe(IconCheck);
+  });
+
+  it("safe fallback: an in-progress task with a MISSING aggregate reads not-done, never a check", () => {
+    // §spec:live-propagation-fallback safe default: a task whose turn is still
+    // open (coarse IN_PROGRESS) but whose task-level aggregate is unknown — e.g.
+    // the aggregate never reached this client, or the in-memory tracker reset on
+    // a backend restart — must fall back to the working spinner, never the done
+    // check. The coarse IN_PROGRESS reading is itself not-done, so a missing
+    // aggregate can only ever soften to working, never harden to done.
+    const missingUndefined = getTaskStateIcon("IN_PROGRESS", undefined, false, undefined);
+    const missingNull = getTaskStateIcon("IN_PROGRESS", undefined, false, null);
+    expect(iconType(missingUndefined)).toBe(IconLoader2);
+    expect(iconType(missingUndefined)).not.toBe(IconCheck);
+    expect(iconType(missingNull)).toBe(IconLoader2);
+    expect(iconType(missingNull)).not.toBe(IconCheck);
+  });
+
+  it("distinguishes background from BOTH generating and done by icon SHAPE, not hue alone", () => {
+    // Icon TYPE (glyph) differs for all three, so the reading survives a
+    // grayscale/desaturated scan for color-vision-deficient operators
+    // (§req:not-color-alone).
+    const generating = iconType(getTaskStateIcon("IN_PROGRESS", undefined, false, "generating"));
+    const background = iconType(getTaskStateIcon("IN_PROGRESS", undefined, false, "background"));
+    const done = iconType(getTaskStateIcon("COMPLETED", undefined, false, null));
+    expect(background).not.toBe(generating);
+    expect(background).not.toBe(done);
+    expect(generating).not.toBe(done);
+  });
+
+  it("also separates background from generating and done by HUE on the compact surfaces", () => {
+    // The dense board/list/graph surfaces get an extra hue separation on top of the
+    // shape difference so background reads apart from generating at a glance — its
+    // own violet, distinct from generating's blue and done's green.
+    const generating = iconClassName(
+      getTaskStateIcon("IN_PROGRESS", undefined, false, "generating"),
+    );
+    const background = iconClassName(
+      getTaskStateIcon("IN_PROGRESS", undefined, false, "background"),
+    );
+    const done = iconClassName(getTaskStateIcon("COMPLETED", undefined, false, null));
+    expect(background).toContain("text-violet-500");
+    expect(background).not.toBe(generating);
+    expect(background).not.toBe(done);
+  });
+});
+
 describe("getSessionStateIcon — fine-grained busy tri-state", () => {
-  // ADR-0038. Three distinguishable conditions:
+  // ADR-0043. Three distinguishable conditions:
   //  (a) RUNNING + generating  → the established static "running" dot (unchanged)
   //  (b) RUNNING + background   → working-in-background spinner, NOT the done check
   //  (c) COMPLETED              → done checkmark
@@ -75,6 +143,20 @@ describe("getSessionStateIcon — fine-grained busy tri-state", () => {
     expect(iconType(getSessionStateIcon("COMPLETED", undefined, "background"))).toBe(
       IconCircleCheck,
     );
+  });
+
+  it("distinguishes background-running from BOTH generating and done by icon SHAPE, not hue alone", () => {
+    // §req:not-color-alone: the three affordances must be separable in a
+    // grayscale/desaturated scan. Asserting the icon *component* (shape) differs
+    // — independent of className/hue — guarantees the distinction survives for
+    // color-vision-deficient operators. This locks getSessionStateIcon as the
+    // single source every session surface calls for all three states.
+    const generating = iconType(getSessionStateIcon("RUNNING", undefined, "generating"));
+    const background = iconType(getSessionStateIcon("RUNNING", undefined, "background"));
+    const done = iconType(getSessionStateIcon("COMPLETED"));
+    expect(background).not.toBe(generating);
+    expect(background).not.toBe(done);
+    expect(generating).not.toBe(done);
   });
 });
 
