@@ -55,6 +55,8 @@ import (
 	officesqlite "github.com/kandev/kandev/internal/office/repository/sqlite"
 	officetestharness "github.com/kandev/kandev/internal/office/testharness"
 	"github.com/kandev/kandev/internal/orchestrator"
+	"github.com/kandev/kandev/internal/plugins"
+	pluginstore "github.com/kandev/kandev/internal/plugins/store"
 	promptcontroller "github.com/kandev/kandev/internal/prompts/controller"
 	prompthandlers "github.com/kandev/kandev/internal/prompts/handlers"
 	"github.com/kandev/kandev/internal/repoclone"
@@ -430,11 +432,20 @@ func appendSessionModelsMessage(sessionID string, session *models.TaskSession, l
 		CurrentModelID: modelState.CurrentModelID,
 		Models:         modelState.Models,
 		ConfigOptions:  modelState.ConfigOptions,
+		ConfigBaseline: sessionACPConfigBaseline(session),
 	})
 	if err == nil {
 		result = append(result, notification)
 	}
 	return result
+}
+
+func sessionACPConfigBaseline(session *models.TaskSession) map[string]string {
+	if session == nil {
+		return nil
+	}
+	baseline, _ := models.LoadSessionACPConfigBaseline(session.Metadata)
+	return baseline
 }
 
 // routeParams holds all dependencies needed for HTTP and WebSocket route registration.
@@ -451,6 +462,7 @@ type routeParams struct {
 	eventBus                bus.EventBus
 	services                *Services
 	systemSvc               *systemsvc.Service
+	workspaceRestorer       taskhandlers.WorkspaceQuarantineRestorer
 	runtimeFlagsSvc         *runtimeflags.Service
 	agentSettingsController *agentsettingscontroller.Controller
 	agentSettingsRepo       settingsstore.Repository
@@ -671,7 +683,45 @@ func bootPayload(ctx context.Context, req *http.Request, p routeParams, route we
 		bootInitialState(ctx, req, p, route),
 	)
 	payload.RouteData = bootRouteData(ctx, req, p, route)
+	payload.Plugins = bootActivePlugins(p)
 	return payload
+}
+
+// bootActivePlugins populates the boot payload's Plugins list from every
+// active, UI-bundle-declaring plugin, per
+// docs/plans/plugins/PLUGIN-API.md ("Loading model"). Gated on
+// features.Plugins — separate from the /api/v1/features flag map itself,
+// this is active-bundle data the frontend still gates loading on via
+// useFeature("plugins").
+func bootActivePlugins(p routeParams) []webapp.ActivePluginPayload {
+	if !p.features.Plugins || p.services == nil || p.services.Plugins == nil {
+		return nil
+	}
+	records := p.services.Plugins.ActiveUIPlugins()
+	out := make([]webapp.ActivePluginPayload, 0, len(records))
+	for _, rec := range records {
+		out = append(out, webapp.ActivePluginPayload{
+			ID:        rec.ID,
+			Name:      rec.DisplayName,
+			BundleURL: "/api/plugins/" + rec.ID + "/bundle",
+			StyleURLs: pluginStyleURLs(rec),
+		})
+	}
+	return out
+}
+
+// pluginStyleURLs maps a plugin's root-relative ui.styles paths to
+// browser-facing URLs served through the /api/plugins/:id/ui/* proxy (the
+// plugin's own base_url is never exposed to the browser directly).
+func pluginStyleURLs(rec pluginstore.Record) []string {
+	if len(rec.UI.Styles) == 0 {
+		return nil
+	}
+	urls := make([]string, 0, len(rec.UI.Styles))
+	for _, style := range rec.UI.Styles {
+		urls = append(urls, "/api/plugins/"+rec.ID+"/ui"+style)
+	}
+	return urls
 }
 
 func webAssetsFS() (fs.FS, string, bool) {
@@ -787,6 +837,9 @@ func registerTaskRoutes(p routeParams, planService *taskservice.PlanService, han
 	}
 	if handoffSvc != nil {
 		taskH.SetHandoffService(handoffSvc)
+	}
+	if p.workspaceRestorer != nil {
+		taskH.SetWorkspaceQuarantineRestorer(p.workspaceRestorer)
 	}
 	if p.services.GitHub != nil {
 		ghSvc := p.services.GitHub
@@ -938,6 +991,11 @@ func registerSecondaryRoutes(
 		p.log.Debug("Registered Automation handlers (HTTP + WebSocket)")
 	}
 
+	if p.features.Plugins && p.services.Plugins != nil {
+		plugins.RegisterRoutes(p.router, p.services.Plugins, p.services.Plugins.Deliverer(), p.log)
+		p.log.Debug("Registered Plugins handlers (HTTP)")
+	}
+
 	docker.RegisterDockerRoutes(p.router, p.lifecycleMgr.DockerClientProvider(), dockerTaskTitleProvider(p.taskRepo, p.log), p.log)
 	p.log.Debug("Registered Docker management handlers (HTTP)")
 
@@ -1033,12 +1091,16 @@ func registerHealthRoutes(p routeParams) {
 		oslimits.NewOSLimitsChecker(oslimits.NewInotifyProbe()),
 		5*time.Minute,
 	)
-	healthSvc := health.NewService(p.log,
+	checkers := []health.Checker{
 		health.NewGitExecutableChecker(),
 		githubChecker,
 		health.NewAgentChecker(p.agentSettingsController),
 		osLimitsChecker,
-	)
+	}
+	if p.systemSvc != nil && p.systemSvc.StorageRuntime != nil {
+		checkers = append(checkers, p.systemSvc.StorageRuntime)
+	}
+	healthSvc := health.NewService(p.log, checkers...)
 	health.RegisterRoutes(p.router, healthSvc, p.log)
 }
 

@@ -98,6 +98,9 @@ func (m *mockRepository) UpdateTaskState(ctx context.Context, id string, state v
 func (m *mockRepository) UpdateTaskStateIfCurrentIn(_ context.Context, _ string, _ v1.TaskState, _ []v1.TaskState) (v1.TaskState, bool, error) {
 	return "", false, nil
 }
+func (m *mockRepository) UpdateTaskStateIfNotArchived(_ context.Context, _ string, _ v1.TaskState) (v1.TaskState, bool, error) {
+	return "", false, nil
+}
 func (m *mockRepository) AddTaskToWorkflow(ctx context.Context, taskID, workflowID, columnID string, position int) error {
 	return nil
 }
@@ -535,6 +538,9 @@ func (m *mockRepository) SetSessionMetadataKey(ctx context.Context, sessionID, k
 	}
 	return nil
 }
+func (m *mockRepository) SetSessionACPSessionID(_ context.Context, _ string, _ string) (bool, error) {
+	return false, nil
+}
 func (m *mockRepository) DismissLastAgentError(_ context.Context, _ string, _ models.LastAgentError, _ time.Time) (bool, error) {
 	return true, nil
 }
@@ -715,7 +721,7 @@ func TestResolveScriptCommandErrors(t *testing.T) {
 	}
 }
 
-func TestSetSessionRuntimeConfigPersistsWithoutRunningAgent(t *testing.T) {
+func TestSetSessionRuntimeConfigOverridesPersistWithoutRunningAgent(t *testing.T) {
 	tests := []struct {
 		name       string
 		path       string
@@ -801,9 +807,9 @@ func TestSetSessionRuntimeConfigPersistsWithoutRunningAgent(t *testing.T) {
 			if resp.Code != http.StatusOK {
 				t.Fatalf("expected idle session update to succeed, got %d: %s", resp.Code, resp.Body.String())
 			}
-			cfg, ok := models.LoadSessionRuntimeConfig(session.Metadata)
+			cfg, ok := models.LoadSessionRuntimeConfigOverrides(session.Metadata)
 			if !ok {
-				t.Fatalf("expected persisted runtime config, got %+v", session.Metadata)
+				t.Fatalf("expected persisted runtime config overrides, got %+v", session.Metadata)
 			}
 			tt.assertions(t, cfg, session.Metadata)
 		})

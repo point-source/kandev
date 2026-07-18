@@ -30,6 +30,7 @@ import {
   createFeaturesSlice,
   createAutomationsSlice,
   createSystemSlice,
+  createPluginsSlice,
   defaultKanbanState,
   defaultWorkspaceState,
   defaultSettingsState,
@@ -44,6 +45,7 @@ import {
   defaultFeaturesState,
   defaultAutomationsState,
   defaultSystemState,
+  defaultPluginsState,
   type WorkspaceState,
   type WorkflowsState,
   type ExecutorsState,
@@ -71,6 +73,7 @@ import {
   type AutomationsSliceActions,
   type FeaturesSliceActions,
   type GitHubSliceActions,
+  type PluginsSliceActions,
 } from "./slices";
 import type {
   AvailableCommand,
@@ -217,6 +220,9 @@ export type AppState = {
 
   // System slice (actions merged via SystemSliceActions intersection on AppState)
   system: (typeof defaultSystemState)["system"];
+
+  // Plugins slice (actions merged via PluginsSliceActions intersection on AppState)
+  plugins: (typeof defaultPluginsState)["plugins"];
 
   // UI slice
   previewPanel: (typeof defaultUIState)["previewPanel"];
@@ -500,6 +506,7 @@ export type AppState = {
       currentModelId: string;
       models: SessionModelEntry[];
       configOptions: ConfigOptionEntry[];
+      configBaseline?: Record<string, string>;
     },
   ) => void;
   // Prompt usage actions
@@ -518,6 +525,7 @@ export type AppState = {
   ) => void;
   setSessionPollMode: (sessionId: string, mode: SessionPollMode) => void;
   /* prettier-ignore */ setSidebarActiveView: UIA["setSidebarActiveView"];
+  createSidebarView: UIA["createSidebarView"];
   updateSidebarDraft: UIA["updateSidebarDraft"];
   saveSidebarDraftAs: UIA["saveSidebarDraftAs"];
   saveSidebarDraftOverwrite: UIA["saveSidebarDraftOverwrite"];
@@ -591,7 +599,8 @@ export type AppState = {
 } & GitHubSliceActions &
   SystemSliceActions &
   FeaturesSliceActions &
-  AutomationsSliceActions;
+  AutomationsSliceActions &
+  PluginsSliceActions;
 
 export function createAppStore(initialState?: Partial<AppState>) {
   const merged = mergeInitialState(initialState);
@@ -627,6 +636,8 @@ export function createAppStore(initialState?: Partial<AppState>) {
       ...createUISlice(set as any, get as any, api as any),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...createAutomationsSlice(set as any, get as any, api as any),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...createPluginsSlice(set as any, get as any, api as any),
       // Re-assert merged initial state so caller-supplied values win over slice defaults.
       ...buildStateOverrides(merged),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

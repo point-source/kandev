@@ -27,9 +27,16 @@ The office umbrella covers kandev's autonomous-agent product surface: workspaces
 | [live-updates](office/live-updates.md) | draft |
 | [inbox](office/inbox.md) | draft |
 | [assistant](office/assistant.md) | draft |
-| [plugins](office/plugins.md) | draft |
 | [automations-settings](office/automations-settings.md) | draft |
 | [testing](office/testing.md) | shipped |
+
+## platform/ — cross-cutting capabilities
+
+Product-wide capabilities that are not tied to a single feature area.
+
+| Spec | Status |
+|---|---|
+| [plugins](plugins/spec.md) | draft |
 
 ## tasks/ — task & workflow model
 
@@ -43,6 +50,7 @@ Kandev's task model: documents, execution stages, labels, blocker escalation, su
 | [model-unification](tasks/model-unification.md) | draft |
 | [without-repositories](tasks/without-repositories.md) | draft |
 | [subtask-checklist](tasks/subtask-checklist.md) | shipped |
+| [subtask-detachment](tasks/subtask-detachment.md) | shipped |
 | [subtask-completion-trigger](tasks/subtask-completion-trigger.md) | draft |
 | [subtree-controls](tasks/subtree-controls.md) | shipped |
 | [blocked-task-escalation](tasks/blocked-task-escalation.md) | draft |
@@ -99,8 +107,11 @@ Subscription quota tracking and per-agent cheap-model profile routing.
 | [comment-markdown](ui/comment-markdown.md) | shipped |
 | [empty-turn-notice](ui/empty-turn-notice.md) | shipped |
 | [acp-shell-command-output](ui/acp-shell-command-output.md) | shipped |
+| [acp-model-configuration-summary](ui/acp-model-configuration-summary.md) | shipped |
 | [review-file-status](ui/review-file-status.md) | building |
+| [sidebar-view-creation](ui/sidebar-view-creation.md) | shipped |
 | [slash-command-composer](ui/slash-command-composer.md) | shipped |
+| [mobile-task-navigation](ui/mobile-task-navigation.md) | shipped |
 
 ## system-page/ — operational diagnostics & maintenance UI
 
@@ -110,6 +121,7 @@ System pages (Radarr/Sonarr-style) for status, disk usage, database maintenance,
 |---|---|
 | [system-page](system-page/spec.md) | draft |
 | [feature-toggles](feature-toggles/spec.md) | draft |
+| [storage-maintenance](system-page/storage-maintenance.md) | building |
 
 ---
 
@@ -117,6 +129,7 @@ System pages (Radarr/Sonarr-style) for status, disk usage, database maintenance,
 
 | Spec | Status |
 |---|---|
+| [workflow-cycle-guardrails](workflow-cycle-guardrails/spec.md) | building |
 | [improve-kandev](improve-kandev/spec.md) | draft |
 | [homebrew-core](homebrew-core/spec.md) | draft |
 | [native-kandev-cli](native-kandev-cli/spec.md) | draft |
@@ -124,6 +137,7 @@ System pages (Radarr/Sonarr-style) for status, disk usage, database maintenance,
 | [public-share-links](public-share-links/spec.md) | draft |
 | [ssh-executor](ssh-executor/spec.md) | draft |
 | [cli-mode-parity](cli-mode-parity/spec.md) | draft |
+| [mobile-quick-chat-topbar](mobile-quick-chat-topbar/spec.md) | building |
 
 ---
 

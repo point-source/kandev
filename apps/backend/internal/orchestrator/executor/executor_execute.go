@@ -148,7 +148,23 @@ func (e *Executor) writeTaskReviewStateIfNoWorkingSessions(ctx context.Context, 
 	if e.hasOtherWorkingSessions(ctx, taskID, failedSessionID) {
 		return
 	}
-	if updateErr := e.updateTaskState(ctx, taskID, v1.TaskStateReview); updateErr != nil {
+	// When onTaskStateChange is configured, it owns event publishing for
+	// this write (see its doc comment) — keep routing through it rather
+	// than bypassing it. Only when NEITHER callback is set (no orchestrator
+	// wiring at all — production always wires both, see service.go's
+	// exec.SetOnTaskStateChange/SetOnTaskReviewStateReconcile) do we fall
+	// back to the archive-aware UpdateTaskStateIfCurrentIn CAS directly on
+	// the repository, so even that raw path can't race an archive that
+	// commits between shouldSkipFailedStartReviewForTask's read and this write.
+	if e.onTaskStateChange != nil {
+		if updateErr := e.onTaskStateChange(ctx, taskID, v1.TaskStateReview); updateErr != nil {
+			e.logger.Warn("failed to update task state to REVIEW after start error",
+				zap.String("task_id", taskID),
+				zap.Error(updateErr))
+		}
+		return
+	}
+	if _, _, updateErr := e.repo.UpdateTaskStateIfCurrentIn(ctx, taskID, v1.TaskStateReview, []v1.TaskState{v1.TaskStateInProgress, v1.TaskStateScheduling}); updateErr != nil {
 		e.logger.Warn("failed to update task state to REVIEW after start error",
 			zap.String("task_id", taskID),
 			zap.Error(updateErr))
@@ -166,6 +182,12 @@ func (e *Executor) shouldSkipFailedStartReviewForTask(ctx context.Context, taskI
 	}
 	if task != nil && task.AssigneeAgentProfileID != "" {
 		e.logger.Debug("skipping failed-start task REVIEW state for office task",
+			zap.String("task_id", taskID),
+			zap.String("session_id", failedSessionID))
+		return true
+	}
+	if task != nil && task.ArchivedAt != nil {
+		e.logger.Debug("skipping failed-start task REVIEW state for archived task",
 			zap.String("task_id", taskID),
 			zap.String("session_id", failedSessionID))
 		return true
@@ -227,12 +249,15 @@ func isRuntimeWorkingSessionState(state models.TaskSessionState) bool {
 }
 
 // updateTaskState updates a task's state, using the callback if set for event publishing,
-// or falling back to the raw repository.
+// or falling back to the archive-aware CAS (UpdateTaskStateIfNotArchived) directly. Every
+// call site here is a runtime-driven write (IN_PROGRESS on start/resume, FAILED on launch
+// error) that must never resurrect an archived task's state (PR #1706 review).
 func (e *Executor) updateTaskState(ctx context.Context, taskID string, state v1.TaskState) error {
 	if e.onTaskStateChange != nil {
 		return e.onTaskStateChange(ctx, taskID, state)
 	}
-	return e.repo.UpdateTaskState(ctx, taskID, state)
+	_, _, err := e.repo.UpdateTaskStateIfNotArchived(ctx, taskID, state)
+	return err
 }
 
 // updateSessionState updates a session's state, using the callback if set for event publishing,
@@ -523,6 +548,22 @@ func (e *Executor) LaunchPreparedSession(ctx context.Context, task *v1.Task, ses
 		return nil, fmt.Errorf("session does not belong to task")
 	}
 
+	running, _ := e.repo.GetExecutorRunningBySessionID(ctx, sessionID)
+	if running != nil && running.ExecutionProfileID != "" &&
+		running.ExecutionProfileID != agentProfileID {
+		if running.AgentExecutionID != "" {
+			if err := e.agentManager.StopAgentWithReason(
+				ctx, running.AgentExecutionID, "execution profile changed", true,
+			); err != nil && !errors.Is(err, lifecycle.ErrExecutionNotFound) {
+				return nil, fmt.Errorf("stop previous execution profile: %w", err)
+			}
+		}
+		if err := e.repo.DeleteExecutorRunningBySessionID(ctx, sessionID); err != nil {
+			return nil, fmt.Errorf("clear previous execution profile: %w", err)
+		}
+		running = nil
+	}
+
 	// Inject session handover context if there are previous sessions for this task.
 	prompt = e.injectHandoverIfNeeded(ctx, task.ID, sessionID, prompt)
 
@@ -585,6 +626,11 @@ func (e *Executor) LaunchPreparedSession(ctx context.Context, task *v1.Task, ses
 	if err != nil {
 		return nil, err
 	}
+	req.OfficeAgentProfileID = opts.OfficeAgentProfileID
+	if req.OfficeAgentProfileID == "" && session.AgentProfileID != "" {
+		req.OfficeAgentProfileID = session.AgentProfileID
+	}
+	req.StartAgent = startAgent
 	mergeEnv(req, opts.Env)
 	if opts.RouteOverride != nil {
 		req.RouteOverride = opts.RouteOverride
@@ -604,12 +650,12 @@ func (e *Executor) LaunchPreparedSession(ctx context.Context, task *v1.Task, ses
 	// Unlike ResumeSession we do NOT clear req.TaskDescription — wakeups
 	// deliver the new comment / event as the prompt.
 	if startAgent {
-		if running, _ := e.repo.GetExecutorRunningBySessionID(ctx, sessionID); running != nil && running.ResumeToken != "" {
-			req.ACPSessionID = running.ResumeToken
+		if token := resumeTokenForExecutionProfile(running, agentProfileID); token != "" {
+			req.ACPSessionID = token
 			e.logger.Info("resuming ACP session via stored resume token",
 				zap.String("task_id", task.ID),
 				zap.String("session_id", sessionID),
-				zap.String("acp_session_id", running.ResumeToken))
+				zap.String("acp_session_id", token))
 		}
 	}
 
@@ -650,6 +696,14 @@ func (e *Executor) LaunchPreparedSession(ctx context.Context, task *v1.Task, ses
 	}(sessionID)
 
 	return e.finalizeLaunch(ctx, task, session, agentProfileID, sessionID, primaryRepo, resp, startAgent, execCfg)
+}
+
+func resumeTokenForExecutionProfile(running *models.ExecutorRunning, profileID string) string {
+	if running == nil || profileID == "" ||
+		(running.ExecutionProfileID != "" && running.ExecutionProfileID != profileID) {
+		return ""
+	}
+	return running.ResumeToken
 }
 
 // handleLaunchFailure marks the session and task as FAILED and returns the original error.

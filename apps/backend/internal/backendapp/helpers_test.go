@@ -15,10 +15,14 @@ import (
 	"github.com/kandev/kandev/internal/agent/executor"
 	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
 	"github.com/kandev/kandev/internal/agentctl/server/process"
+	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/common/config"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/db"
 	"github.com/kandev/kandev/internal/events/bus"
+	gateways "github.com/kandev/kandev/internal/gateway/websocket"
+	storagepkg "github.com/kandev/kandev/internal/system/storage"
+	storageworkspaces "github.com/kandev/kandev/internal/system/storage/workspaces"
 	taskdto "github.com/kandev/kandev/internal/task/dto"
 	"github.com/kandev/kandev/internal/task/models"
 	taskrepo "github.com/kandev/kandev/internal/task/repository"
@@ -34,6 +38,69 @@ import (
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	ws "github.com/kandev/kandev/pkg/websocket"
 )
+
+func TestRegisterTaskRoutesWiresProductionWorkspaceRestorer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	harness := newBootStateTestHarness(t)
+	ctx := context.Background()
+	workspaces, err := harness.taskSvc.ListWorkspaces(ctx)
+	if err != nil || len(workspaces) == 0 {
+		t.Fatalf("ListWorkspaces: workspaces=%d err=%v", len(workspaces), err)
+	}
+	workflows, err := harness.taskSvc.ListWorkflows(ctx, workspaces[0].ID, true)
+	if err != nil || len(workflows) == 0 {
+		t.Fatalf("ListWorkflows: workflows=%d err=%v", len(workflows), err)
+	}
+	steps, err := harness.workflowSvc.ListStepsByWorkflow(ctx, workflows[0].ID)
+	if err != nil || len(steps) == 0 {
+		t.Fatalf("ListStepsByWorkflow: steps=%d err=%v", len(steps), err)
+	}
+	task, err := harness.taskSvc.CreateTask(ctx, &taskservice.CreateTaskRequest{
+		WorkspaceID: workspaces[0].ID, WorkflowID: workflows[0].ID,
+		WorkflowStepID: steps[0].ID, Title: "Production unarchive wiring",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := harness.taskRepo.ArchiveTask(ctx, task.ID); err != nil {
+		t.Fatalf("ArchiveTask: %v", err)
+	}
+	log, _ := logger.NewLogger(logger.LoggingConfig{Level: "error", Format: "json", OutputPath: "stdout"})
+	router := gin.New()
+	gateway := gateways.NewGateway(log)
+	settings, store := newStorageMaintenanceStores(t)
+	composition := storageComposition{workspaceRestorer: &workspaceQuarantineController{
+		settings: settings,
+		factory: func(storagepkg.StorageMaintenanceSettings) *storageworkspaces.Provider {
+			return storageworkspaces.New(storageworkspaces.Config{Store: store})
+		},
+	}}
+	handoff := taskservice.NewHandoffService(
+		harness.taskRepo, harness.taskRepo,
+		taskservice.NewDocumentService(harness.taskRepo, log), nil, nil, log,
+	)
+	registerTaskRoutes(routeParams{
+		router: router, gateway: gateway, taskSvc: harness.taskSvc, taskRepo: harness.taskRepo,
+		services: &Services{Workflow: harness.workflowSvc}, workspaceRestorer: composition.workspaceRestorer, log: log,
+	}, taskservice.NewPlanService(harness.taskRepo, nil, log), handoff)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/unarchive", nil)
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unarchive status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		WorkspaceRecovery []storageworkspaces.WorkspaceRecovery `json:"workspace_recovery"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.WorkspaceRecovery) != 1 || response.WorkspaceRecovery[0].Status != "not_found" {
+		t.Fatalf("workspace recovery = %#v", response.WorkspaceRecovery)
+	}
+}
 
 func decodePayload(t *testing.T, raw json.RawMessage) map[string]interface{} {
 	t.Helper()
@@ -666,6 +733,103 @@ func TestBootTaskDetailMessagesProjectShellOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"stdout_bytes":20`) {
 		t.Fatalf("boot message payload missing shell output summary: %s", raw)
+	}
+}
+
+func TestBootRouteDataTaskDetailIncludesPersistedSessionModels(t *testing.T) {
+	harness := newBootStateTestHarness(t)
+	ctx := context.Background()
+	workspaces, err := harness.taskSvc.ListWorkspaces(ctx)
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	workflows, err := harness.taskSvc.ListWorkflows(ctx, workspaces[0].ID, true)
+	if err != nil {
+		t.Fatalf("ListWorkflows: %v", err)
+	}
+	steps, err := harness.workflowSvc.ListStepsByWorkflow(ctx, workflows[0].ID)
+	if err != nil {
+		t.Fatalf("ListStepsByWorkflow: %v", err)
+	}
+	task, err := harness.taskSvc.CreateTask(ctx, &taskservice.CreateTaskRequest{
+		WorkspaceID: workspaces[0].ID, WorkflowID: workflows[0].ID,
+		WorkflowStepID: steps[0].ID, Title: "Hydrated model selector",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	session := &models.TaskSession{
+		ID: "boot-model-session", TaskID: task.ID, IsPrimary: true,
+		Metadata: map[string]interface{}{
+			models.SessionMetaKeyACPConfigBaseline: map[string]string{"effort": "medium"},
+			models.SessionMetaKeyACPModelState: lifecycle.SessionModelsSnapshot{
+				CurrentModelID: "gpt-5.6-sol",
+				Models:         []streams.SessionModelInfo{{ModelID: "gpt-5.6-sol", Name: "GPT-5.6-Sol"}},
+				ConfigOptions: []streams.ConfigOption{{
+					Type: "select", ID: "effort", Name: "Reasoning effort",
+					Description: "Provider option help", CurrentValue: "high",
+					Options: []streams.ConfigOptionValue{{Value: "high", Name: "High", Description: "Provider value help"}},
+				}},
+			},
+		},
+	}
+	if err := harness.taskRepo.CreateTaskSession(ctx, session); err != nil {
+		t.Fatalf("CreateTaskSession: %v", err)
+	}
+
+	routeData := bootRouteData(ctx, nil, routeParams{
+		taskSvc:  harness.taskSvc,
+		services: &Services{Workflow: harness.workflowSvc},
+	}, webapp.ClassifyRoute("/t/"+task.ID))
+	raw, err := json.Marshal(routeData)
+	if err != nil {
+		t.Fatalf("Marshal route data: %v", err)
+	}
+	var decoded struct {
+		TaskDetail struct {
+			InitialState struct {
+				SessionModels struct {
+					BySessionID map[string]struct {
+						CurrentModelID string `json:"currentModelId"`
+						Models         []struct {
+							ModelID string `json:"modelId"`
+						} `json:"models"`
+						ConfigOptions []struct {
+							ID           string                      `json:"id"`
+							Description  string                      `json:"description"`
+							CurrentValue string                      `json:"currentValue"`
+							Options      []streams.ConfigOptionValue `json:"options"`
+						} `json:"configOptions"`
+						ConfigBaseline map[string]string `json:"configBaseline"`
+					} `json:"bySessionId"`
+				} `json:"sessionModels"`
+			} `json:"initialState"`
+		} `json:"taskDetail"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal route data: %v", err)
+	}
+	got := decoded.TaskDetail.InitialState.SessionModels.BySessionID[session.ID]
+	if got.CurrentModelID != "gpt-5.6-sol" || len(got.Models) != 1 || got.Models[0].ModelID != "gpt-5.6-sol" {
+		t.Fatalf("boot model state = %#v", got)
+	}
+	if len(got.ConfigOptions) != 1 || got.ConfigOptions[0].CurrentValue != "high" {
+		t.Fatalf("boot config options = %#v", got.ConfigOptions)
+	}
+	if got.ConfigOptions[0].Description != "Provider option help" || got.ConfigOptions[0].Options[0].Description != "Provider value help" {
+		t.Fatalf("provider descriptions missing from boot config: %#v", got.ConfigOptions[0])
+	}
+	if got.ConfigBaseline["effort"] != "medium" {
+		t.Fatalf("boot config baseline = %#v, want effort=medium", got.ConfigBaseline)
+	}
+}
+
+func TestTaskSessionModelsBootStateOmitsUnavailableBaseline(t *testing.T) {
+	state := taskSessionModelsBootState(lifecycle.SessionModelsSnapshot{
+		CurrentModelID: "gpt-5.6-sol",
+	}, nil)
+	if _, ok := state["configBaseline"]; ok {
+		t.Fatal("boot selector state must omit an unavailable baseline")
 	}
 }
 

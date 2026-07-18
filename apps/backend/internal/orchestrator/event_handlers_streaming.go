@@ -387,36 +387,70 @@ func (s *Service) handleToolUpdateEvent(ctx context.Context, payload *lifecycle.
 
 	// Determine message type from normalized payload for fallback creation
 	msgType := toolKindToMessageType(payload.Data.Normalized)
-
-	// Handle all status updates (running, complete, error, cancelled, pending, in_progress)
-	switch payload.Data.ToolStatus {
+	status := payload.Data.ToolStatus
+	switch status {
 	case "running", agentEventComplete, agentEventCompleted, "success", agentEventError, agentEventFailed, "cancelled", "pending", "in_progress":
-		if err := s.messageCreator.UpdateToolCallMessage(
-			ctx,
-			payload.TaskID,
-			payload.Data.ToolCallID,
-			payload.Data.ParentToolCallID, // Pass parent for subagent nesting
-			payload.Data.ToolStatus,
-			"", // result - no longer used, tool results in NormalizedPayload
-			payload.SessionID,
-			payload.Data.ToolTitle,               // Include title from update event
-			s.getActiveTurnID(payload.SessionID), // Turn ID for fallback creation
-			msgType,                              // Message type for fallback creation
-			payload.Data.Normalized,              // Pass normalized tool data for message metadata
-		); err != nil {
-			s.logger.Warn("failed to update tool call message",
+	default:
+		return
+	}
+	terminal := isTerminalToolUpdateStatus(status)
+	turnID := ""
+	if terminal {
+		var err error
+		turnID, err = s.peekActiveTurnID(ctx, payload.SessionID)
+		if err != nil {
+			s.logger.Warn("failed to look up active turn for terminal tool update",
 				zap.String("task_id", payload.TaskID),
+				zap.String("session_id", payload.SessionID),
 				zap.String("tool_call_id", payload.Data.ToolCallID),
 				zap.Error(err))
+			// Fail closed: without a confirmed active turn, this must be an
+			// update-only reconciliation and cannot wake a settled session.
+			turnID = ""
 		}
+	} else {
+		turnID = s.getActiveTurnID(payload.SessionID)
+	}
+	fallbackMsgType := msgType
+	if terminal && turnID == "" {
+		// A late terminal update can update its existing card, but must not
+		// create a message (and implicitly a turn) after the turn settled.
+		fallbackMsgType = ""
+	}
 
-		// Update session state for completion events.
-		// Use setSessionRunning so the task flips to IN_PROGRESS alongside —
-		// see comment in handleToolCallEvent for the REVIEW/RUNNING split bug.
-		if payload.Data.ToolStatus == agentEventComplete || payload.Data.ToolStatus == agentEventCompleted ||
-			payload.Data.ToolStatus == "success" || payload.Data.ToolStatus == agentEventError || payload.Data.ToolStatus == agentEventFailed {
-			s.setSessionRunningForExecution(ctx, payload.TaskID, payload.SessionID, payload.ExecutionID)
-		}
+	if err := s.messageCreator.UpdateToolCallMessage(
+		ctx,
+		payload.TaskID,
+		payload.Data.ToolCallID,
+		payload.Data.ParentToolCallID, // Pass parent for subagent nesting
+		status,
+		"", // result - no longer used, tool results in NormalizedPayload
+		payload.SessionID,
+		payload.Data.ToolTitle,  // Include title from update event
+		turnID,                  // Turn ID for fallback creation
+		fallbackMsgType,         // Empty for settled terminal reconciliations
+		payload.Data.Normalized, // Pass normalized tool data for message metadata
+	); err != nil {
+		s.logger.Warn("failed to update tool call message",
+			zap.String("task_id", payload.TaskID),
+			zap.String("tool_call_id", payload.Data.ToolCallID),
+			zap.Error(err))
+	}
+
+	// Terminal updates only wake an async turn that was established by prior
+	// substantive output. A standalone terminal reconciliation belongs to the
+	// already-settled turn that created the tool call.
+	if terminal && status != "cancelled" && turnID != "" {
+		s.setSessionRunningForExecution(ctx, payload.TaskID, payload.SessionID, payload.ExecutionID)
+	}
+}
+
+func isTerminalToolUpdateStatus(status string) bool {
+	switch status {
+	case agentEventComplete, agentEventCompleted, "success", agentEventError, agentEventFailed, "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -785,6 +819,16 @@ func (s *Service) setSessionWaitingForInput(ctx context.Context, taskID, session
 	s.writeTaskReviewState(ctx, taskID, sessionID)
 }
 
+// taskArchived reports whether a task row has been archived. Runtime-state
+// writes (IN_PROGRESS on session start, REVIEW on turn completion/cancel/
+// startup reconciliation) must never resurrect an archived task's state —
+// once archived_at is set the row is frozen from the kanban's perspective,
+// so every write site here has to skip it instead of reviving stale runtime
+// state that raced the archive.
+func taskArchived(task *models.Task) bool {
+	return task != nil && task.ArchivedAt != nil
+}
+
 func (s *Service) writeTaskReviewState(ctx context.Context, taskID, completedSessionID string) {
 	// Task lookup errors fail closed so office/archived guards cannot be bypassed
 	// by a transient repository failure.
@@ -795,6 +839,10 @@ func (s *Service) writeTaskReviewState(ctx context.Context, taskID, completedSes
 		return
 	} else if dbTask != nil && dbTask.AssigneeAgentProfileID != "" {
 		s.logger.Debug("skipping REVIEW transition for office task",
+			zap.String("task_id", taskID))
+		return
+	} else if taskArchived(dbTask) {
+		s.logger.Debug("skipping REVIEW transition for archived task",
 			zap.String("task_id", taskID))
 		return
 	}
@@ -885,6 +933,11 @@ func (s *Service) writeTaskReviewStateOnCancel(ctx context.Context, taskID, sess
 		return
 	}
 	if dbTask.AssigneeAgentProfileID != "" {
+		return
+	}
+	if taskArchived(dbTask) {
+		s.logger.Debug("skipping REVIEW transition after cancel for archived task",
+			zap.String("task_id", taskID))
 		return
 	}
 
@@ -992,7 +1045,7 @@ func (s *Service) writeTaskInProgressForRuntime(ctx context.Context, taskID, ses
 			zap.Error(err))
 		return
 	}
-	if task != nil && task.ArchivedAt != nil {
+	if taskArchived(task) {
 		s.logger.Debug("skipping IN_PROGRESS transition for archived task",
 			zap.String("task_id", taskID))
 		return
@@ -1031,11 +1084,17 @@ func (s *Service) writeTaskInProgressForRuntime(ctx context.Context, taskID, ses
 		}
 	}
 
-	if err := s.taskRepo.UpdateTaskState(ctx, taskID, v1.TaskStateInProgress); err != nil {
+	// UpdateTaskStateIfNotArchived (not the unconditional UpdateTaskState) so
+	// the write is atomic against archived_at: the taskArchived guard above
+	// reads the row before this call, and ArchiveTask can commit in that
+	// window without changing task.State, so only an archive-aware
+	// conditional write closes the race (PR #1706 review).
+	updated, err := s.taskRepo.UpdateTaskStateIfNotArchived(ctx, taskID, v1.TaskStateInProgress)
+	if err != nil {
 		s.logger.Error("failed to update task state to IN_PROGRESS",
 			zap.String("task_id", taskID),
 			zap.Error(err))
-	} else {
+	} else if updated {
 		s.logger.Info("task moved to IN_PROGRESS state",
 			zap.String("task_id", taskID))
 	}
@@ -1657,10 +1716,19 @@ func (s *Service) handleSessionModelsEvent(ctx context.Context, payload *lifecyc
 		return
 	}
 
-	// Persist the agent-reported current model so SSR can render the model
-	// selector trigger with the right value on a page reload instead of
-	// flashing the profile default before the WS catches up.
-	s.persistSessionModelAndRuntimeConfig(ctx, sessionID, payload.Data.CurrentModelID, "", payload.Data.ConfigOptions)
+	// Store the write-once baseline before the mutable selector snapshot so a
+	// concurrent task-detail boot cannot observe the new state without its
+	// comparison values.
+	configBaseline, err := s.sessionACPConfigBaselineForEvent(ctx, sessionID, payload.Data)
+	if err != nil {
+		s.logger.Warn("failed to persist ACP config baseline",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return
+	}
+	s.persistSessionModelAndRuntimeConfig(
+		ctx, sessionID, payload.Data.CurrentModelID, "", payload.Data.SessionModels, payload.Data.ConfigOptions,
+	)
 
 	eventPayload := lifecycle.SessionModelsEventPayload{
 		TaskID:         payload.TaskID,
@@ -1669,6 +1737,7 @@ func (s *Service) handleSessionModelsEvent(ctx context.Context, payload *lifecyc
 		CurrentModelID: payload.Data.CurrentModelID,
 		Models:         payload.Data.SessionModels,
 		ConfigOptions:  payload.Data.ConfigOptions,
+		ConfigBaseline: configBaseline,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 	}
 	s.logger.Info("publishing session_models event to WS",
@@ -1678,6 +1747,67 @@ func (s *Service) handleSessionModelsEvent(ctx context.Context, payload *lifecyc
 	)
 	subject := events.BuildSessionModelsSubject(sessionID)
 	_ = s.eventBus.Publish(ctx, subject, bus.NewEvent(events.SessionModelsUpdated, "orchestrator", eventPayload))
+}
+
+func (s *Service) sessionACPConfigBaselineForEvent(
+	ctx context.Context,
+	sessionID string,
+	data *lifecycle.AgentStreamEventData,
+) (map[string]string, error) {
+	baseline := s.loadSessionACPConfigBaseline(ctx, sessionID)
+	if len(baseline) > 0 || data == nil || !configOptionsSettled(data.Data) {
+		return baseline, nil
+	}
+	options := data.ConfigBaselineCandidate
+	if len(options) == 0 {
+		options = data.ConfigOptions
+	}
+	values := configOptionValues(options)
+	if len(values) == 0 {
+		return nil, nil
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	stored, err := s.repo.SetSessionMetadataKeyIfAbsent(
+		writeCtx, sessionID, models.SessionMetaKeyACPConfigBaseline, values,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if stored {
+		return values, nil
+	}
+	return s.loadSessionACPConfigBaseline(writeCtx, sessionID), nil
+}
+
+func configOptionValues(options []streams.ConfigOption) map[string]string {
+	values := make(map[string]string, len(options))
+	for _, option := range options {
+		if option.ID != "" {
+			values[option.ID] = option.CurrentValue
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func configOptionsSettled(data any) bool {
+	metadata, _ := data.(map[string]any)
+	result, _ := metadata["config_options_settled"].(bool)
+	return result
+}
+
+func (s *Service) loadSessionACPConfigBaseline(ctx context.Context, sessionID string) map[string]string {
+	if s.repo == nil {
+		return nil
+	}
+	session, err := s.repo.GetTaskSession(ctx, sessionID)
+	if err != nil || session == nil {
+		return nil
+	}
+	baseline, _ := models.LoadSessionACPConfigBaseline(session.Metadata)
+	return baseline
 }
 
 // persistSessionModel writes the agent-reported current model to the session's
@@ -1702,7 +1832,12 @@ func (s *Service) persistSessionModel(ctx context.Context, sessionID, model stri
 	s.persistSessionModelOnSession(ctx, sessionID, session, model)
 }
 
-func (s *Service) persistSessionModelAndRuntimeConfig(ctx context.Context, sessionID, model, mode string, options []streams.ConfigOption) {
+func (s *Service) persistSessionModelAndRuntimeConfig(
+	ctx context.Context,
+	sessionID, model, mode string,
+	availableModels []streams.SessionModelInfo,
+	options []streams.ConfigOption,
+) {
 	session, err := s.repo.GetTaskSession(ctx, sessionID)
 	if err != nil {
 		s.logger.Warn("failed to load session for session model persistence",
@@ -1717,6 +1852,37 @@ func (s *Service) persistSessionModelAndRuntimeConfig(ctx context.Context, sessi
 		s.persistSessionModelOnSession(ctx, sessionID, session, model)
 	}
 	s.persistSessionRuntimeConfigOnSession(ctx, sessionID, session, model, mode, options)
+	s.persistSessionModelsSnapshot(ctx, sessionID, model, availableModels, options)
+}
+
+func (s *Service) persistSessionModelsSnapshot(
+	ctx context.Context,
+	sessionID, currentModelID string,
+	availableModels []streams.SessionModelInfo,
+	options []streams.ConfigOption,
+) {
+	modelsForBoot := make([]streams.SessionModelInfo, 0, len(availableModels))
+	for _, model := range availableModels {
+		modelsForBoot = append(modelsForBoot, streams.SessionModelInfo{
+			ModelID:         model.ModelID,
+			Name:            model.Name,
+			Description:     model.Description,
+			UsageMultiplier: model.UsageMultiplier,
+		})
+	}
+	snapshot := lifecycle.SessionModelsSnapshot{
+		CurrentModelID: currentModelID,
+		Models:         modelsForBoot,
+		ConfigOptions:  options,
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	if err := s.repo.SetSessionMetadataKey(
+		writeCtx, sessionID, models.SessionMetaKeyACPModelState, snapshot,
+	); err != nil {
+		s.logger.Warn("failed to persist ACP model selector state",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
 }
 
 func (s *Service) persistSessionRuntimeConfig(ctx context.Context, sessionID, model, mode string, options []streams.ConfigOption) {
