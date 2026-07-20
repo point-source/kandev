@@ -16,7 +16,6 @@ import (
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	"go.uber.org/zap"
 
-	"github.com/kandev/kandev/internal/common/gitref"
 	"github.com/kandev/kandev/internal/events"
 	"github.com/kandev/kandev/internal/task/models"
 	taskrepo "github.com/kandev/kandev/internal/task/repository"
@@ -610,10 +609,15 @@ func (s *Service) resolveRepoInputLocal(
 	ctx context.Context, workspaceID string, repoInput TaskRepositoryInput,
 	repoByPath map[string]*models.Repository, baseBranch string,
 ) (string, string, bool, error) {
-	repo := repoByPath[repoInput.LocalPath]
+	lookupPath := repoInput.LocalPath
+	canonicalPath, probedBranch, pathErr := resolveExplicitLocalRepositoryPath(repoInput.LocalPath)
+	if pathErr == nil {
+		lookupPath = canonicalPath
+	}
+	repo := repoByPath[lookupPath]
 	created := false
 	if repo == nil {
-		if isKandevTaskWorktreePath(repoInput.LocalPath, s.discoveryConfig.TaskWorktreeRoots) {
+		if isKandevTaskWorktreePath(lookupPath, s.discoveryConfig.TaskWorktreeRoots) {
 			return "", "", false, fmt.Errorf("local path %q points at a Kandev task worktree; use the source repository or GitHub URL", repoInput.LocalPath)
 		}
 		name := strings.TrimSpace(repoInput.Name)
@@ -629,15 +633,12 @@ func (s *Service) resolveRepoInputLocal(
 		// branch, which would permanently pin repositories.default_branch to
 		// a feature branch and break every downstream merge-base lookup.
 		defaultBranch := repoInput.DefaultBranch
-		if defaultBranch == "" {
-			// Probe must operate on a path validated against the discovery
-			// allowlist — repoInput.LocalPath comes straight from the HTTP body
-			// and feeds into os.Stat/ReadFile inside gitref.DefaultBranch, so
-			// without this guard a caller could traverse the filesystem.
-			if safePath, pathErr := s.resolveAllowedLocalPath(repoInput.LocalPath); pathErr == nil {
-				if probed, err := gitref.DefaultBranchOrEmpty(safePath); err == nil && probed != "" {
-					defaultBranch = probed
-				}
+		if defaultBranch == "" && pathErr == nil {
+			// A manually supplied path is an explicit read-only probe. Canonical
+			// repository validation protects the filesystem read; discovery roots
+			// only constrain automatic scans.
+			if probedBranch != "" {
+				defaultBranch = probedBranch
 			}
 		}
 		createdRepo, createErr := s.CreateRepository(ctx, &CreateRepositoryRequest{
@@ -653,6 +654,7 @@ func (s *Service) resolveRepoInputLocal(
 		repo = createdRepo
 		if repoByPath != nil {
 			repoByPath[repoInput.LocalPath] = repo
+			repoByPath[repo.LocalPath] = repo
 		}
 		created = true
 	} else {

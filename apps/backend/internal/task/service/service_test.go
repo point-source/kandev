@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -420,6 +421,104 @@ func TestService_CreateTask(t *testing.T) {
 	}
 	if got := data["workspace_id"]; got != "ws-1" {
 		t.Errorf("expected workspace_id 'ws-1' in event payload, got %v", got)
+	}
+}
+
+func TestService_CreateTaskProbesDefaultBranchForExplicitRepositoryOutsideDiscoveryRoots(t *testing.T) {
+	isolateGitEnvForTest(t)
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+	repoPath := filepath.Join(t.TempDir(), "explicit-repo")
+	initRealGitRepo(t, repoPath)
+	cmd := exec.Command("git", "checkout", "-b", "feature/current")
+	cmd.Dir = repoPath
+	cmd.Env = isolatedGitEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout feature branch: %v: %s", err, output)
+	}
+
+	const workspaceID = "ws-explicit"
+	const workflowID = "wf-explicit"
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: workspaceID, Name: "Workspace"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := repo.CreateWorkflow(ctx, &models.Workflow{ID: workflowID, WorkspaceID: workspaceID, Name: "Workflow"}); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	task, err := svc.CreateTask(ctx, &CreateTaskRequest{
+		WorkspaceID:    workspaceID,
+		WorkflowID:     workflowID,
+		WorkflowStepID: "step-1",
+		Title:          "Explicit repository",
+		Repositories: []TaskRepositoryInput{{
+			LocalPath: repoPath, BaseBranch: "feature/current", Name: "explicit-repo",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if len(task.Repositories) != 1 {
+		t.Fatalf("task repositories = %d, want 1", len(task.Repositories))
+	}
+	saved, err := repo.GetRepository(ctx, task.Repositories[0].RepositoryID)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if saved.DefaultBranch != "main" {
+		t.Fatalf("DefaultBranch = %q, want main", saved.DefaultBranch)
+	}
+}
+
+func TestResolveRepoInputLocalDeduplicatesCanonicalPathAliases(t *testing.T) {
+	isolateGitEnvForTest(t)
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+	const workspaceID = "ws-canonical-alias"
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: workspaceID, Name: "Workspace"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	repoPath := filepath.Join(t.TempDir(), "canonical-repo")
+	initRealGitRepo(t, repoPath)
+	aliasPath := filepath.Join(t.TempDir(), "repository-alias")
+	if err := os.Symlink(repoPath, aliasPath); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	repoByPath := map[string]*models.Repository{}
+	aliasID, _, aliasCreated, err := svc.resolveRepoInputLocal(
+		ctx,
+		workspaceID,
+		TaskRepositoryInput{LocalPath: aliasPath},
+		repoByPath,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("resolve alias: %v", err)
+	}
+	if !aliasCreated {
+		t.Fatal("expected alias lookup to create repository")
+	}
+
+	canonicalID, _, canonicalCreated, err := svc.resolveRepoInputLocal(
+		ctx,
+		workspaceID,
+		TaskRepositoryInput{LocalPath: canonicalPath},
+		repoByPath,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("resolve canonical path: %v", err)
+	}
+	if canonicalCreated {
+		t.Fatal("canonical alias created a duplicate repository")
+	}
+	if canonicalID != aliasID {
+		t.Fatalf("canonical repository ID = %q, want %q", canonicalID, aliasID)
 	}
 }
 
