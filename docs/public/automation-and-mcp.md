@@ -1184,16 +1184,18 @@ $KANDEV_CLI kandev task create \
 
 `task create` accepts completion criteria that Kandev verifies itself:
 
-- `--require ci-at-head` or `--require review-at-head` (repeatable). Omit the
-  flag to apply the workspace default; an Office run cannot remove a default.
-- `--protect GLOB` (repeatable) protects paths for `ci-at-head`.
-- `--max-rework N` and `--max-attempts N` set caps within the workspace
-  ceiling.
+- `--require github-check` or `--require review` (repeatable). Omit the flag
+  to apply the workspace default; an Office run cannot remove a default.
+- `--protect GLOB` (repeatable) protects paths for `github-check`.
+- `--rework-limit N` and `--verification-limit N` set limits within the
+  workspace ceiling.
+- `--review-wait-limit DURATION` (for example `2h`) sets how long a parked
+  reviewer may wait before a person is asked. Unset waits indefinitely.
 
-The criterion owner or the workspace CEO can raise a held criterion's cap
+The criterion owner or the workspace CEO can raise a held criterion's limit
 within the ceiling with
-`$KANDEV_CLI kandev task gate extend --criterion ci_at_head --rework 5`. The
-task's assignee cannot.
+`$KANDEV_CLI kandev task gate extend --criterion github_check --rework-limit 5`.
+The task's assignee cannot.
 
 `--priority`, `--workspace-group-id`, `--default-child-workspace`, and `--default-child-ordering` are not available to Office runs.
 

@@ -77,7 +77,7 @@ func payload(step *models.WorkflowStep) map[string]interface{} {
 		"is_start_step":                 step.IsStartStep,
 		"auto_archive_after_hours":      step.AutoArchiveAfterHours,
 		"wip_limit":                     step.WIPLimit,
-		"completion_gate_caps":          step.CompletionGateCaps,
+		"completion_gate_limits":        step.CompletionGateLimits,
 		"pull_from_step_id":             step.PullFromStepID,
 		"agent_profile_id":              step.AgentProfileID,
 		"session_target":                models.CloneWorkflowSessionTarget(step.SessionTarget),

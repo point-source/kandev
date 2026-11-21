@@ -11,6 +11,8 @@ import * as officeApi from "@/lib/api/domains/office-api";
 import { loadOfficeAgents, loadOfficeInbox } from "@/hooks/use-office-workspace-data";
 import type { InboxItem } from "@/lib/state/slices/office/types";
 import { InboxItemRow } from "./inbox-item-row";
+import { COMPLETION_GATE_INBOX_TYPES } from "./inbox-completion-gate-actions";
+import { GateActionsAuthWarning } from "@/components/completion-gates/gate-actions-auth-warning";
 import { useTranslation } from "react-i18next";
 import { controlSizingClassName } from "@kandev/ui/control-sizing";
 
@@ -157,8 +159,7 @@ export function InboxPageClient({
           i.type === "task_review_request" ||
           i.type === "agent_run_failed" ||
           i.type === "agent_paused_after_failures" ||
-          i.type === "completion_gate_protected_path" ||
-          i.type === "completion_gate_held",
+          COMPLETION_GATE_INBOX_TYPES.has(i.type),
       );
     } else if (tab === "recent") {
       items = items.slice(0, 20);
@@ -177,6 +178,9 @@ export function InboxPageClient({
   return (
     <div className="space-y-4 p-6">
       <InboxToolbar tab={tab} search={search} onTabChange={setTab} onSearchChange={setSearch} />
+      {filteredItems.some((item) => COMPLETION_GATE_INBOX_TYPES.has(item.type)) && (
+        <GateActionsAuthWarning />
+      )}
       <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
         {filteredItems.length === 0 ? (
           <div className="px-4 py-8 text-center">

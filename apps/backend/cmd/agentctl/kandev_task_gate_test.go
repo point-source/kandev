@@ -11,7 +11,8 @@ func TestTaskCreateSendsCompletionCriteria(t *testing.T) {
 	t.Setenv("KANDEV_API_URL", "http://kandev.test")
 	t.Setenv("KANDEV_API_KEY", "signed-run-token")
 	code := runKandevCLI([]string{"task", "create", "--title", "Fix webhook",
-		"--require", "ci-at-head", "--require", "review-at-head", "--protect", "tests/**", "--max-rework", "2"})
+		"--require", "github-check", "--require", "review", "--protect", "tests/**", "--rework-limit", "2",
+		"--review-wait-limit", "2h"})
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -21,8 +22,11 @@ func TestTaskCreateSendsCompletionCriteria(t *testing.T) {
 	}
 	ci := criteria[0].(map[string]interface{})
 	review := criteria[1].(map[string]interface{})
-	if ci["kind"] != "ci_at_head" || ci["max_rework_rounds"] != float64(2) || review["protected_paths"] != nil {
-		t.Fatalf("criteria = %#v", criteria)
+	if ci["kind"] != "check" || ci["runner"] != "github" || ci["rework_limit"] != float64(2) || ci["review_wait_limit"] != nil {
+		t.Fatalf("check = %#v", ci)
+	}
+	if review["kind"] != "review" || review["protected_paths"] != nil || review["review_wait_limit"] != float64(120) {
+		t.Fatalf("review = %#v", review)
 	}
 }
 
@@ -43,13 +47,13 @@ func TestTaskGateExtendPostsToTheCriterionRoute(t *testing.T) {
 	captured := setupMockTransport(t, http.StatusOK, `{}`)
 	t.Setenv("KANDEV_API_URL", "http://kandev.test")
 	t.Setenv("KANDEV_API_KEY", "signed-run-token")
-	if code := runKandevCLI([]string{"task", "gate", "extend", "--task", "t-1", "--criterion", "ci_at_head", "--rework", "5"}); code != 0 {
+	if code := runKandevCLI([]string{"task", "gate", "extend", "--task", "t-1", "--criterion", "github_check", "--rework-limit", "5"}); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	if captured.Path != "/api/v1/office/tasks/t-1/completion-gate/criteria/ci_at_head/extend" {
+	if captured.Path != "/api/v1/office/tasks/t-1/completion-gate/criteria/github_check/extend" {
 		t.Fatalf("path = %q", captured.Path)
 	}
-	if body := taskCreateBody(t, captured); body["max_rework_rounds"] != float64(5) {
+	if body := taskCreateBody(t, captured); body["rework_limit"] != float64(5) {
 		t.Fatalf("body = %#v", body)
 	}
 }

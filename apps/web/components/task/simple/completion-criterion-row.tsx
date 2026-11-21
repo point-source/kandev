@@ -4,40 +4,38 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "@kandev/ui/badge";
 import { Button } from "@kandev/ui/button";
 import type {
-  EffectiveCompletionCaps,
+  EffectiveCompletionLimits,
   TaskCompletionCriterion,
 } from "@/lib/api/domains/task-completion-gates-api";
 import {
+  criterionActions,
   criterionDisplayStatus,
-  isCapHold,
-  isProtectedPathHold,
+  type CriterionAction,
   type CriterionDisplayStatus,
 } from "@/lib/completion-gates/criteria-display";
 import { criterionDetail, type DecisionLike } from "@/lib/completion-gates/criterion-detail";
-import { KIND_KEYS, STATUS_KEYS } from "@/lib/completion-gates/copy-keys";
+import { actionLabelKey, KIND_KEYS, STATUS_KEYS } from "@/lib/completion-gates/copy-keys";
 import { CriterionDetailLine } from "./completion-criterion-detail";
 
 const STATUS_CLASS: Record<CriterionDisplayStatus, string> = {
   pass: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   fail: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
-  held: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+  needs_you: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
   stale: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
   cannot_evaluate: "bg-muted text-muted-foreground",
   pending: "bg-muted text-muted-foreground",
 };
 
-export type CriterionAction = "allow" | "send_back" | "extend";
-
 type Props = {
   criterion: TaskCompletionCriterion;
   blocker: string | undefined;
-  caps?: EffectiveCompletionCaps;
+  limits?: EffectiveCompletionLimits;
   decisions: DecisionLike[];
   onAction: (action: CriterionAction, criterion: TaskCompletionCriterion) => void;
 };
 
 /** One criterion: name, status, what decided it at which commits, counts and actions. */
-export function CompletionCriterionRow({ criterion, blocker, caps, decisions, onAction }: Props) {
+export function CompletionCriterionRow({ criterion, blocker, limits, decisions, onAction }: Props) {
   const { t } = useTranslation();
   const status = criterionDisplayStatus(criterion, blocker);
   return (
@@ -53,8 +51,8 @@ export function CompletionCriterionRow({ criterion, blocker, caps, decisions, on
           {t(STATUS_KEYS[status])}
         </Badge>
       </div>
-      <CriterionDetailLine detail={criterionDetail(criterion, blocker, decisions)} />
-      <CriterionCounts criterion={criterion} caps={caps} />
+      <CriterionDetailLine detail={criterionDetail(criterion, blocker, decisions, limits)} />
+      <CriterionCounts criterion={criterion} limits={limits} />
       <CriterionActions criterion={criterion} onAction={onAction} />
     </li>
   );
@@ -62,20 +60,20 @@ export function CompletionCriterionRow({ criterion, blocker, caps, decisions, on
 
 function CriterionCounts({
   criterion,
-  caps,
+  limits,
 }: {
   criterion: TaskCompletionCriterion;
-  caps?: EffectiveCompletionCaps;
+  limits?: EffectiveCompletionLimits;
 }) {
   const { t } = useTranslation();
   return (
     <p className="text-xs text-muted-foreground" data-testid="completion-criterion-counts">
-      {caps
-        ? t("office:completionGatesCountsOfCaps", {
+      {limits
+        ? t("office:completionGatesCountsOfLimits", {
             rework: criterion.rework_count ?? 0,
-            maxRework: caps.max_rework_rounds,
+            reworkLimit: limits.rework_limit,
             attempts: criterion.attempt_count ?? 0,
-            maxAttempts: caps.max_verification_attempts,
+            verificationLimit: limits.verification_limit,
           })
         : t("office:completionGatesCounts", {
             rework: criterion.rework_count ?? 0,
@@ -87,42 +85,22 @@ function CriterionCounts({
 
 function CriterionActions({ criterion, onAction }: Pick<Props, "criterion" | "onAction">) {
   const { t } = useTranslation();
-  if (isProtectedPathHold(criterion)) {
-    return (
-      <div className="flex flex-col gap-2 sm:flex-row">
+  const actions = criterionActions(criterion, "task");
+  if (actions.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row">
+      {actions.map((action, index) => (
         <Button
+          key={action}
           size="sm"
+          variant={index === 0 && criterion.hold_kind ? "default" : "outline"}
           className="cursor-pointer min-h-11 sm:min-h-0"
-          data-testid="completion-allow"
-          onClick={() => onAction("allow", criterion)}
+          data-testid={`completion-${action.replace("_", "-")}`}
+          onClick={() => onAction(action, criterion)}
         >
-          {t("office:completionGatesAllowForCommit")}
+          {t(actionLabelKey(action, criterion.kind))}
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="cursor-pointer min-h-11 sm:min-h-0"
-          data-testid="completion-send-back"
-          onClick={() => onAction("send_back", criterion)}
-        >
-          {t("office:completionGatesSendBack")}
-        </Button>
-      </div>
-    );
-  }
-  if (isCapHold(criterion)) {
-    return (
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button
-          size="sm"
-          className="cursor-pointer min-h-11 sm:min-h-0"
-          data-testid="completion-extend"
-          onClick={() => onAction("extend", criterion)}
-        >
-          {t("office:completionGatesAllowMoreAttempts")}
-        </Button>
-      </div>
-    );
-  }
-  return null;
+      ))}
+    </div>
+  );
 }

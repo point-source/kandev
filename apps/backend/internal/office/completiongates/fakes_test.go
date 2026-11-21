@@ -47,7 +47,7 @@ func (f *fakeGates) RecordTaskCompletionEvaluation(_ context.Context, change mod
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recorded = append(f.recorded, change)
-	criterion := models.TaskCompletionCriterion{ID: change.CriterionID, Result: change.Result, HeldReason: change.Hold,
+	criterion := models.TaskCompletionCriterion{ID: change.CriterionID, Result: change.Result, HoldKind: change.Hold,
 		ResultSubjectRevision: change.SubjectRevision, CriterionRevision: change.CriterionRevision}
 	if snapshot := f.snapshots[change.TaskID]; snapshot != nil {
 		for index := range snapshot.Criteria {
@@ -79,16 +79,27 @@ func (f *fakeGates) ApplyTaskCompletionControl(_ context.Context, change models.
 		switch change.Action {
 		case models.TaskCompletionControlCountRework:
 			if !slices.Contains(criterion.ReworkKeys, change.Key) {
-				if change.ReworkCap > 0 && criterion.ReworkCount >= change.ReworkCap {
-					criterion.HeldReason = HoldReworkCapReached
+				if change.CountReworkLimit > 0 && criterion.ReworkCount >= change.CountReworkLimit {
+					criterion.HoldKind = HoldReworkLimitReached
 				} else {
 					criterion.ReworkKeys = append(criterion.ReworkKeys, change.Key)
 					criterion.ReworkCount++
 					claimed = true
 				}
 			}
-		case models.TaskCompletionControlReleaseHold, models.TaskCompletionControlSendBackProtected:
-			criterion.HeldReason = ""
+		case models.TaskCompletionControlReleaseHold:
+			if change.HoldKind == "" || change.HoldKind == criterion.HoldKind {
+				criterion.HoldKind = ""
+			}
+		case models.TaskCompletionControlSendBack:
+			criterion.HoldKind, criterion.Result, criterion.ResultReason = "", models.TaskCompletionResultFail, models.TaskCompletionReasonSentBack
+			criterion.ResultSubjectRevision = change.SubjectRevision
+		case models.TaskCompletionControlAccept:
+			criterion.HoldKind, criterion.Result, criterion.ResultReason = "", models.TaskCompletionResultPass, models.TaskCompletionReasonAccepted
+			criterion.ResultSubjectRevision = change.SubjectRevision
+		case models.TaskCompletionControlHold:
+			claimed = criterion.HoldKind != change.HoldKind
+			criterion.HoldKind, criterion.ResultDetail = change.HoldKind, change.Detail
 		case models.TaskCompletionControlMarkEscalated:
 			now := time.Now()
 			criterion.EscalatedAt = &now

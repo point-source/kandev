@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// @covers AC-TASKS-COMPLETION-006.2, AC-TASKS-COMPLETION-006.8
+// @covers AC-TASKS-COMPLETION-006.2, AC-TASKS-COMPLETION-006.8, AC-OFFICE-COMPLETION-GATES-001.3
 func TestHTTPCompletionGateHostErrorsHaveStableCodes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := &completionGateResponseRepository{
@@ -28,6 +28,7 @@ func TestHTTPCompletionGateHostErrorsHaveStableCodes(t *testing.T) {
 	}{
 		{repository.ErrTaskCompletionVerifierReserved, http.StatusConflict, "task_completion_verifier_reserved"},
 		{repository.ErrTaskCompletionSelfVerification, http.StatusForbidden, "task_completion_self_verification"},
+		{&service.CompletionCriteriaRefusal{Code: "completion_criteria_requires_review_stage"}, http.StatusBadRequest, "completion_criteria_requires_review_stage"},
 	} {
 		response := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(response)

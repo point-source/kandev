@@ -5,17 +5,16 @@ import { Checkbox } from "@kandev/ui/checkbox";
 import { Input } from "@kandev/ui/input";
 import { Label } from "@kandev/ui/label";
 import type { CriteriaSelection } from "@/lib/completion-gates/criteria-selection";
-import { ReviewAuthWarning } from "./review-auth-warning";
 
 type Props = {
   value: CriteriaSelection;
   onChange: (value: CriteriaSelection) => void;
   idPrefix: string;
-  showCaps?: boolean;
+  showLimits?: boolean;
 };
 
-/** CI and review criteria with protected paths, caps and the auth warning. */
-export function CriteriaEditor({ value, onChange, idPrefix, showCaps = true }: Props) {
+/** Check and review criteria with protected paths and limits. */
+export function CriteriaEditor({ value, onChange, idPrefix, showLimits = true }: Props) {
   const { t } = useTranslation();
   const set = (patch: Partial<CriteriaSelection>) => onChange({ ...value, ...patch });
   return (
@@ -24,7 +23,7 @@ export function CriteriaEditor({ value, onChange, idPrefix, showCaps = true }: P
         id={`${idPrefix}-ci`}
         checked={value.ci}
         onChange={(ci) => set({ ci })}
-        label={t("office:completionGatesCreateCi")}
+        label={t("office:completionGatesKindCheckGithub")}
       />
       {value.ci && (
         <div className="flex flex-col gap-1.5 pl-7">
@@ -45,22 +44,32 @@ export function CriteriaEditor({ value, onChange, idPrefix, showCaps = true }: P
         id={`${idPrefix}-review`}
         checked={value.review}
         onChange={(review) => set({ review })}
-        label={t("office:completionGatesCreateReview")}
+        label={t("office:completionGatesKindReview")}
       />
-      <ReviewAuthWarning reviewSelected={value.review} />
-      {showCaps && (value.ci || value.review) && (
+      {showLimits && value.review && (
+        <div className="flex flex-col gap-1.5 pl-7">
+          <NumberField
+            id={`${idPrefix}-review-wait`}
+            label={t("office:completionGatesReviewWaitLimit")}
+            value={value.reviewWaitLimit}
+            placeholder={t("office:completionGatesReviewWaitLimitHint")}
+            onChange={(reviewWaitLimit) => set({ reviewWaitLimit })}
+          />
+        </div>
+      )}
+      {showLimits && (value.ci || value.review) && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <NumberField
-            id={`${idPrefix}-max-rework`}
-            label={t("office:completionGatesMaxRework")}
-            value={value.maxRework}
-            onChange={(maxRework) => set({ maxRework })}
+            id={`${idPrefix}-rework-limit`}
+            label={t("office:completionGatesReworkLimit")}
+            value={value.reworkLimit}
+            onChange={(reworkLimit) => set({ reworkLimit })}
           />
           <NumberField
-            id={`${idPrefix}-max-attempts`}
-            label={t("office:completionGatesMaxAttempts")}
-            value={value.maxAttempts}
-            onChange={(maxAttempts) => set({ maxAttempts })}
+            id={`${idPrefix}-verification-limit`}
+            label={t("office:completionGatesVerificationLimit")}
+            value={value.verificationLimit}
+            onChange={(verificationLimit) => set({ verificationLimit })}
           />
         </div>
       )}
@@ -94,6 +103,7 @@ function NumberField(props: {
   id: string;
   label: string;
   value: string;
+  placeholder?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -107,6 +117,7 @@ function NumberField(props: {
         inputMode="numeric"
         className="min-h-11 sm:min-h-0"
         value={props.value}
+        placeholder={props.placeholder}
         onChange={(event) => props.onChange(event.target.value)}
       />
     </div>

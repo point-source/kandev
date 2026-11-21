@@ -26,10 +26,11 @@ func TestOfficeCreateResolvesCompletionCriteria(t *testing.T) {
 	wf := seedWorkspaceAndWorkflowForCreate(t, ctx, repo, "gate-resolve")
 	ensureTaskPRTable(t, repo)
 	resolver := &stubCriteriaResolver{out: []models.TaskCompletionCriterion{{
-		ID: "ci_at_head", Kind: models.TaskCompletionCriterionCIAtHead, OwnerKind: "agent", OwnerID: "ceo",
+		ID: "github_check", Kind: models.TaskCompletionCriterionCheck, OwnerKind: "agent", OwnerID: "ceo",
+		Config: models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub},
 	}}}
 	svc.SetCompletionCriteriaResolver(resolver)
-	requested := []models.TaskCompletionCriterionRequest{{Kind: models.TaskCompletionCriterionCIAtHead}}
+	requested := []models.TaskCompletionCriterionRequest{{Kind: models.TaskCompletionCriterionCheck}}
 	created, err := svc.CreateTask(ctx, &CreateTaskRequest{
 		WorkspaceID: "gate-resolve", WorkflowID: wf, Title: "Office", Origin: models.TaskOriginAgentCreated,
 		CompletionCriteriaRequest: &requested,
@@ -61,7 +62,7 @@ func TestCompletionCriteriaRefusalsCreateNothing(t *testing.T) {
 	svc, _, repo := createTestService(t)
 	ctx := context.Background()
 	wf := seedWorkspaceAndWorkflowForCreate(t, ctx, repo, "gate-refuse")
-	requested := []models.TaskCompletionCriterionRequest{{Kind: models.TaskCompletionCriterionCIAtHead}}
+	requested := []models.TaskCompletionCriterionRequest{{Kind: models.TaskCompletionCriterionCheck}}
 	_, err := svc.CreateTask(ctx, &CreateTaskRequest{WorkspaceID: "gate-refuse", WorkflowID: wf, Title: "Plain", CompletionCriteriaRequest: &requested})
 	if code, ok := IsCompletionCriteriaRefusal(err); !ok || code != "completion_criteria_requires_office_task" {
 		t.Fatalf("non-office criteria err = %v", err)

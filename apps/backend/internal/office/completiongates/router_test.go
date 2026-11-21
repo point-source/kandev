@@ -39,7 +39,7 @@ func (f *fakeNavigator) RetryCompletingTransition(_ context.Context, _, _, stepI
 type spyEscalator struct{ held []string }
 
 func (s *spyEscalator) EscalateHold(_ context.Context, _ string, criterion models.TaskCompletionCriterion) {
-	s.held = append(s.held, criterion.HeldReason)
+	s.held = append(s.held, criterion.HoldKind)
 }
 
 func officePlacement(current string) Placement {
@@ -91,14 +91,14 @@ func TestRouterLeavesAWorkingTaskInPlace(t *testing.T) {
 
 // @covers AC-OFFICE-COMPLETION-GATES-007.3
 func TestRouterHoldsAtTheReworkCap(t *testing.T) {
-	capped := ciCriterion()
-	capped.ReworkCount = DefaultCap
-	router, gates, navigator, escalator := setupRouter(t, "approval", capped)
-	router.AfterRecord(context.Background(), "task-1", &models.TaskCompletionEvaluationOutcome{Criterion: capped, Changed: true})
-	failed := capped
+	limited := ciCriterion()
+	limited.ReworkCount = DefaultLimit
+	router, gates, navigator, escalator := setupRouter(t, "approval", limited)
+	router.AfterRecord(context.Background(), "task-1", &models.TaskCompletionEvaluationOutcome{Criterion: limited, Changed: true})
+	failed := limited
 	failed.Result, failed.ResultSubjectRevision = models.TaskCompletionResultFail, "pr-1@h2"
 	router.AfterRecord(context.Background(), "task-1", &models.TaskCompletionEvaluationOutcome{Criterion: failed, Changed: true})
-	if len(navigator.moves) != 0 || gates.snapshots["task-1"].Criteria[0].HeldReason != HoldReworkCapReached {
+	if len(navigator.moves) != 0 || gates.snapshots["task-1"].Criteria[0].HoldKind != HoldReworkLimitReached {
 		t.Fatalf("moves=%v criterion=%+v", navigator.moves, gates.snapshots["task-1"].Criteria[0])
 	}
 	if len(escalator.held) != 1 {
@@ -115,10 +115,10 @@ func TestRouterCountsAttemptsAndHoldsAtTheAttemptCap(t *testing.T) {
 		t.Fatalf("first attempt = %+v", change)
 	}
 	exhausted := ciCriterion()
-	exhausted.AttemptCount = DefaultCap
+	exhausted.AttemptCount = DefaultLimit
 	change = models.TaskCompletionEvaluationChange{Result: models.TaskCompletionResultCannotEvaluate}
 	router.Prepare(context.Background(), "task-1", exhausted, &change)
-	if change.CountAttempt || change.Hold != HoldAttemptCapReached {
+	if change.CountAttempt || change.Hold != HoldVerificationLimitReached {
 		t.Fatalf("exhausted attempt = %+v", change)
 	}
 }
@@ -169,7 +169,7 @@ func TestRouterMarksAPassedReviewStaleWhenHeadsMove(t *testing.T) {
 	passed := reviewCriterion()
 	passed.Result, passed.ResultSubjectRevision = models.TaskCompletionResultPass, "pr-1@h1"
 	router, gates, navigator, _ := setupRouter(t, "approval", passed)
-	gates.snapshots["task-1"].Criteria[0].Kind = models.TaskCompletionCriterionReviewAtHead
+	gates.snapshots["task-1"].Criteria[0].Kind = models.TaskCompletionCriterionReview
 	router.OnHeadsChanged(context.Background(), "task-1")
 	records := gates.records()
 	if len(records) != 1 || records[0].Result != models.TaskCompletionResultPending || records[0].SubjectRevision != "pr-1@h2" {

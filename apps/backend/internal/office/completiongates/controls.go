@@ -14,23 +14,23 @@ import (
 
 // Control errors.
 var (
-	ErrCapAboveCeiling   = errors.New("completion cap is above the workspace ceiling")
+	ErrLimitAboveCeiling = errors.New("completion limit is above the workspace ceiling")
 	ErrNotCriterionOwner = errors.New("only the criterion owner or a CEO agent can change this criterion")
 	ErrInvalidSettings   = errors.New("completion gate settings are invalid")
 	ErrInvalidCriterion  = errors.New("completion criterion is invalid")
 )
 
-const maxCap = 1000
+const maxLimit = 1000
 
-// ExtendRequest raises a criterion's caps and releases a cap hold.
+// ExtendRequest raises a criterion's limits and releases a limit hold.
 type ExtendRequest struct {
 	ExpectedCriterionRevision int64  `json:"expected_criterion_revision"`
-	MaxVerificationAttempts   int    `json:"max_verification_attempts"`
-	MaxReworkRounds           int    `json:"max_rework_rounds"`
+	VerificationLimit         int    `json:"verification_limit"`
+	ReworkLimit               int    `json:"rework_limit"`
 	Reason                    string `json:"reason"`
 }
 
-// ExtendAsPerson raises caps on behalf of a person; values above the ceiling
+// ExtendAsPerson raises limits on behalf of a person; values above the ceiling
 // are recorded as confirmed by that person.
 func (s *Service) ExtendAsPerson(ctx context.Context, taskID, criterionID string, request ExtendRequest) (*models.TaskCompletionGateSnapshot, error) {
 	actorID, err := s.authorizeHuman(ctx, taskID)
@@ -44,7 +44,7 @@ func (s *Service) ExtendAsPerson(ctx context.Context, taskID, criterionID string
 	return s.extend(ctx, taskID, criterionID, request, "human", actorID, confirmedBy)
 }
 
-// ExtendAsAgent raises caps for the owner agent or a CEO agent, within the
+// ExtendAsAgent raises limits for the owner agent or a CEO agent, within the
 // ceiling. The task's assignee is refused.
 func (s *Service) ExtendAsAgent(ctx context.Context, taskID, criterionID, agentID string, request ExtendRequest) (*models.TaskCompletionGateSnapshot, error) {
 	task, err := s.tasks.GetTask(ctx, taskID)
@@ -65,7 +65,7 @@ func (s *Service) ExtendAsAgent(ctx context.Context, taskID, criterionID, agentI
 		return nil, ErrNotCriterionOwner
 	}
 	if s.aboveCeiling(ctx, taskID, request) {
-		return nil, ErrCapAboveCeiling
+		return nil, ErrLimitAboveCeiling
 	}
 	if request.ExpectedCriterionRevision == 0 {
 		request.ExpectedCriterionRevision = criterion.CriterionRevision
@@ -78,30 +78,30 @@ func (s *Service) aboveCeiling(ctx context.Context, taskID string, request Exten
 	if err != nil {
 		return false
 	}
-	attempts, rework := s.caps.Ceilings(ctx, task.WorkspaceID)
-	return request.MaxVerificationAttempts > attempts || request.MaxReworkRounds > rework
+	attempts, rework := s.limits.Ceilings(ctx, task.WorkspaceID)
+	return request.VerificationLimit > attempts || request.ReworkLimit > rework
 }
 
 func (s *Service) extend(ctx context.Context, taskID, criterionID string, request ExtendRequest, actorKind, actorID, confirmedBy string) (*models.TaskCompletionGateSnapshot, error) {
-	if request.MaxVerificationAttempts < 0 || request.MaxReworkRounds < 0 ||
-		request.MaxVerificationAttempts > maxCap || request.MaxReworkRounds > maxCap ||
-		(request.MaxVerificationAttempts == 0 && request.MaxReworkRounds == 0) {
+	if request.VerificationLimit < 0 || request.ReworkLimit < 0 ||
+		request.VerificationLimit > maxLimit || request.ReworkLimit > maxLimit ||
+		(request.VerificationLimit == 0 && request.ReworkLimit == 0) {
 		return nil, ErrInvalidCriterion
 	}
 	outcome, err := s.gates.ApplyTaskCompletionControl(ctx, models.TaskCompletionControlChange{
 		TaskID: taskID, CriterionID: criterionID, CriterionRevision: request.ExpectedCriterionRevision,
-		Action: models.TaskCompletionControlExtendCaps, MaxVerificationAttempts: request.MaxVerificationAttempts,
-		MaxReworkRounds: request.MaxReworkRounds, CapsConfirmedBy: confirmedBy,
+		Action: models.TaskCompletionControlExtendLimits, VerificationLimit: request.VerificationLimit,
+		ReworkLimit: request.ReworkLimit, LimitsConfirmedBy: confirmedBy,
 		ActorKind: actorKind, ActorID: actorID, Reason: strings.TrimSpace(request.Reason),
 	})
 	if err != nil {
 		return nil, err
 	}
-	// A cap hold stops CI evaluation; re-check now, and route a now-unheld
+	// A limit hold stops CI evaluation; re-check now, and route a now-unheld
 	// failure back to the stage it was waiting to return to.
 	background := context.WithoutCancel(ctx)
 	s.CI.Schedule(background, taskID)
-	if criterion := findCriterionByID(outcome.Snapshot, criterionID); criterion.ID != "" && criterion.HeldReason == "" {
+	if criterion := findCriterionByID(outcome.Snapshot, criterionID); criterion.ID != "" && criterion.HoldKind == "" {
 		s.Router.RouteCriterion(background, taskID, criterion)
 	}
 	return outcome.Snapshot, nil
@@ -128,10 +128,10 @@ func (s *Service) effectiveSettings(ctx context.Context, workspaceID string) (of
 	if settings.DefaultCriteria == nil {
 		settings.DefaultCriteria = []officemodels.CompletionGateCriterionSpec{}
 	}
-	settings.CeilingAttempts = ceilingOrDefault(settings.CeilingAttempts)
-	settings.CeilingRework = ceilingOrDefault(settings.CeilingRework)
-	settings.DefaultMaxAttempts = capOrDefault(settings.DefaultMaxAttempts)
-	settings.DefaultMaxRework = capOrDefault(settings.DefaultMaxRework)
+	settings.VerificationLimitCeiling = ceilingOrDefault(settings.VerificationLimitCeiling)
+	settings.ReworkLimitCeiling = ceilingOrDefault(settings.ReworkLimitCeiling)
+	settings.DefaultVerificationLimit = limitOrDefault(settings.DefaultVerificationLimit)
+	settings.DefaultReworkLimit = limitOrDefault(settings.DefaultReworkLimit)
 	return settings, nil
 }
 
@@ -151,12 +151,13 @@ func (s *Service) UpdateSettings(ctx context.Context, workspaceID string, settin
 }
 
 func validateSettings(settings officemodels.CompletionGateSettings) error {
-	for _, value := range []int{settings.DefaultMaxAttempts, settings.DefaultMaxRework, settings.CeilingAttempts, settings.CeilingRework} {
-		if value < 1 || value > maxCap {
+	for _, value := range []int{settings.DefaultVerificationLimit, settings.DefaultReworkLimit, settings.VerificationLimitCeiling, settings.ReworkLimitCeiling} {
+		if value < 1 || value > maxLimit {
 			return ErrInvalidSettings
 		}
 	}
-	if settings.DefaultMaxAttempts > settings.CeilingAttempts || settings.DefaultMaxRework > settings.CeilingRework {
+	if settings.DefaultVerificationLimit > settings.VerificationLimitCeiling || settings.DefaultReworkLimit > settings.ReworkLimitCeiling ||
+		settings.DefaultReviewWaitLimit < 0 || settings.DefaultReviewWaitLimit > MaxReviewWaitLimit {
 		return ErrInvalidSettings
 	}
 	seen := map[string]bool{}
@@ -174,16 +175,7 @@ func validateSettings(settings officemodels.CompletionGateSettings) error {
 
 // ValidateCriterionSpec checks one requested or default criterion.
 func ValidateCriterionSpec(spec officemodels.CompletionGateCriterionSpec) error {
-	switch spec.Kind {
-	case models.TaskCompletionCriterionCIAtHead:
-	case models.TaskCompletionCriterionReviewAtHead:
-		if len(spec.ProtectedPaths) > 0 {
-			return ErrInvalidCriterion
-		}
-	default:
-		return ErrInvalidCriterion
-	}
-	if spec.MaxVerificationAttempts < 0 || spec.MaxReworkRounds < 0 || spec.MaxVerificationAttempts > maxCap || spec.MaxReworkRounds > maxCap {
+	if !validSpecKind(spec) || !validSpecLimits(spec) {
 		return ErrInvalidCriterion
 	}
 	for _, pattern := range spec.ProtectedPaths {
@@ -192,6 +184,23 @@ func ValidateCriterionSpec(spec officemodels.CompletionGateCriterionSpec) error 
 		}
 	}
 	return nil
+}
+
+// validSpecKind accepts a check naming the github runner without a review wait
+// limit, and a review naming no runner and protecting no paths.
+func validSpecKind(spec officemodels.CompletionGateCriterionSpec) bool {
+	switch spec.Kind {
+	case models.TaskCompletionCriterionCheck:
+		return spec.Runner == models.TaskCompletionCheckRunnerGitHub && spec.ReviewWaitLimit == 0
+	case models.TaskCompletionCriterionReview:
+		return spec.Runner == "" && len(spec.ProtectedPaths) == 0
+	}
+	return false
+}
+
+func validSpecLimits(spec officemodels.CompletionGateCriterionSpec) bool {
+	return spec.VerificationLimit >= 0 && spec.ReworkLimit >= 0 && spec.VerificationLimit <= maxLimit &&
+		spec.ReworkLimit <= maxLimit && spec.ReviewWaitLimit >= 0 && spec.ReviewWaitLimit <= MaxReviewWaitLimit
 }
 
 // ErrInvalidProtectedPath reports an empty or malformed protected path.
@@ -224,24 +233,24 @@ func (s *Service) AssigneeRunHeld(ctx context.Context, taskID, agentID string) b
 		return false
 	}
 	for _, criterion := range snapshot.Criteria {
-		if criterion.HeldReason != "" {
+		if criterion.HoldKind != "" {
 			return true
 		}
 	}
 	return false
 }
 
-// EffectiveCaps is a criterion's resolved caps and how much of each is used.
-type EffectiveCaps struct {
-	CriterionID             string `json:"criterion_id"`
-	MaxVerificationAttempts int    `json:"max_verification_attempts"`
-	MaxReworkRounds         int    `json:"max_rework_rounds"`
-	AttemptCount            int    `json:"attempt_count"`
-	ReworkCount             int    `json:"rework_count"`
+// EffectiveLimits is a criterion's resolved limits and how much of each is used.
+type EffectiveLimits struct {
+	CriterionID       string `json:"criterion_id"`
+	VerificationLimit int    `json:"verification_limit"`
+	ReworkLimit       int    `json:"rework_limit"`
+	AttemptCount      int    `json:"attempt_count"`
+	ReworkCount       int    `json:"rework_count"`
 }
 
-// EffectiveCaps resolves the caps of every host-verified criterion on a task.
-func (s *Service) EffectiveCaps(ctx context.Context, taskID string) ([]EffectiveCaps, error) {
+// EffectiveLimits resolves the limits of every host-verified criterion on a task.
+func (s *Service) EffectiveLimits(ctx context.Context, taskID string) ([]EffectiveLimits, error) {
 	if err := s.gates.AuthorizeTaskScope(ctx, taskID, authz.ScopeWorkspaceRead); err != nil {
 		return nil, err
 	}
@@ -249,16 +258,16 @@ func (s *Service) EffectiveCaps(ctx context.Context, taskID string) ([]Effective
 	if err != nil {
 		return nil, err
 	}
-	caps := []EffectiveCaps{}
+	limits := []EffectiveLimits{}
 	for _, criterion := range snapshot.Criteria {
 		if !models.IsHostVerifiedCriterionKind(criterion.Kind) {
 			continue
 		}
-		attempts, rework := s.caps.Resolve(ctx, taskID, criterion)
-		caps = append(caps, EffectiveCaps{
-			CriterionID: criterion.ID, MaxVerificationAttempts: attempts, MaxReworkRounds: rework,
+		attempts, rework := s.limits.Resolve(ctx, taskID, criterion)
+		limits = append(limits, EffectiveLimits{
+			CriterionID: criterion.ID, VerificationLimit: attempts, ReworkLimit: rework,
 			AttemptCount: criterion.AttemptCount, ReworkCount: criterion.ReworkCount,
 		})
 	}
-	return caps, nil
+	return limits, nil
 }

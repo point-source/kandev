@@ -21,9 +21,15 @@ const (
 // Criterion kinds. Host-verified kinds accept results only from in-process
 // verifiers through RecordTaskCompletionEvaluation.
 const (
-	TaskCompletionCriterionAttested     = "attested"
-	TaskCompletionCriterionCIAtHead     = "ci_at_head"
-	TaskCompletionCriterionReviewAtHead = "review_at_head"
+	TaskCompletionCriterionAttested = "attested"
+	TaskCompletionCriterionCheck    = "check"
+	TaskCompletionCriterionReview   = "review"
+)
+
+// Check runners. A check criterion names the program that decides it.
+const (
+	// TaskCompletionCheckRunnerGitHub reads CI checks at the PR head from GitHub.
+	TaskCompletionCheckRunnerGitHub = "github"
 )
 
 // Evaluation results recorded for a criterion.
@@ -34,12 +40,17 @@ const (
 	TaskCompletionResultCannotEvaluate = "cannot_evaluate"
 )
 
-// Confidence levels, strongest first.
+// Verdict sources, strongest first. They are derived from what produced a
+// criterion's verdict and never stored.
 const (
-	TaskCompletionConfidenceMachine          = "machine"
-	TaskCompletionConfidenceIndependentCheck = "independent_check"
-	TaskCompletionConfidenceJudgement        = "judgement"
+	TaskCompletionVerdictProgram = "program"
+	TaskCompletionVerdictPerson  = "person"
+	TaskCompletionVerdictAgent   = "agent"
 )
+
+// TaskCompletionVerifierHuman is the verifier kind of a person's decision. It
+// matches the "human" actor kind of the gate history.
+const TaskCompletionVerifierHuman = "human"
 
 // Gate blocker reasons.
 const (
@@ -53,7 +64,7 @@ const (
 // IsHostVerifiedCriterionKind reports whether only in-process verifiers may
 // record results for a criterion kind.
 func IsHostVerifiedCriterionKind(kind string) bool {
-	return kind == TaskCompletionCriterionCIAtHead || kind == TaskCompletionCriterionReviewAtHead
+	return kind == TaskCompletionCriterionCheck || kind == TaskCompletionCriterionReview
 }
 
 // NormalizeTaskCompletionCriterionKind maps the legacy empty kind to attested.
@@ -64,40 +75,43 @@ func NormalizeTaskCompletionCriterionKind(kind string) string {
 	return kind
 }
 
-// TaskCompletionCriterionConfidence derives the confidence level of a kind.
-func TaskCompletionCriterionConfidence(kind string) string {
-	if kind == TaskCompletionCriterionCIAtHead {
-		return TaskCompletionConfidenceMachine
+// TaskCompletionVerdictSource derives the source of a verified criterion's
+// verdict: a person's decision, else a program for checks and an agent for
+// every other kind. An unverified criterion has no source.
+func TaskCompletionVerdictSource(criterion TaskCompletionCriterion) string {
+	switch {
+	case criterion.VerifierKind == "":
+		return ""
+	case criterion.VerifierKind == TaskCompletionVerifierHuman:
+		return TaskCompletionVerdictPerson
+	case criterion.Kind == TaskCompletionCriterionCheck:
+		return TaskCompletionVerdictProgram
+	default:
+		return TaskCompletionVerdictAgent
 	}
-	return TaskCompletionConfidenceJudgement
 }
 
-var completionConfidenceRank = map[string]int{
-	TaskCompletionConfidenceMachine:          3,
-	TaskCompletionConfidenceIndependentCheck: 2,
-	TaskCompletionConfidenceJudgement:        1,
-}
-
-// WeakestTaskCompletionConfidence returns the weakest confidence among the
-// criteria, or "" when there are none.
-func WeakestTaskCompletionConfidence(criteria []TaskCompletionCriterion) string {
-	weakest := ""
-	for _, criterion := range criteria {
-		level := TaskCompletionCriterionConfidence(criterion.Kind)
-		if weakest == "" || completionConfidenceRank[level] < completionConfidenceRank[weakest] {
-			weakest = level
-		}
+// TaskCompletionCriterionID returns the canonical ID of a host-verified
+// criterion: "<runner>_check" for a check and the kind for a review.
+func TaskCompletionCriterionID(kind, runner string) string {
+	if kind == TaskCompletionCriterionCheck {
+		return runner + "_check"
 	}
-	return weakest
+	return kind
 }
 
-// TaskCompletionCriterionConfig carries creator-owned settings. Caps of zero
+// TaskCompletionCriterionConfig carries creator-owned settings. Limits of zero
 // mean "not set on the criterion".
 type TaskCompletionCriterionConfig struct {
-	ProtectedPaths          []string `json:"protected_paths,omitempty"`
-	MaxVerificationAttempts int      `json:"max_verification_attempts,omitempty"`
-	MaxReworkRounds         int      `json:"max_rework_rounds,omitempty"`
-	CapsConfirmedBy         string   `json:"caps_confirmed_by,omitempty"`
+	// Runner names the program that decides a check criterion.
+	Runner            string   `json:"runner,omitempty"`
+	ProtectedPaths    []string `json:"protected_paths,omitempty"`
+	VerificationLimit int      `json:"verification_limit,omitempty"`
+	ReworkLimit       int      `json:"rework_limit,omitempty"`
+	// ReviewWaitLimit is how many minutes a parked reviewer seat run may wait
+	// before the review holds. Zero means wait indefinitely.
+	ReviewWaitLimit   int    `json:"review_wait_limit,omitempty"`
+	LimitsConfirmedBy string `json:"limits_confirmed_by,omitempty"`
 }
 
 // TaskCompletionEvidenceSubject identifies a typed, revisioned source used to
@@ -132,11 +146,12 @@ type TaskCompletionCriterion struct {
 	VerifierID        string                        `json:"verifier_id,omitempty"`
 	VerifiedAt        *time.Time                    `json:"verified_at,omitempty"`
 
-	Kind       string                        `json:"kind,omitempty"`
-	Config     TaskCompletionCriterionConfig `json:"config"`
-	Confidence string                        `json:"confidence,omitempty"`
-	OwnerKind  string                        `json:"owner_kind,omitempty"`
-	OwnerID    string                        `json:"owner_id,omitempty"`
+	Kind   string                        `json:"kind,omitempty"`
+	Config TaskCompletionCriterionConfig `json:"config"`
+	// VerdictSource is derived on read; see TaskCompletionVerdictSource.
+	VerdictSource string `json:"verdict_source,omitempty"`
+	OwnerKind     string `json:"owner_kind,omitempty"`
+	OwnerID       string `json:"owner_id,omitempty"`
 
 	Result                string     `json:"result,omitempty"`
 	ResultReason          string     `json:"result_reason,omitempty"`
@@ -146,7 +161,7 @@ type TaskCompletionCriterion struct {
 	ResultAt              *time.Time `json:"result_at,omitempty"`
 	AttemptCount          int        `json:"attempt_count"`
 	ReworkCount           int        `json:"rework_count"`
-	HeldReason            string     `json:"held_reason,omitempty"`
+	HoldKind              string     `json:"hold_kind,omitempty"`
 	HeldAt                *time.Time `json:"held_at,omitempty"`
 
 	ProtectedAllowedRevision string `json:"protected_allowed_revision,omitempty"`
@@ -172,8 +187,9 @@ type TaskCompletionGateSnapshot struct {
 	Criteria    []TaskCompletionCriterion `json:"criteria"`
 	Blockers    []TaskCompletionBlocker   `json:"blockers,omitempty"`
 	Blocked     bool                      `json:"blocked"`
-	// WeakestConfidence is the weakest confidence level among the criteria.
-	WeakestConfidence string `json:"weakest_confidence,omitempty"`
+	// HeadsRevision is the live PR heads revision of a task with host-verified
+	// criteria ("<id>@<head>,..."); empty without them or without a PR.
+	HeadsRevision string `json:"heads_revision,omitempty"`
 	// StateRevision increases on every result, hold or control change.
 	StateRevision int64 `json:"state_revision"`
 }
@@ -186,13 +202,6 @@ type TaskCompletionGateSummaryObservation struct {
 	VerifiedCount int   `json:"verified_count"`
 	BlockerCount  int   `json:"blocker_count"`
 	Blocked       bool  `json:"blocked"`
-	HeldCount     int   `json:"held_count,omitempty"`
-	// FailedCount and CannotEvaluateCount count criteria by latest result, so
-	// a result change changes the summary.
-	FailedCount         int `json:"failed_count,omitempty"`
-	CannotEvaluateCount int `json:"cannot_evaluate_count,omitempty"`
-	// WeakestConfidence is the weakest confidence level among the criteria.
-	WeakestConfidence string `json:"weakest_confidence,omitempty"`
 	// StateRevision increases on every result, hold or control change.
 	StateRevision int64 `json:"state_revision,omitempty"`
 }
@@ -288,14 +297,22 @@ type TaskCompletionEvaluationOutcome struct {
 // Control actions applied by people or the owning system to one criterion.
 const (
 	TaskCompletionControlReleaseHold    = "release_hold"
-	TaskCompletionControlExtendCaps     = "extend_caps"
+	TaskCompletionControlExtendLimits   = "extend_limits"
 	TaskCompletionControlAllowProtected = "allow_protected_paths"
 	// TaskCompletionControlCountRework counts one rework round per Key and
-	// holds the criterion instead when ReworkCap rounds were already used.
+	// holds the criterion instead when CountReworkLimit rounds were already used.
 	TaskCompletionControlCountRework = "count_rework"
-	// TaskCompletionControlSendBackProtected releases a protected-path hold at
-	// the observed heads so the task can return to the worker.
-	TaskCompletionControlSendBackProtected = "send_back_protected_paths"
+	// TaskCompletionControlSendBack is a person's send back at the observed
+	// heads: it fails the criterion with the reason, releasing a protected-path
+	// hold on a check. A review can be sent back at any time.
+	TaskCompletionControlSendBack = "send_back"
+	// TaskCompletionControlAccept is a person's acceptance of a held review at
+	// the observed heads; it verifies only that criterion.
+	TaskCompletionControlAccept = "accept"
+	// TaskCompletionControlHold holds a criterion with HoldKind and Detail.
+	TaskCompletionControlHold = "hold"
+	// TaskCompletionReasonAccepted is the result reason of an accepted review.
+	TaskCompletionReasonAccepted = "accepted"
 	// TaskCompletionReasonSentBack is the result reason of a criterion a
 	// person sent back; it fails the criterion until the heads move.
 	TaskCompletionReasonSentBack = "sent_back"
@@ -321,7 +338,7 @@ type TaskCompletionSweepQuery struct {
 }
 
 // TaskCompletionControlOutcome reports a control result. Claimed is true when
-// count_rework counted a new round in this call.
+// count_rework counted a new round or hold set a new hold in this call.
 type TaskCompletionControlOutcome struct {
 	Snapshot *TaskCompletionGateSnapshot
 	Claimed  bool
@@ -333,19 +350,25 @@ type TaskCompletionControlChange struct {
 	CriterionID       string
 	CriterionRevision int64
 	Action            string
-	// SubjectRevision binds allow_protected_paths to the observed heads.
+	// SubjectRevision binds allow_protected_paths, send_back and accept to the
+	// observed heads.
 	SubjectRevision string
-	// MaxVerificationAttempts and MaxReworkRounds are the new caps for
-	// extend_caps; zero leaves a cap unchanged.
-	MaxVerificationAttempts int
-	MaxReworkRounds         int
-	CapsConfirmedBy         string
-	// Key and ReworkCap apply to count_rework. A zero cap means unlimited.
-	Key       string
-	ReworkCap int
-	ActorKind string
-	ActorID   string
-	Reason    string
+	// HoldKind and Detail apply to hold, which also records SubjectRevision as
+	// the heads it holds at when set; release_hold clears only a hold of
+	// HoldKind when it is set.
+	HoldKind string
+	Detail   []string
+	// VerificationLimit and ReworkLimit are the new limits for
+	// extend_limits; zero leaves a limit unchanged.
+	VerificationLimit int
+	ReworkLimit       int
+	LimitsConfirmedBy string
+	// Key and CountReworkLimit apply to count_rework. A zero limit means unlimited.
+	Key              string
+	CountReworkLimit int
+	ActorKind        string
+	ActorID          string
+	Reason           string
 }
 
 // CompletionGateCaller identifies an Office run making a gate request. The
@@ -428,10 +451,12 @@ type HeldTaskCompletionCriterion struct {
 // TaskCompletionCriterionRequest is a criterion named by a task creator, before
 // the owning system resolves defaults, ownership and validation.
 type TaskCompletionCriterionRequest struct {
-	Kind                    string   `json:"kind"`
-	ProtectedPaths          []string `json:"protected_paths,omitempty"`
-	MaxVerificationAttempts int      `json:"max_verification_attempts,omitempty"`
-	MaxReworkRounds         int      `json:"max_rework_rounds,omitempty"`
+	Kind              string   `json:"kind"`
+	Runner            string   `json:"runner,omitempty"`
+	ProtectedPaths    []string `json:"protected_paths,omitempty"`
+	VerificationLimit int      `json:"verification_limit,omitempty"`
+	ReworkLimit       int      `json:"rework_limit,omitempty"`
+	ReviewWaitLimit   int      `json:"review_wait_limit,omitempty"`
 }
 
 // Creator kinds for completion criteria resolution.

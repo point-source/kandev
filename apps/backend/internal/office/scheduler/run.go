@@ -195,6 +195,7 @@ type TaskStarter interface {
 // resolveProjectSkillDir) are stored as function callbacks configured via setters.
 type SchedulerService struct {
 	completionHolds         CompletionHoldChecker
+	reviewSeats             ReviewSeatObserver
 	repo                    *sqlite.Repository
 	logger                  *logger.Logger
 	svc                     *service.Service

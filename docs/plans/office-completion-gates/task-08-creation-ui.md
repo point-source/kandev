@@ -12,7 +12,6 @@ acceptance_criteria:
   - AC-OFFICE-COMPLETION-GATES-001.1
   - AC-OFFICE-COMPLETION-GATES-001.2
   - AC-OFFICE-COMPLETION-GATES-008.7
-  - AC-OFFICE-COMPLETION-GATES-008.8
 system_design:
   - ../../specs/office/system-design/completion-gates.md
 ---
@@ -22,7 +21,7 @@ system_design:
 ## Summary
 
 The Office new-task dialog offers criteria prefilled from workspace defaults,
-and Office workspace settings edit the defaults, caps and ceilings.
+and Office workspace settings edit the defaults, limits and ceilings.
 
 ## ASCII UI preview
 
@@ -66,7 +65,7 @@ stack one per row with 44-pixel controls.
 
 - Creating a task with CI (protected `tests/**`) and review criteria stores
   them; reopening the dialog in a workspace with defaults prefills them.
-- Saving the settings card persists defaults, caps and ceilings and the next
+- Saving the settings card persists defaults, limits and ceilings and the next
   dialog uses them.
 - The same flows work on a phone viewport without horizontal overflow.
 - With authentication off, checking **Review at PR head** shows the warning in

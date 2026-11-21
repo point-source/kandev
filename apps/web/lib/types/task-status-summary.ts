@@ -85,10 +85,6 @@ export type TaskStatusSummaryCompletionGate = {
   verified_count: number;
   blocker_count: number;
   blocked: boolean;
-  held_count?: number;
-  failed_count?: number;
-  cannot_evaluate_count?: number;
-  weakest_confidence?: "machine" | "independent_check" | "judgement";
   /** Increases on every result, hold or control change. */
   state_revision?: number;
 };

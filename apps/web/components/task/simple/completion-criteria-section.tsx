@@ -3,18 +3,24 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@kandev/ui/button";
-import {
-  decideProtectedPaths,
-  extendCompletionCriterion,
-  type TaskCompletionCriterion,
-  type TaskCompletionGateSnapshot,
+import type {
+  TaskCompletionCriterion,
+  TaskCompletionGateSnapshot,
 } from "@/lib/api/domains/task-completion-gates-api";
 import {
   completionGateRefreshKey,
+  criterionActions,
   criterionBlocker,
   overriddenBy,
+  type CriterionAction,
 } from "@/lib/completion-gates/criteria-display";
-import { DIALOG_KEYS } from "@/lib/completion-gates/copy-keys";
+import {
+  DIALOG_KEYS,
+  REASON_REQUIRED_ACTIONS,
+  type CompletionDialogAction,
+} from "@/lib/completion-gates/copy-keys";
+import { applyCriterionAction, limitField } from "@/lib/completion-gates/person-actions";
+import { GateActionsAuthWarning } from "@/components/completion-gates/gate-actions-auth-warning";
 import type { DecisionLike } from "@/lib/completion-gates/criterion-detail";
 import {
   overrideTaskCompletion,
@@ -22,7 +28,7 @@ import {
 } from "@/hooks/domains/completion-gates/use-task-completion-gate";
 import type { TaskStatusSummaryCompletionGate } from "@/lib/types/task-status-summary";
 import { CompletionActionDialog, type CompletionActionValues } from "./completion-action-dialog";
-import { CompletionCriterionRow, type CriterionAction } from "./completion-criterion-row";
+import { CompletionCriterionRow } from "./completion-criterion-row";
 
 type SectionTask = {
   id: string;
@@ -32,30 +38,33 @@ type SectionTask = {
   decisions?: DecisionLike[];
 };
 
-type PendingAction = { action: CriterionAction | "override"; criterion?: TaskCompletionCriterion };
+type PendingAction = { action: CompletionDialogAction; criterion?: TaskCompletionCriterion };
 
 /** Completion criteria of a gated Office task, with human recovery actions. */
 export function CompletionCriteriaSection({ task }: { task: SectionTask }) {
   const summary = task.statusSummary?.completion_gate;
   const enabled = (summary?.criteria_count ?? 0) > 0;
   const refreshKey = completionGateRefreshKey(task.status, summary);
-  const { gate, history, caps, reload } = useTaskCompletionGate(task.id, enabled, refreshKey);
+  const { gate, history, limits, reload } = useTaskCompletionGate(task.id, enabled, refreshKey);
   const [pending, setPending] = useState<PendingAction | null>(null);
   if (!enabled || !gate || gate.criteria.length === 0) return null;
   const done = task.status === "done";
+  const personActions =
+    gate.blocked || gate.criteria.some((item) => criterionActions(item, "task").length > 0);
   return (
     <section
       className="mt-4 rounded-lg border border-border"
       data-testid="completion-criteria-section"
     >
       <SectionHeader done={done} overriddenBy={done ? overriddenBy(history) : undefined} />
+      {personActions && !done && <GateActionsAuthWarning className="mx-4 mt-3" />}
       <ul className="divide-y divide-border">
         {gate.criteria.map((criterion) => (
           <CompletionCriterionRow
             key={criterion.id}
-            criterion={criterion}
+            criterion={atShownCommit(criterion, gate)}
             blocker={criterionBlocker(gate, criterion.id)}
-            caps={caps.find((entry) => entry.criterion_id === criterion.id)}
+            limits={limits.find((entry) => entry.criterion_id === criterion.id)}
             decisions={task.decisions ?? []}
             onAction={(action, target) => setPending({ action, criterion: target })}
           />
@@ -73,6 +82,18 @@ export function CompletionCriteriaSection({ task }: { task: SectionTask }) {
       />
     </section>
   );
+}
+
+/**
+ * A criterion with no result yet is shown, and acted on, at the live PR heads;
+ * otherwise at the commit its result was recorded for.
+ */
+function atShownCommit(
+  criterion: TaskCompletionCriterion,
+  gate: TaskCompletionGateSnapshot,
+): TaskCompletionCriterion {
+  if (criterion.result_subject_revision || !gate.heads_revision) return criterion;
+  return { ...criterion, result_subject_revision: gate.heads_revision };
 }
 
 function SectionHeader(props: { done: boolean; overriddenBy?: string }) {
@@ -136,8 +157,8 @@ export function PendingActionDialog({ taskId, gate, pending, onClose, onDone }: 
       title={t(DIALOG_KEYS[action].title)}
       description={t(DIALOG_KEYS[action].description)}
       confirmLabel={t(DIALOG_KEYS[action].confirm)}
-      reasonRequired={action === "override" || action === "send_back"}
-      withCaps={action === "extend"}
+      reasonRequired={REASON_REQUIRED_ACTIONS.has(action)}
+      limit={limitField(action)}
       testId={`completion-dialog-${action}`}
       onConfirm={apply}
     />
@@ -156,19 +177,14 @@ async function applyCompletionAction(
     return;
   }
   if (!criterion) return;
-  if (pending.action === "extend") {
-    await extendCompletionCriterion(taskId, criterion.id, {
-      expected_criterion_revision: criterion.criterion_revision,
-      max_rework_rounds: values.rework || undefined,
-      max_verification_attempts: values.attempts || undefined,
-      reason: values.reason,
-    });
-    return;
-  }
-  await decideProtectedPaths(taskId, criterion.id, {
-    action: pending.action,
-    expected_criterion_revision: criterion.criterion_revision,
-    expected_subject_revision: criterion.result_subject_revision ?? "",
-    reason: values.reason,
-  });
+  await applyCriterionAction(
+    {
+      taskId,
+      criterionId: criterion.id,
+      criterionRevision: criterion.criterion_revision,
+      subjectRevision: criterion.result_subject_revision ?? "",
+    },
+    pending.action as CriterionAction,
+    values,
+  );
 }

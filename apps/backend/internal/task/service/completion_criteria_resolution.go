@@ -36,6 +36,21 @@ type CompletionCriteriaResolver interface {
 	ResolveCreateCriteria(ctx context.Context, input models.CompletionCriteriaResolution) ([]models.TaskCompletionCriterion, error)
 }
 
+// CompletionCriteriaChangeValidator refuses an edited criterion set the owning
+// system cannot verify. A resolver may also implement it.
+type CompletionCriteriaChangeValidator interface {
+	ValidateCriteriaChange(ctx context.Context, task *models.Task, criteria []models.TaskCompletionCriterion) error
+}
+
+// validateCompletionCriteriaChange applies the registered policy to an edit.
+func (s *Service) validateCompletionCriteriaChange(ctx context.Context, task *models.Task, criteria []models.TaskCompletionCriterion) error {
+	validator, ok := s.completionCriteriaResolver.(CompletionCriteriaChangeValidator)
+	if !ok || task == nil {
+		return nil
+	}
+	return validator.ValidateCriteriaChange(ctx, task, criteria)
+}
+
 // SetCompletionCriteriaResolver registers the creation-criteria policy.
 func (s *Service) SetCompletionCriteriaResolver(resolver CompletionCriteriaResolver) {
 	s.completionCriteriaResolver = resolver

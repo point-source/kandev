@@ -23,11 +23,13 @@ const (
 // NoticeSelfApprovalIgnored tells an assignee its own approval does not count.
 const NoticeSelfApprovalIgnored = "review_self_approval_ignored"
 
-// Hold reasons.
+// Hold kinds. A hold stops automation on a criterion until a person acts.
 const (
-	HoldProtectedPathChanged = "protected_path_changed"
-	HoldAttemptCapReached    = "attempt_cap_reached"
-	HoldReworkCapReached     = "rework_cap_reached"
+	HoldProtectedFilesChanged    = "protected_files_changed"
+	HoldVerificationLimitReached = "verification_limit_reached"
+	HoldReworkLimitReached       = "rework_limit_reached"
+	HoldNoReviewerAvailable      = "no_reviewer_available"
+	HoldReviewWaitLimitReached   = "review_wait_limit_reached"
 )
 
 // Verifier identities recorded as proof provenance.

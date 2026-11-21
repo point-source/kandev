@@ -8,11 +8,25 @@ export type CriterionDisplayStatus =
   | "pass"
   | "fail"
   | "cannot_evaluate"
-  | "held"
+  | "needs_you"
   | "stale";
 
-const PROTECTED_HOLD = "protected_path_changed";
-const CAP_HOLDS = new Set(["rework_cap_reached", "attempt_cap_reached"]);
+/** What a person can do about one criterion. */
+export type CriterionAction =
+  | "allow"
+  | "send_back"
+  | "extend_rounds"
+  | "extend_attempts"
+  | "accept";
+
+/** Where a person acts: the task page offers every action, the Inbox only hold actions. */
+export type ActionSurface = "task" | "inbox";
+
+const PROTECTED_HOLD = "protected_files_changed";
+const LIMIT_HOLD_ACTIONS: Record<string, CriterionAction> = {
+  rework_limit_reached: "extend_rounds",
+  verification_limit_reached: "extend_attempts",
+};
 
 /** The blocker reason of a criterion, or undefined when it is met. */
 export function criterionBlocker(
@@ -27,22 +41,12 @@ export function criterionDisplayStatus(
   criterion: TaskCompletionCriterion,
   blocker: string | undefined,
 ): CriterionDisplayStatus {
-  if (criterion.held_reason) return "held";
+  if (criterion.hold_kind) return "needs_you";
   if (!blocker) return "pass";
   if (blocker === "evidence_stale") return "stale";
   if (criterion.result === "fail") return "fail";
   if (criterion.result === "cannot_evaluate") return "cannot_evaluate";
   return "pending";
-}
-
-/** The reason code shown under a criterion: hold, result, or blocker. */
-export function criterionReason(
-  criterion: TaskCompletionCriterion,
-  blocker: string | undefined,
-): string | undefined {
-  if (criterion.held_reason) return criterion.held_reason;
-  if (criterion.result_reason) return criterion.result_reason;
-  return blocker;
 }
 
 /** Short commit SHAs of a PR heads revision ("pr@sha,pr@sha"). */
@@ -56,11 +60,27 @@ export function shortHeads(revision: string | undefined): string[] {
 }
 
 export function isProtectedPathHold(criterion: TaskCompletionCriterion): boolean {
-  return criterion.held_reason === PROTECTED_HOLD;
+  return criterion.hold_kind === PROTECTED_HOLD;
 }
 
-export function isCapHold(criterion: TaskCompletionCriterion): boolean {
-  return CAP_HOLDS.has(criterion.held_reason ?? "");
+/**
+ * The actions a person can take on a criterion. A protected-file hold takes
+ * Allow or Send back; a limit hold takes more rounds or attempts; any held
+ * review can be accepted at the commit shown. On the task page a review can
+ * also be sent back at any time, because rejecting fails closed.
+ */
+export function criterionActions(
+  criterion: TaskCompletionCriterion,
+  surface: ActionSurface,
+): CriterionAction[] {
+  const isReview = criterion.kind === "review";
+  if (isProtectedPathHold(criterion)) return ["allow", "send_back"];
+  const actions: CriterionAction[] = [];
+  const limit = LIMIT_HOLD_ACTIONS[criterion.hold_kind ?? ""];
+  if (limit) actions.push(limit);
+  if (isReview && criterion.hold_kind) actions.push("accept");
+  if (isReview && surface === "task") actions.push("send_back");
+  return actions;
 }
 
 type StepLike = { id: string; position: number; complete_task_on_enter?: boolean };

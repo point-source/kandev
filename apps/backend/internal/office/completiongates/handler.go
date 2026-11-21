@@ -1,6 +1,7 @@
 package completiongates
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/kandev/kandev/internal/common/logger"
 	officeagents "github.com/kandev/kandev/internal/office/agents"
 	officemodels "github.com/kandev/kandev/internal/office/models"
+	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/repository/repoerrors"
 	taskservice "github.com/kandev/kandev/internal/task/service"
 )
@@ -29,9 +31,11 @@ func RegisterRoutes(router *gin.RouterGroup, svc *Service, log *logger.Logger) {
 		return
 	}
 	h := &Handler{svc: svc, logger: log}
-	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/protected-paths", h.protectedPaths)
+	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/allow", h.personAction(svc.Allow))
+	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/send-back", h.personAction(svc.SendBack))
+	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/accept", h.personAction(svc.Accept))
 	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/extend", h.extend)
-	router.GET("/tasks/:id/completion-gate/caps", h.caps)
+	router.GET("/tasks/:id/completion-gate/limits", h.limits)
 	router.GET("/workspaces/:wsId/completion-gates/settings", h.getSettings)
 	router.PUT("/workspaces/:wsId/completion-gates/settings", h.putSettings)
 }
@@ -55,13 +59,13 @@ func (h *Handler) extend(c *gin.Context) {
 	c.JSON(http.StatusOK, snapshot)
 }
 
-func (h *Handler) caps(c *gin.Context) {
-	caps, err := h.svc.EffectiveCaps(c.Request.Context(), c.Param("id"))
+func (h *Handler) limits(c *gin.Context) {
+	limits, err := h.svc.EffectiveLimits(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"caps": caps})
+	c.JSON(http.StatusOK, gin.H{"limits": limits})
 }
 
 func (h *Handler) getSettings(c *gin.Context) {
@@ -100,21 +104,27 @@ func decodeStrict(c *gin.Context, target any, code string) bool {
 	return true
 }
 
-func (h *Handler) protectedPaths(c *gin.Context) {
-	if officeagents.ClaimsFromContext(c) != nil {
-		h.writeError(c, ErrHumanRequired)
-		return
+type personDecision func(ctx context.Context, taskID, criterionID string, request PersonAction) (*models.TaskCompletionGateSnapshot, error)
+
+// personAction serves a person's decision on one criterion. Agent run tokens
+// are refused: these actions are the person's verdict.
+func (h *Handler) personAction(decide personDecision) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if officeagents.ClaimsFromContext(c) != nil {
+			h.writeError(c, ErrHumanRequired)
+			return
+		}
+		var request PersonAction
+		if !decodeStrict(c, &request, codeInvalidControl) {
+			return
+		}
+		snapshot, err := decide(c.Request.Context(), c.Param("id"), c.Param("criterionId"), request)
+		if err != nil {
+			h.writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, snapshot)
 	}
-	var request ProtectedPathsAction
-	if !decodeStrict(c, &request, codeInvalidControl) {
-		return
-	}
-	snapshot, err := h.svc.DecideProtectedPaths(c.Request.Context(), c.Param("id"), c.Param("criterionId"), request)
-	if err != nil {
-		h.writeError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, snapshot)
 }
 
 func (h *Handler) writeError(c *gin.Context, err error) {
@@ -127,8 +137,8 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_completion_gate_settings"})
 	case errors.Is(err, ErrInvalidProtectedPath):
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_protected_path"})
-	case errors.Is(err, ErrCapAboveCeiling):
-		c.JSON(http.StatusConflict, gin.H{"code": "completion_cap_above_ceiling"})
+	case errors.Is(err, ErrLimitAboveCeiling):
+		c.JSON(http.StatusConflict, gin.H{"code": "completion_limit_above_ceiling"})
 	case errors.Is(err, ErrNotCriterionOwner):
 		c.JSON(http.StatusForbidden, gin.H{"code": "task_completion_self_verification"})
 	case errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged):

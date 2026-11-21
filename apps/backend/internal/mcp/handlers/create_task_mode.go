@@ -35,8 +35,8 @@ type mcpCreateTaskRequest struct {
 	BaseBranch        string               `json:"base_branch"`
 	BlockedBy         []string             `json:"blocked_by"`
 	RelatedTaskIDs    []string             `json:"related_task_ids"`
-	// CompletionCriteria names Office completion criteria (ci_at_head,
-	// review_at_head); omitted means the workspace default applies.
+	// CompletionCriteria names Office completion criteria (check,
+	// review); omitted means the workspace default applies.
 	CompletionCriteria     *[]models.TaskCompletionCriterionRequest `json:"completion_criteria"`
 	StartWhenUnblocked     *bool                                    `json:"start_when_unblocked"`
 	AssigneeAgentProfileID string                                   `json:"assignee_agent_profile_id"`

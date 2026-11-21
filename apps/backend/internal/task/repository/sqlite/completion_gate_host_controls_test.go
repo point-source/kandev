@@ -57,7 +57,7 @@ func TestPassRecordedBeforeMergeSurvivesReevaluation(t *testing.T) {
 func holdProtected(t *testing.T, repo *Repository) {
 	t.Helper()
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultPending, func(c *models.TaskCompletionEvaluationChange) {
-		c.Hold, c.Reason = "protected_path_changed", "protected_path_changed"
+		c.Hold, c.Reason = "protected_files_changed", "protected_files_changed"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,22 +75,22 @@ func TestProtectedControlsRequireAProtectedHoldAtTheSeenHeads(t *testing.T) {
 		t.Fatalf("allow without a hold err = %v", err)
 	}
 	holdProtected(t, repo)
-	if _, err := control(repo, models.TaskCompletionControlSendBackProtected, func(c *models.TaskCompletionControlChange) {
+	if _, err := control(repo, models.TaskCompletionControlSendBack, func(c *models.TaskCompletionControlChange) {
 		c.SubjectRevision = "pr-1@head-1"
 	}); err == nil {
 		t.Fatal("send back without a reason was accepted")
 	}
-	outcome, err := control(repo, models.TaskCompletionControlSendBackProtected, atHead)
+	outcome, err := control(repo, models.TaskCompletionControlSendBack, atHead)
 	if err != nil {
 		t.Fatal(err)
 	}
 	criterion := outcome.Snapshot.Criteria[0]
-	if criterion.HeldReason != "" || criterion.ProtectedAllowedRevision != "" || criterion.Result != models.TaskCompletionResultFail ||
+	if criterion.HoldKind != "" || criterion.ProtectedAllowedRevision != "" || criterion.Result != models.TaskCompletionResultFail ||
 		criterion.ResultReason != models.TaskCompletionReasonSentBack || len(criterion.ResultDetail) != 1 ||
 		criterion.ResultDetail[0] != "weakened tests" || criterion.ResultSubjectRevision != "pr-1@head-1" {
 		t.Fatalf("after send back = %+v", criterion)
 	}
-	if _, err := control(repo, models.TaskCompletionControlSendBackProtected, atHead); !errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged) {
+	if _, err := control(repo, models.TaskCompletionControlSendBack, atHead); !errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged) {
 		t.Fatalf("second send back err = %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestReworkCountReportsTheClaimAndRemembersRecentKeys(t *testing.T) {
 	count := func(key string) *models.TaskCompletionControlOutcome {
 		t.Helper()
 		outcome, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) {
-			c.Key, c.ReworkCap, c.ActorKind = key, 10, "system"
+			c.Key, c.CountReworkLimit, c.ActorKind = key, 10, "system"
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -123,33 +123,33 @@ func TestCapExtensionReleasesOnlyTheCausingCapAboveUse(t *testing.T) {
 	linkPR(t, writer, "pr-1", "head-1")
 	for _, key := range []string{"a", "b"} {
 		if _, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) {
-			c.Key, c.ReworkCap = key, 2
+			c.Key, c.CountReworkLimit = key, 2
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	held, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) { c.Key, c.ReworkCap = "c", 2 })
-	if err != nil || held.Snapshot.Criteria[0].HeldReason != "rework_cap_reached" {
+	held, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) { c.Key, c.CountReworkLimit = "c", 2 })
+	if err != nil || held.Snapshot.Criteria[0].HoldKind != "rework_limit_reached" {
 		t.Fatalf("hold = %+v, %v", held, err)
 	}
 	extend := func(attempts, rework int) models.TaskCompletionCriterion {
 		t.Helper()
-		outcome, err := control(repo, models.TaskCompletionControlExtendCaps, func(c *models.TaskCompletionControlChange) {
-			c.MaxVerificationAttempts, c.MaxReworkRounds = attempts, rework
+		outcome, err := control(repo, models.TaskCompletionControlExtendLimits, func(c *models.TaskCompletionControlChange) {
+			c.VerificationLimit, c.ReworkLimit = attempts, rework
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return outcome.Snapshot.Criteria[0]
 	}
-	if c := extend(9, 0); c.HeldReason != "rework_cap_reached" {
-		t.Fatalf("raising the attempt cap released a rework hold: %+v", c)
+	if c := extend(9, 0); c.HoldKind != "rework_limit_reached" {
+		t.Fatalf("raising the attempt limit released a rework hold: %+v", c)
 	}
-	if c := extend(0, 2); c.HeldReason != "rework_cap_reached" {
-		t.Fatalf("a rework cap equal to use released the hold: %+v", c)
+	if c := extend(0, 2); c.HoldKind != "rework_limit_reached" {
+		t.Fatalf("a rework limit equal to use released the hold: %+v", c)
 	}
-	if c := extend(0, 3); c.HeldReason != "" {
-		t.Fatalf("raising the rework cap above use kept the hold: %+v", c)
+	if c := extend(0, 3); c.HoldKind != "" {
+		t.Fatalf("raising the rework limit above use kept the hold: %+v", c)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestStateRevisionAndEscalationMarker(t *testing.T) {
 	linkPR(t, writer, "pr-1", "head-1")
 	before := gate(t, repo).StateRevision
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultFail, func(c *models.TaskCompletionEvaluationChange) {
-		c.Reason, c.Hold = "checks_failed", "rework_cap_reached"
+		c.Reason, c.Hold = "checks_failed", "rework_limit_reached"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestDueSweepSelectsNeverEvaluatedAndExpiredAwaitingCriteria(t *testing.T) {
 	due := func(at time.Time) []string {
 		t.Helper()
 		ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), models.TaskCompletionSweepQuery{
-			Kind: models.TaskCompletionCriterionCIAtHead, DueBefore: &at, AwaitingReason: "awaiting_checks", Limit: 10,
+			Kind: models.TaskCompletionCriterionCheck, DueBefore: &at, AwaitingReason: "awaiting_checks", Limit: 10,
 		})
 		if err != nil {
 			t.Fatal(err)

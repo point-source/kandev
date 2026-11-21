@@ -123,7 +123,7 @@ func (r *Repository) readTaskCompletionGateSummaryChunk(
 
 	criteriaQuery := `
 		SELECT task_id, criterion_revision, verified_revision, evidence_kind, evidence_id, evidence_revision,
-			kind, held_reason, result
+			kind, hold_kind, result
 		FROM task_completion_criteria
 		WHERE task_id IN (` + placeholders + `)
 		ORDER BY task_id, criterion_id`
@@ -297,17 +297,7 @@ func completionGateBatchObservations(tasks map[string]*completionGateSummaryTask
 			StateRevision: task.stateRevision,
 			CriteriaCount: len(task.criteria),
 		}
-		observation.WeakestConfidence = models.WeakestTaskCompletionConfidence(task.criteria)
 		for _, criterion := range task.criteria {
-			if criterion.HeldReason != "" {
-				observation.HeldCount++
-			}
-			switch criterion.Result {
-			case models.TaskCompletionResultFail:
-				observation.FailedCount++
-			case models.TaskCompletionResultCannotEvaluate:
-				observation.CannotEvaluateCount++
-			}
 			evidenceCurrent := completionGateBatchEvidenceCurrent(criterion, task.updatedAt, prHeads, executions, taskID)
 			if completionCriterionBlocked(criterion, evidenceCurrent) {
 				observation.BlockerCount++
@@ -343,7 +333,7 @@ func scanCompletionGateBatchCriterion(rows *sql.Rows, tasks map[string]*completi
 		evidenceRevision string
 	)
 	if err := rows.Scan(&taskID, &criterion.CriterionRevision, &criterion.VerifiedRevision,
-		&evidenceKind, &evidenceID, &evidenceRevision, &criterion.Kind, &criterion.HeldReason, &criterion.Result); err != nil {
+		&evidenceKind, &evidenceID, &evidenceRevision, &criterion.Kind, &criterion.HoldKind, &criterion.Result); err != nil {
 		return err
 	}
 	criterion.Kind = models.NormalizeTaskCompletionCriterionKind(criterion.Kind)

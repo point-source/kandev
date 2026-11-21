@@ -3,9 +3,8 @@ import type { TaskCompletionCriterion } from "@/lib/api/domains/task-completion-
 import {
   completionGateRefreshKey,
   completingStepId,
+  criterionActions,
   criterionDisplayStatus,
-  criterionReason,
-  isCapHold,
   isProtectedPathHold,
   overriddenBy,
   shortHeads,
@@ -13,7 +12,7 @@ import {
 
 function criterion(fields: Partial<TaskCompletionCriterion>): TaskCompletionCriterion {
   return {
-    id: "ci_at_head",
+    id: "github_check",
     description: "CI",
     evidence_subject: { kind: "github_pr_heads", id: "t1" },
     criterion_revision: 1,
@@ -23,8 +22,8 @@ function criterion(fields: Partial<TaskCompletionCriterion>): TaskCompletionCrit
 
 describe("criterionDisplayStatus", () => {
   it("prefers a hold, then the blocker kind, then the result", () => {
-    expect(criterionDisplayStatus(criterion({ held_reason: "rework_cap_reached" }), "held")).toBe(
-      "held",
+    expect(criterionDisplayStatus(criterion({ hold_kind: "rework_limit_reached" }), "held")).toBe(
+      "needs_you",
     );
     expect(criterionDisplayStatus(criterion({ result: "pass" }), undefined)).toBe("pass");
     expect(criterionDisplayStatus(criterion({ result: "pass" }), "evidence_stale")).toBe("stale");
@@ -37,25 +36,14 @@ describe("criterionDisplayStatus", () => {
 });
 
 describe("criterion helpers", () => {
-  it("chooses the most specific reason", () => {
-    expect(criterionReason(criterion({ held_reason: "protected_path_changed" }), "held")).toBe(
-      "protected_path_changed",
-    );
-    expect(criterionReason(criterion({ result_reason: "checks_failed" }), "unverified")).toBe(
-      "checks_failed",
-    );
-    expect(criterionReason(criterion({}), "pr_missing")).toBe("pr_missing");
-  });
-
   it("shortens every head of a revision", () => {
     expect(shortHeads("pr-1@a1b2c3d4e5,pr-2@0123456789")).toEqual(["a1b2c3d", "0123456"]);
     expect(shortHeads(undefined)).toEqual([]);
   });
 
   it("classifies holds", () => {
-    expect(isProtectedPathHold(criterion({ held_reason: "protected_path_changed" }))).toBe(true);
-    expect(isCapHold(criterion({ held_reason: "attempt_cap_reached" }))).toBe(true);
-    expect(isCapHold(criterion({ held_reason: "protected_path_changed" }))).toBe(false);
+    expect(isProtectedPathHold(criterion({ hold_kind: "protected_files_changed" }))).toBe(true);
+    expect(isProtectedPathHold(criterion({ hold_kind: "verification_limit_reached" }))).toBe(false);
   });
 
   it("finds the completing step and the overriding person", () => {
@@ -82,5 +70,42 @@ describe("completionGateRefreshKey", () => {
     expect(after).not.toBe(before);
     expect(completionGateRefreshKey("done", { revision: 1, state_revision: 5 })).not.toBe(after);
     expect(completionGateRefreshKey("todo", null)).toBe("todo|0|0");
+  });
+});
+
+describe("criterionActions", () => {
+  const check = (fields: Partial<TaskCompletionCriterion> = {}) =>
+    criterion({ kind: "check", ...fields });
+  const review = (fields: Partial<TaskCompletionCriterion> = {}) =>
+    criterion({ id: "review", kind: "review", ...fields });
+
+  it("offers each hold kind its own actions", () => {
+    expect(criterionActions(check({ hold_kind: "protected_files_changed" }), "task")).toEqual([
+      "allow",
+      "send_back",
+    ]);
+    expect(criterionActions(check({ hold_kind: "rework_limit_reached" }), "task")).toEqual([
+      "extend_rounds",
+    ]);
+    expect(criterionActions(check({ hold_kind: "verification_limit_reached" }), "inbox")).toEqual([
+      "extend_attempts",
+    ]);
+    expect(criterionActions(review({ hold_kind: "rework_limit_reached" }), "inbox")).toEqual([
+      "extend_rounds",
+      "accept",
+    ]);
+    expect(criterionActions(review({ hold_kind: "no_reviewer_available" }), "inbox")).toEqual([
+      "accept",
+    ]);
+  });
+
+  it("lets a person send a review back from the task page at any time", () => {
+    expect(criterionActions(review({ result: "pass" }), "task")).toEqual(["send_back"]);
+    expect(criterionActions(review({ hold_kind: "review_wait_limit_reached" }), "task")).toEqual([
+      "accept",
+      "send_back",
+    ]);
+    expect(criterionActions(review({ result: "pass" }), "inbox")).toEqual([]);
+    expect(criterionActions(check({ result: "fail" }), "task")).toEqual([]);
   });
 });

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  decideProtectedPaths,
+  acceptCriterion,
+  allowProtectedFiles,
   extendCompletionCriterion,
-  getEffectiveCompletionCaps,
+  getEffectiveCompletionLimits,
+  sendBackCriterion,
 } from "./task-completion-gates-api";
 
 const fetchSpy = vi.fn<typeof fetch>();
@@ -23,56 +25,58 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("completion gate actions", () => {
-  it("posts a protected-path decision bound to the observed heads", async () => {
+  it.each([
+    ["allow", allowProtectedFiles],
+    ["send-back", sendBackCriterion],
+    ["accept", acceptCriterion],
+  ] as const)("posts a person's %s bound to the observed heads", async (route, action) => {
     fetchSpy.mockResolvedValueOnce(new Response(SNAPSHOT, { status: 200 }));
-    await decideProtectedPaths(
+    await action(
       "t 1",
-      "ci_at_head",
-      { action: "allow", expected_criterion_revision: 1, expected_subject_revision: "pr@h1" },
+      "review",
+      { expected_criterion_revision: 1, expected_subject_revision: "pr@h1", reason: "why" },
       { baseUrl: API },
     );
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe(
-      `${API}/api/v1/office/tasks/t%201/completion-gate/criteria/ci_at_head/protected-paths`,
-    );
+    expect(url).toBe(`${API}/api/v1/office/tasks/t%201/completion-gate/criteria/review/${route}`);
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({
-      action: "allow",
       expected_criterion_revision: 1,
       expected_subject_revision: "pr@h1",
+      reason: "why",
     });
   });
 
-  it("posts a cap extension", async () => {
+  it("posts a limit extension", async () => {
     fetchSpy.mockResolvedValueOnce(new Response(SNAPSHOT, { status: 200 }));
     await extendCompletionCriterion(
       "t1",
-      "review_at_head",
-      { expected_criterion_revision: 3, max_rework_rounds: 5, reason: "big task" },
+      "review",
+      { expected_criterion_revision: 3, rework_limit: 5, reason: "big task" },
       { baseUrl: API },
     );
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe(
-      `${API}/api/v1/office/tasks/t1/completion-gate/criteria/review_at_head/extend`,
-    );
+    expect(url).toBe(`${API}/api/v1/office/tasks/t1/completion-gate/criteria/review/extend`);
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      max_rework_rounds: 5,
+      rework_limit: 5,
       reason: "big task",
     });
   });
 
-  it("reads the effective caps of a task's criteria", async () => {
-    const caps = [
+  it("reads the effective limits of a task's criteria", async () => {
+    const limits = [
       {
         criterion_id: "ci",
-        max_verification_attempts: 3,
-        max_rework_rounds: 5,
+        verification_limit: 3,
+        rework_limit: 5,
         attempt_count: 1,
         rework_count: 2,
       },
     ];
-    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ caps }), { status: 200 }));
-    await expect(getEffectiveCompletionCaps("t 1", { baseUrl: API })).resolves.toEqual(caps);
-    expect(fetchSpy.mock.calls[0][0]).toBe(`${API}/api/v1/office/tasks/t%201/completion-gate/caps`);
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ limits }), { status: 200 }));
+    await expect(getEffectiveCompletionLimits("t 1", { baseUrl: API })).resolves.toEqual(limits);
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      `${API}/api/v1/office/tasks/t%201/completion-gate/limits`,
+    );
   });
 });

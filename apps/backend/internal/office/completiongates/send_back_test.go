@@ -12,7 +12,7 @@ import (
 func heldProtectedCI() models.TaskCompletionCriterion {
 	criterion := ciCriterion("tests/**")
 	criterion.Result, criterion.ResultSubjectRevision = models.TaskCompletionResultPending, "pr-1@h1"
-	criterion.HeldReason = HoldProtectedPathChanged
+	criterion.HoldKind = HoldProtectedFilesChanged
 	return criterion
 }
 
@@ -44,9 +44,9 @@ func newSendBackService(t *testing.T, current string) (*Service, *fakeGates, *fa
 func sendBack(t *testing.T, svc *Service) {
 	t.Helper()
 	ctx := authn.WithIdentity(context.Background(), authn.Identity{UserID: "user-1"})
-	request := ProtectedPathsAction{Action: ProtectedPathsSendBack, ExpectedCriterionRevision: 1,
+	request := PersonAction{ExpectedCriterionRevision: 1,
 		ExpectedSubjectRevision: "pr-1@h1", Reason: "tests were weakened"}
-	if _, err := svc.DecideProtectedPaths(ctx, "task-1", "ci", request); err != nil {
+	if _, err := svc.SendBack(ctx, "task-1", "ci", request); err != nil {
 		t.Fatal(err)
 	}
 }

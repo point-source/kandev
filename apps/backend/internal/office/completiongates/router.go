@@ -9,8 +9,8 @@ import (
 	"github.com/kandev/kandev/internal/task/models"
 )
 
-// DefaultCap is the shipped default for both caps.
-const DefaultCap = 3
+// DefaultLimit is the shipped default for both limits.
+const DefaultLimit = 3
 
 const reasonHeadMoved = "head_moved"
 
@@ -44,8 +44,8 @@ type Navigator interface {
 	RetryCompletingTransition(ctx context.Context, taskID, workflowID, stepID, operationID string) error
 }
 
-// CapResolver returns the effective attempt and rework caps of a criterion.
-type CapResolver func(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion) (attempts, rework int)
+// LimitResolver returns the effective attempt and rework limits of a criterion.
+type LimitResolver func(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion) (attempts, rework int)
 
 // HoldEscalator escalates a newly held criterion once.
 type HoldEscalator interface {
@@ -58,44 +58,44 @@ type Router struct {
 	prs       PRSource
 	navigator Navigator
 	review    *ReviewVerifier
-	caps      CapResolver
+	limits    LimitResolver
 	escalator HoldEscalator
 	logger    *logger.Logger
 }
 
-// NewRouter creates a router. Caps default to the criterion values, then 3.
+// NewRouter creates a router. Limits default to the criterion values, then 3.
 func NewRouter(gates GateService, prs PRSource, navigator Navigator, review *ReviewVerifier, log *logger.Logger) *Router {
-	return &Router{gates: gates, prs: prs, navigator: navigator, review: review, caps: criterionCaps, logger: log}
+	return &Router{gates: gates, prs: prs, navigator: navigator, review: review, limits: criterionCaps, logger: log}
 }
 
 // SetNavigator installs the workflow navigator. Routing is inactive until set.
 func (r *Router) SetNavigator(navigator Navigator) { r.navigator = navigator }
 
-// SetCapResolver replaces the cap resolution.
-func (r *Router) SetCapResolver(resolver CapResolver) { r.caps = resolver }
+// SetLimitResolver replaces the limit resolution.
+func (r *Router) SetLimitResolver(resolver LimitResolver) { r.limits = resolver }
 
 // SetEscalator installs the hold escalation.
 func (r *Router) SetEscalator(escalator HoldEscalator) { r.escalator = escalator }
 
 func criterionCaps(_ context.Context, _ string, criterion models.TaskCompletionCriterion) (int, int) {
-	return capOrDefault(criterion.Config.MaxVerificationAttempts), capOrDefault(criterion.Config.MaxReworkRounds)
+	return limitOrDefault(criterion.Config.VerificationLimit), limitOrDefault(criterion.Config.ReworkLimit)
 }
 
-func capOrDefault(value int) int {
+func limitOrDefault(value int) int {
 	if value > 0 {
 		return value
 	}
-	return DefaultCap
+	return DefaultLimit
 }
 
-// Prepare counts verification attempts and holds at the attempt cap.
+// Prepare counts verification attempts and holds at the attempt limit.
 func (r *Router) Prepare(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion, change *models.TaskCompletionEvaluationChange) {
 	if change.Result != models.TaskCompletionResultCannotEvaluate {
 		return
 	}
-	attempts, _ := r.caps(ctx, taskID, criterion)
+	attempts, _ := r.limits(ctx, taskID, criterion)
 	if criterion.AttemptCount >= attempts {
-		change.Hold = HoldAttemptCapReached
+		change.Hold = HoldVerificationLimitReached
 		return
 	}
 	change.CountAttempt = true
@@ -104,7 +104,7 @@ func (r *Router) Prepare(ctx context.Context, taskID string, criterion models.Ta
 // AfterRecord routes a changed result.
 func (r *Router) AfterRecord(ctx context.Context, taskID string, outcome *models.TaskCompletionEvaluationOutcome) {
 	criterion := outcome.Criterion
-	if criterion.HeldReason != "" && criterion.HeldAt != nil && criterion.ResultAt != nil && !criterion.HeldAt.Before(*criterion.ResultAt) {
+	if criterion.HoldKind != "" && criterion.HeldAt != nil && criterion.ResultAt != nil && !criterion.HeldAt.Before(*criterion.ResultAt) {
 		r.escalate(ctx, taskID, criterion)
 	}
 	if criterion.Result == models.TaskCompletionResultPass && outcome.Snapshot != nil && !outcome.Snapshot.Blocked {
@@ -117,17 +117,17 @@ func (r *Router) AfterRecord(ctx context.Context, taskID string, outcome *models
 // RouteCriterion returns the task for an unmet criterion that is not held: a
 // CI failure goes back to the work stage, a review left stale by a push goes
 // back to the review stage. Keys match the original routing so a return that
-// was held at the rework cap is applied once the cap is raised.
+// was held at the rework limit is applied once the limit is raised.
 func (r *Router) RouteCriterion(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion) {
-	if criterion.HeldReason != "" || criterion.ResultSubjectRevision == "" {
+	if criterion.HoldKind != "" || criterion.ResultSubjectRevision == "" {
 		return
 	}
 	switch {
-	case criterion.Kind == models.TaskCompletionCriterionCIAtHead && criterion.Result == models.TaskCompletionResultFail:
+	case criterion.Kind == models.TaskCompletionCriterionCheck && criterion.Result == models.TaskCompletionResultFail:
 		r.returnTo(ctx, taskID, criterion, "ci:"+criterion.ResultSubjectRevision, func(p Placement) (string, bool) {
 			return p.WorkStepID, p.pastWork()
 		})
-	case criterion.Kind == models.TaskCompletionCriterionReviewAtHead && criterion.ResultReason == reasonHeadMoved:
+	case criterion.Kind == models.TaskCompletionCriterionReview && criterion.ResultReason == reasonHeadMoved:
 		r.returnTo(ctx, taskID, criterion, "head:"+criterion.ResultSubjectRevision, func(p Placement) (string, bool) {
 			return p.ReviewStepID, p.pastReview()
 		})
@@ -135,14 +135,14 @@ func (r *Router) RouteCriterion(ctx context.Context, taskID string, criterion mo
 }
 
 func (r *Router) escalate(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion) {
-	recordHoldMetric(criterion.HeldReason)
+	recordHoldMetric(criterion.HoldKind)
 	if r.escalator != nil {
 		r.escalator.EscalateHold(ctx, taskID, criterion)
 	}
 }
 
 // returnTo counts one rework round under key and moves the task to the step
-// chosen by target, or holds the criterion at the rework cap.
+// chosen by target, or holds the criterion at the rework limit.
 func (r *Router) returnTo(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion, key string, target func(Placement) (string, bool)) {
 	placement, ok := r.placement(ctx, taskID)
 	if !ok {
@@ -184,14 +184,14 @@ func (r *Router) placement(ctx context.Context, taskID string) (Placement, bool)
 }
 
 // claimRework counts one keyed rework round and reports whether it is new.
-// Reaching the cap holds and escalates the criterion instead.
+// Reaching the limit holds and escalates the criterion instead.
 func (r *Router) claimRework(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion, key string) bool {
 	after, counted, ok := r.countRework(ctx, taskID, criterion, key)
 	if !ok {
 		return false
 	}
 	if !counted {
-		if after.HeldReason == HoldReworkCapReached && criterion.HeldReason != HoldReworkCapReached {
+		if after.HoldKind == HoldReworkLimitReached && criterion.HoldKind != HoldReworkLimitReached {
 			r.escalate(ctx, taskID, after)
 		}
 		return false
@@ -213,10 +213,10 @@ func (r *Router) countRework(ctx context.Context, taskID string, criterion model
 			criterion = fresh
 		}
 	}
-	_, rework := r.caps(ctx, taskID, criterion)
+	_, rework := r.limits(ctx, taskID, criterion)
 	outcome, err := r.gates.ApplyTaskCompletionControl(ctx, models.TaskCompletionControlChange{
 		TaskID: taskID, CriterionID: criterion.ID, CriterionRevision: criterion.CriterionRevision,
-		Action: models.TaskCompletionControlCountRework, Key: key, ReworkCap: rework,
+		Action: models.TaskCompletionControlCountRework, Key: key, CountReworkLimit: rework,
 		ActorKind: "system", ActorID: "completion_gate_router",
 	})
 	if err != nil {
@@ -262,7 +262,7 @@ func (r *Router) OnTaskMoved(ctx context.Context, taskID, fromStepID, transition
 }
 
 func (r *Router) routeCIOnMove(ctx context.Context, taskID, fromStepID, key string, snapshot *models.TaskCompletionGateSnapshot, placement Placement) bool {
-	ci, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionCIAtHead)
+	ci, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionCheck)
 	if !ok || fromStepID != placement.WorkStepID || !placement.pastWork() || !r.failingAtLiveHeads(ctx, taskID, ci) {
 		return false
 	}
@@ -271,7 +271,7 @@ func (r *Router) routeCIOnMove(ctx context.Context, taskID, fromStepID, key stri
 }
 
 func (r *Router) routeReviewOnMove(ctx context.Context, taskID, fromStepID, key string, snapshot *models.TaskCompletionGateSnapshot, placement Placement) {
-	review, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionReviewAtHead)
+	review, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionReview)
 	if !ok || placement.ReviewStepID == "" || fromStepID != placement.ReviewStepID {
 		return
 	}
@@ -298,7 +298,7 @@ func (r *Router) countRejection(ctx context.Context, taskID string, review model
 		recordReworkMetric(review.Kind)
 		return
 	}
-	if after.HeldReason == HoldReworkCapReached && review.HeldReason != HoldReworkCapReached {
+	if after.HoldKind == HoldReworkLimitReached && review.HoldKind != HoldReworkLimitReached {
 		r.escalate(ctx, taskID, after)
 	}
 }
@@ -337,7 +337,7 @@ func (r *Router) OnHeadsChanged(ctx context.Context, taskID string) {
 	if err != nil {
 		return
 	}
-	review, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionReviewAtHead)
+	review, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionReview)
 	if !ok || review.Result != models.TaskCompletionResultPass {
 		return
 	}

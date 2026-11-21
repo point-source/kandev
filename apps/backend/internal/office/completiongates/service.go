@@ -30,10 +30,11 @@ var (
 // Service owns the Office completion-gate verifiers, routing and controls.
 type Service struct {
 	gates    GateService
+	prs      PRSource
 	tasks    TaskReader
 	runs     RunQueue
 	settings SettingsStore
-	caps     *CapsPolicy
+	limits   *LimitsPolicy
 	agents   AgentDirectory
 	held     HeldLister
 	stages   ReviewStageReader
@@ -60,7 +61,7 @@ type Dependencies struct {
 	Tasks    TaskReader
 	Reviews  ReviewStore
 	Settings SettingsStore
-	Steps    StepCapsReader
+	Steps    StepLimitsReader
 	Agents   AgentDirectory
 	Runs     RunQueue
 	History  HistoryReader
@@ -76,8 +77,8 @@ type Dependencies struct {
 func NewService(deps Dependencies) *Service {
 	review := NewReviewVerifier(deps.Gates, deps.PRs, deps.Tasks, deps.Reviews, deps.Logger)
 	router := NewRouter(deps.Gates, deps.PRs, nil, review, deps.Logger)
-	caps := NewCapsPolicy(deps.Tasks, deps.Settings, deps.Steps)
-	router.SetCapResolver(caps.Resolve)
+	limits := NewLimitsPolicy(deps.Tasks, deps.Settings, deps.Steps)
+	router.SetLimitResolver(limits.Resolve)
 	var escalator *Escalator
 	if deps.Agents != nil && deps.Runs != nil {
 		escalator = NewEscalator(deps.Gates, deps.Tasks, deps.Agents, deps.Runs, deps.History, deps.Logger)
@@ -87,7 +88,7 @@ func NewService(deps Dependencies) *Service {
 	ci.SetPolicy(router)
 	review.SetPolicy(router)
 	return &Service{
-		gates: deps.Gates, tasks: deps.Tasks, runs: deps.Runs, settings: deps.Settings, caps: caps, agents: deps.Agents,
+		gates: deps.Gates, prs: deps.PRs, tasks: deps.Tasks, runs: deps.Runs, settings: deps.Settings, limits: limits, agents: deps.Agents,
 		held: deps.Held, stages: deps.Stages, bus: deps.Bus, CI: ci, Review: review, Router: router,
 		escalator: escalator, ledger: deps.Ledger, transitions: newTransitionTracker(), logger: deps.Logger,
 	}
@@ -156,6 +157,7 @@ func (s *Service) escalationLoop(ctx context.Context) {
 		if err := s.escalator.sweep(ctx); err != nil && ctx.Err() == nil {
 			s.logger.Warn("completion gate escalation sweep failed", zap.Error(err))
 		}
+		s.sweepReviewWaits(ctx, time.Now())
 		select {
 		case <-ctx.Done():
 			return
@@ -185,58 +187,70 @@ func (s *Service) handleHeadsChanged(ctx context.Context, payload map[string]any
 	}
 }
 
-// ProtectedPathsAction is a person's decision on a protected-path hold.
-type ProtectedPathsAction struct {
-	Action                    string `json:"action"`
+// PersonAction is a person's decision on one criterion at the heads they saw.
+type PersonAction struct {
 	ExpectedCriterionRevision int64  `json:"expected_criterion_revision"`
 	ExpectedSubjectRevision   string `json:"expected_subject_revision"`
 	Reason                    string `json:"reason"`
 }
 
-// Protected-path actions.
-const (
-	ProtectedPathsAllow    = "allow"
-	ProtectedPathsSendBack = "send_back"
-)
+// Allow accepts a check's protected-file changes at the heads shown.
+func (s *Service) Allow(ctx context.Context, taskID, criterionID string, request PersonAction) (*models.TaskCompletionGateSnapshot, error) {
+	outcome, err := s.applyPersonControl(ctx, taskID, criterionID, models.TaskCompletionControlAllowProtected, request)
+	if err != nil {
+		return nil, err
+	}
+	s.CI.Schedule(context.WithoutCancel(ctx), taskID)
+	return outcome.Snapshot, nil
+}
 
-// DecideProtectedPaths applies a person's Allow or Send back decision.
-func (s *Service) DecideProtectedPaths(ctx context.Context, taskID, criterionID string, request ProtectedPathsAction) (*models.TaskCompletionGateSnapshot, error) {
+// SendBack fails a criterion at the heads shown with the person's reason and
+// routes like a seat rejection: it counts a rework round, returns the task to
+// the work stage, and wakes the worker there.
+func (s *Service) SendBack(ctx context.Context, taskID, criterionID string, request PersonAction) (*models.TaskCompletionGateSnapshot, error) {
+	if strings.TrimSpace(request.Reason) == "" {
+		return nil, ErrReasonRequired
+	}
+	outcome, err := s.applyPersonControl(ctx, taskID, criterionID, models.TaskCompletionControlSendBack, request)
+	if err != nil {
+		return nil, err
+	}
+	background := context.WithoutCancel(ctx)
+	criterion := findCriterionByID(outcome.Snapshot, criterionID)
+	key := "send-back:" + request.ExpectedSubjectRevision
+	if s.Router.sendBack(background, taskID, criterion, key) {
+		s.wakeAssignee(background, taskID, strings.TrimSpace(request.Reason), key)
+	}
+	return s.gates.GetTaskCompletionGate(ctx, taskID)
+}
+
+// Accept verifies a held review at the heads shown as the person's verdict.
+// It never moves the task; normal completion follows once every criterion
+// passes.
+func (s *Service) Accept(ctx context.Context, taskID, criterionID string, request PersonAction) (*models.TaskCompletionGateSnapshot, error) {
+	if strings.TrimSpace(request.Reason) == "" {
+		return nil, ErrReasonRequired
+	}
+	outcome, err := s.applyPersonControl(ctx, taskID, criterionID, models.TaskCompletionControlAccept, request)
+	if err != nil {
+		return nil, err
+	}
+	if outcome.Snapshot != nil && !outcome.Snapshot.Blocked {
+		s.Router.retryCompletion(context.WithoutCancel(ctx), taskID, request.ExpectedSubjectRevision)
+	}
+	return outcome.Snapshot, nil
+}
+
+func (s *Service) applyPersonControl(ctx context.Context, taskID, criterionID, action string, request PersonAction) (*models.TaskCompletionControlOutcome, error) {
 	actorID, err := s.authorizeHuman(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	control := models.TaskCompletionControlChange{
+	return s.gates.ApplyTaskCompletionControl(ctx, models.TaskCompletionControlChange{
 		TaskID: taskID, CriterionID: criterionID, CriterionRevision: request.ExpectedCriterionRevision,
-		SubjectRevision: request.ExpectedSubjectRevision, ActorKind: "human", ActorID: actorID,
+		SubjectRevision: request.ExpectedSubjectRevision, Action: action, ActorKind: "human", ActorID: actorID,
 		Reason: strings.TrimSpace(request.Reason),
-	}
-	switch request.Action {
-	case ProtectedPathsAllow:
-		control.Action = models.TaskCompletionControlAllowProtected
-	case ProtectedPathsSendBack:
-		if control.Reason == "" {
-			return nil, ErrReasonRequired
-		}
-		control.Action = models.TaskCompletionControlSendBackProtected
-	default:
-		return nil, ErrUnsupportedControl
-	}
-	outcome, err := s.gates.ApplyTaskCompletionControl(ctx, control)
-	if err != nil {
-		return nil, err
-	}
-	snapshot := outcome.Snapshot
-	background := context.WithoutCancel(ctx)
-	if request.Action == ProtectedPathsSendBack {
-		criterion := findCriterionByID(snapshot, criterionID)
-		key := "send-back:" + request.ExpectedSubjectRevision
-		if s.Router.sendBack(background, taskID, criterion, key) {
-			s.wakeAssignee(background, taskID, control.Reason, key)
-		}
-		return s.gates.GetTaskCompletionGate(ctx, taskID)
-	}
-	s.CI.Schedule(background, taskID)
-	return snapshot, nil
+	})
 }
 
 // wakeAssignee queues the assignee's rework run carrying a person's

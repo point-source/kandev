@@ -18,8 +18,8 @@ test.describe("Office completion gate on mobile", () => {
     });
 
     await testPage.goto(`/office/tasks/${taskId}`);
-    const row = testPage.getByTestId("completion-criterion-ci_at_head");
-    await expect(row.getByTestId("completion-criterion-status")).toHaveText("Held");
+    const row = testPage.getByTestId("completion-criterion-github_check");
+    await expect(row.getByTestId("completion-criterion-status")).toHaveText("Needs you");
     const allow = row.getByTestId("completion-allow");
     const box = await allow.boundingBox();
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);

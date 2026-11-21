@@ -10,18 +10,29 @@ import {
 describe("criteria selection", () => {
   it("round-trips a workspace default", () => {
     const selection = selectionFromCriteria([
-      { kind: "ci_at_head", protected_paths: ["tests/**", ".github/**"], max_rework_rounds: 2 },
-      { kind: "review_at_head" },
+      {
+        kind: "check",
+        runner: "github",
+        protected_paths: ["tests/**", ".github/**"],
+        rework_limit: 2,
+      },
+      { kind: "review", review_wait_limit: 90 },
     ]);
     expect(selection).toMatchObject({
       ci: true,
       review: true,
       protectedPaths: "tests/**, .github/**",
-      maxRework: "2",
+      reworkLimit: "2",
+      reviewWaitLimit: "90",
     });
     expect(criteriaFromSelection(selection)).toEqual([
-      { kind: "ci_at_head", max_rework_rounds: 2, protected_paths: ["tests/**", ".github/**"] },
-      { kind: "review_at_head", max_rework_rounds: 2 },
+      {
+        kind: "check",
+        runner: "github",
+        rework_limit: 2,
+        protected_paths: ["tests/**", ".github/**"],
+      },
+      { kind: "review", rework_limit: 2, review_wait_limit: 90 },
     ]);
   });
 
@@ -32,21 +43,22 @@ describe("criteria selection", () => {
         ...EMPTY_SELECTION,
         ci: true,
         protectedPaths: " , ",
-        maxRework: "x",
+        reworkLimit: "x",
+        reviewWaitLimit: "30",
       }),
-    ).toEqual([{ kind: "ci_at_head" }]);
+    ).toEqual([{ kind: "check", runner: "github" }]);
   });
 
   it("validates limits against ceilings", () => {
     const ok = {
-      default_max_attempts: 3,
-      default_max_rework: 3,
-      ceiling_attempts: 10,
-      ceiling_rework: 10,
+      default_verification_limit: 3,
+      default_rework_limit: 3,
+      verification_limit_ceiling: 10,
+      rework_limit_ceiling: 10,
     };
     expect(invalidLimits(ok)).toBe(false);
-    expect(invalidLimits({ ...ok, default_max_rework: 11 })).toBe(true);
-    expect(invalidLimits({ ...ok, ceiling_attempts: 0 })).toBe(true);
+    expect(invalidLimits({ ...ok, default_rework_limit: 11 })).toBe(true);
+    expect(invalidLimits({ ...ok, verification_limit_ceiling: 0 })).toBe(true);
   });
 
   it("maps refusal codes to copy keys", () => {

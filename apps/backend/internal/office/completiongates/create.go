@@ -21,8 +21,8 @@ var (
 // creationRefusal maps validation errors to client-facing creation refusals.
 func creationRefusal(err error) error {
 	switch {
-	case errors.Is(err, ErrCapAboveCeiling):
-		return &taskservice.CompletionCriteriaRefusal{Code: "completion_cap_above_ceiling"}
+	case errors.Is(err, ErrLimitAboveCeiling):
+		return &taskservice.CompletionCriteriaRefusal{Code: "completion_limit_above_ceiling"}
 	case errors.Is(err, ErrInvalidProtectedPath):
 		return &taskservice.CompletionCriteriaRefusal{Code: "invalid_protected_path"}
 	case errors.Is(err, ErrInvalidCriterion):
@@ -86,25 +86,25 @@ func (s *Service) resolveSpec(
 	if !input.HasRepository {
 		return models.TaskCompletionCriterion{}, ErrCriteriaRequireRepository
 	}
-	if spec.Kind == models.TaskCompletionCriterionReviewAtHead {
+	if spec.Kind == models.TaskCompletionCriterionReview {
 		if err := s.requireReviewStage(ctx, input.WorkflowID); err != nil {
 			return models.TaskCompletionCriterion{}, err
 		}
 	}
-	above := spec.MaxVerificationAttempts > settings.CeilingAttempts || spec.MaxReworkRounds > settings.CeilingRework
+	above := spec.VerificationLimit > settings.VerificationLimitCeiling || spec.ReworkLimit > settings.ReworkLimitCeiling
 	criterion := models.TaskCompletionCriterion{
-		ID: spec.Kind, Kind: spec.Kind,
+		ID: models.TaskCompletionCriterionID(spec.Kind, spec.Runner), Kind: spec.Kind,
 		Config: models.TaskCompletionCriterionConfig{
-			ProtectedPaths: spec.ProtectedPaths, MaxVerificationAttempts: spec.MaxVerificationAttempts,
-			MaxReworkRounds: spec.MaxReworkRounds,
+			Runner: spec.Runner, ProtectedPaths: spec.ProtectedPaths, VerificationLimit: spec.VerificationLimit,
+			ReworkLimit: spec.ReworkLimit, ReviewWaitLimit: spec.ReviewWaitLimit,
 		},
 		OwnerKind: input.Creator.Kind, OwnerID: input.Creator.ID,
 	}
 	if above && !person {
-		return models.TaskCompletionCriterion{}, ErrCapAboveCeiling
+		return models.TaskCompletionCriterion{}, ErrLimitAboveCeiling
 	}
 	if above {
-		criterion.Config.CapsConfirmedBy = input.Creator.ID
+		criterion.Config.LimitsConfirmedBy = input.Creator.ID
 	}
 	return criterion, nil
 }
@@ -145,8 +145,9 @@ func requestedSpecs(requested *[]models.TaskCompletionCriterionRequest) []office
 	specs := make([]officemodels.CompletionGateCriterionSpec, 0, len(*requested))
 	for _, request := range *requested {
 		specs = append(specs, officemodels.CompletionGateCriterionSpec{
-			Kind: strings.TrimSpace(request.Kind), ProtectedPaths: request.ProtectedPaths,
-			MaxVerificationAttempts: request.MaxVerificationAttempts, MaxReworkRounds: request.MaxReworkRounds,
+			Kind: strings.TrimSpace(request.Kind), Runner: strings.TrimSpace(request.Runner),
+			ProtectedPaths: request.ProtectedPaths, VerificationLimit: request.VerificationLimit,
+			ReworkLimit: request.ReworkLimit, ReviewWaitLimit: request.ReviewWaitLimit,
 		})
 	}
 	return specs
@@ -154,7 +155,7 @@ func requestedSpecs(requested *[]models.TaskCompletionCriterionRequest) []office
 
 // unionSpecs keeps every default and adds requested kinds; a requested spec
 // replaces a default of the same kind only by adding protected paths and
-// caps, never by dropping them.
+// limits, never by dropping them.
 func unionSpecs(defaults, requested []officemodels.CompletionGateCriterionSpec) []officemodels.CompletionGateCriterionSpec {
 	merged := append([]officemodels.CompletionGateCriterionSpec(nil), defaults...)
 	for _, spec := range requested {
@@ -164,11 +165,14 @@ func unionSpecs(defaults, requested []officemodels.CompletionGateCriterionSpec) 
 			continue
 		}
 		merged[index].ProtectedPaths = append(merged[index].ProtectedPaths, spec.ProtectedPaths...)
-		if spec.MaxVerificationAttempts > 0 {
-			merged[index].MaxVerificationAttempts = spec.MaxVerificationAttempts
+		if spec.VerificationLimit > 0 {
+			merged[index].VerificationLimit = spec.VerificationLimit
 		}
-		if spec.MaxReworkRounds > 0 {
-			merged[index].MaxReworkRounds = spec.MaxReworkRounds
+		if spec.ReworkLimit > 0 {
+			merged[index].ReworkLimit = spec.ReworkLimit
+		}
+		if spec.ReviewWaitLimit > 0 {
+			merged[index].ReviewWaitLimit = spec.ReviewWaitLimit
 		}
 	}
 	return merged
@@ -193,4 +197,15 @@ func trimPaths(paths []string) []string {
 		trimmed = append(trimmed, strings.TrimSpace(path))
 	}
 	return trimmed
+}
+
+// ValidateCriteriaChange refuses an edited criterion set with a review when
+// the task's workflow has no review stage, as at creation.
+func (s *Service) ValidateCriteriaChange(ctx context.Context, task *models.Task, criteria []models.TaskCompletionCriterion) error {
+	for _, criterion := range criteria {
+		if criterion.Kind == models.TaskCompletionCriterionReview {
+			return s.requireReviewStage(ctx, task.WorkflowID)
+		}
+	}
+	return nil
 }

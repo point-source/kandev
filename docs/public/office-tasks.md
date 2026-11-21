@@ -141,34 +141,49 @@ Pending approvers or unmet completion criteria can refuse the move, leaving the 
 An Office task can carry completion criteria that Kandev checks itself against
 the linked pull request, so a task cannot reach Done on agent decisions alone.
 
-- **CI at PR head** passes when every check at the pull request's current head
-  commit succeeded. List protected paths (for example `tests/**` or
+- **CI check (GitHub)** passes when every check at the pull request's current
+  head commit succeeded. List protected paths (for example `tests/**` or
   `.github/**`) to stop a pull request from weakening its own tests or CI: a
   change to a protected path holds the criterion until a person chooses
-  **Allow for this commit** or **Send back**.
-- **Review at PR head** passes when every required reviewer approved the
-  current head commit. A new commit makes earlier approvals stale.
+  **Allow for this commit** or **Send back**. To add an acceptance check, write
+  it as a CI job and keep its workflow file and script under protected paths.
+- **Review** passes when every required reviewer agent approved the current
+  head commit. A new commit makes earlier approvals stale.
 
 Add criteria in the **Completion criteria** group of the new-task dialog, or set
 workspace defaults under **Preferences → Completion gates**. An agent or routine
 cannot remove a workspace default; a person creating a task can. Both criteria
-need a repository on the task.
+need a repository on the task, and a review needs a workflow with a review
+step.
 
 When CI fails after the task left Work, Kandev returns it to Work and wakes the
-assignee with the failing checks. Rework rounds and verification attempts are
-capped (default 3, workspace ceiling 10). Reaching a cap holds the criterion,
-stops the assignee's runs, and asks the criterion's owner once: the creating
-agent, the workspace CEO, or you through the Inbox.
+assignee with the failing checks. Rework rounds and verification attempts have
+limits (default 3, workspace ceiling 10).
 
-The task page's **Completion criteria** section shows each criterion's status,
-the commit its proof is pinned to, who verified it, and its confidence level
-(**machine** for CI, **judgement** for review). Use **Override completion** with
-a reason to finish a blocked task anyway; the override is recorded.
+A criterion that needs a person shows **Needs you**, with what it needs:
 
-With authentication off, any process on this machine can approve a task as you,
-so a review criterion can pass without a real review. The dialog and settings
-warn about this; turn on Authentication in **Settings → System → Feature
-Toggles** to prevent it.
+| Shown as | What happened | What you can do |
+| --- | --- | --- |
+| Protected file changed | The pull request changed a protected path | **Allow for this commit** or **Send back** |
+| Rework limit reached | The work went back and forth too many times | **Allow more rounds**; on a review, also **Accept at this commit** |
+| Verification limit reached | Kandev could not check the criterion, for example no checks ran | **Allow more attempts** |
+| No reviewer available | No reviewer agent can approve, for example the only reviewer is the task's assignee | **Accept at this commit** |
+| Review wait limit reached | A reviewer waited longer than the review wait limit for another provider | **Accept at this commit** |
+
+The criterion's owner is asked once: the creating agent, the workspace CEO, or
+you through the Inbox. A review waiting for a provider to recover shows
+**Waiting for a reviewer** and waits indefinitely unless you set a review wait
+limit.
+
+On the task page you can **Send back at this commit** on any review, with a
+reason: the task returns to Work and the worker sees your reason. **Accept at
+this commit** passes only that review, at the commit you saw, and is recorded
+as your acceptance. Use **Override completion** with a reason to finish a
+blocked task anyway; the override is recorded.
+
+With authentication off, any process on this machine can take these actions as
+you. The task page and the Inbox warn about this; turn on Authentication in
+**Settings → System → Feature Toggles** to prevent it.
 
 ## Handle human requests
 

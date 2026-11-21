@@ -38,7 +38,7 @@ func kinds(criteria []models.TaskCompletionCriterion) []string {
 	return out
 }
 
-var ciDefault = []officemodels.CompletionGateCriterionSpec{{Kind: models.TaskCompletionCriterionCIAtHead, ProtectedPaths: []string{"tests/**"}}}
+var ciDefault = []officemodels.CompletionGateCriterionSpec{{Kind: models.TaskCompletionCriterionCheck, Runner: models.TaskCompletionCheckRunnerGitHub, ProtectedPaths: []string{"tests/**"}}}
 
 // @covers AC-OFFICE-COMPLETION-GATES-001.1, AC-OFFICE-COMPLETION-GATES-001.2
 func TestResolveCreateCriteriaAppliesDefaults(t *testing.T) {
@@ -47,13 +47,13 @@ func TestResolveCreateCriteriaAppliesDefaults(t *testing.T) {
 	if err != nil || len(criteria) != 1 || criteria[0].OwnerKind != "agent" || criteria[0].OwnerID != "agent-1" {
 		t.Fatalf("default criteria = %+v, %v", criteria, err)
 	}
-	review := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionReviewAtHead}
+	review := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionReview}
 	criteria, err = svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent, review))
 	if err != nil || len(criteria) != 2 {
 		t.Fatalf("agent cannot drop defaults: %v, %v", kinds(criteria), err)
 	}
 	criteria, err = svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorHuman, review))
-	if err != nil || len(criteria) != 1 || criteria[0].Kind != models.TaskCompletionCriterionReviewAtHead {
+	if err != nil || len(criteria) != 1 || criteria[0].Kind != models.TaskCompletionCriterionReview {
 		t.Fatalf("person can replace defaults: %v, %v", kinds(criteria), err)
 	}
 	empty := []models.TaskCompletionCriterionRequest{}
@@ -67,34 +67,34 @@ func TestResolveCreateCriteriaAppliesDefaults(t *testing.T) {
 // @covers AC-OFFICE-COMPLETION-GATES-001.3, AC-OFFICE-COMPLETION-GATES-001.5, AC-OFFICE-COMPLETION-GATES-007.2
 func TestResolveCreateCriteriaRefusals(t *testing.T) {
 	svc := newCreateService(t, nil, false)
-	noRepo := resolution(models.CompletionCriteriaCreatorAgent, models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCIAtHead})
+	noRepo := resolution(models.CompletionCriteriaCreatorAgent, models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCheck, Runner: models.TaskCompletionCheckRunnerGitHub})
 	noRepo.HasRepository = false
 	if _, err := svc.ResolveCreateCriteria(context.Background(), noRepo); !errors.Is(err, ErrCriteriaRequireRepository) {
 		t.Fatalf("no repository err = %v", err)
 	}
 	if _, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent,
-		models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionReviewAtHead})); !errors.Is(err, ErrCriteriaRequireReviewStage) {
+		models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionReview})); !errors.Is(err, ErrCriteriaRequireReviewStage) {
 		t.Fatalf("no review stage err = %v", err)
 	}
 	if _, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent,
-		models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCIAtHead, ProtectedPaths: []string{" "}})); refusalCode(err) != "invalid_protected_path" {
+		models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCheck, Runner: models.TaskCompletionCheckRunnerGitHub, ProtectedPaths: []string{" "}})); refusalCode(err) != "invalid_protected_path" {
 		t.Fatalf("empty path err = %v", err)
 	}
-	above := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCIAtHead, MaxReworkRounds: 99}
-	if _, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent, above)); refusalCode(err) != "completion_cap_above_ceiling" {
+	above := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCheck, Runner: models.TaskCompletionCheckRunnerGitHub, ReworkLimit: 99}
+	if _, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent, above)); refusalCode(err) != "completion_limit_above_ceiling" {
 		t.Fatalf("agent above ceiling err = %v", err)
 	}
 	criteria, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorHuman, above))
-	if err != nil || criteria[0].Config.CapsConfirmedBy != "human-1" {
+	if err != nil || criteria[0].Config.LimitsConfirmedBy != "human-1" {
 		t.Fatalf("person above ceiling = %+v, %v", criteria, err)
 	}
 }
 
 func TestInapplicableDefaultsAreSkipped(t *testing.T) {
 	svc := newCreateService(t, append(append([]officemodels.CompletionGateCriterionSpec(nil), ciDefault...),
-		officemodels.CompletionGateCriterionSpec{Kind: models.TaskCompletionCriterionReviewAtHead}), false)
+		officemodels.CompletionGateCriterionSpec{Kind: models.TaskCompletionCriterionReview}), false)
 	criteria, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorAgent))
-	if err != nil || len(criteria) != 1 || criteria[0].Kind != models.TaskCompletionCriterionCIAtHead {
+	if err != nil || len(criteria) != 1 || criteria[0].Kind != models.TaskCompletionCriterionCheck {
 		t.Fatalf("criteria = %v, %v", kinds(criteria), err)
 	}
 	noRepo := resolution(models.CompletionCriteriaCreatorAgent)
@@ -111,7 +111,7 @@ func refusalCode(err error) string {
 
 func TestDuplicateRequestedKindsAreRefused(t *testing.T) {
 	svc := newCreateService(t, nil, true)
-	ci := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCIAtHead}
+	ci := models.TaskCompletionCriterionRequest{Kind: models.TaskCompletionCriterionCheck, Runner: models.TaskCompletionCheckRunnerGitHub}
 	_, err := svc.ResolveCreateCriteria(context.Background(), resolution(models.CompletionCriteriaCreatorHuman, ci, ci))
 	if refusalCode(err) != "invalid_completion_criterion" {
 		t.Fatalf("duplicate kinds err = %v", err)

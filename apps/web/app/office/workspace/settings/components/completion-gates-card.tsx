@@ -21,22 +21,28 @@ import {
 type Limits = {
   defaultAttempts: string;
   defaultRework: string;
+  defaultReviewWait: string;
   ceilingAttempts: string;
   ceilingRework: string;
 };
 
 const LIMIT_FIELDS: Array<{ key: keyof Limits; labelKey: string; group: "defaults" | "ceilings" }> =
   [
-    { key: "defaultRework", labelKey: "office:completionGatesReworkRounds", group: "defaults" },
+    { key: "defaultRework", labelKey: "office:completionGatesReworkLimit", group: "defaults" },
     {
       key: "defaultAttempts",
-      labelKey: "office:completionGatesVerificationAttempts",
+      labelKey: "office:completionGatesVerificationLimit",
       group: "defaults",
     },
-    { key: "ceilingRework", labelKey: "office:completionGatesReworkRounds", group: "ceilings" },
+    {
+      key: "defaultReviewWait",
+      labelKey: "office:completionGatesReviewWaitLimit",
+      group: "defaults",
+    },
+    { key: "ceilingRework", labelKey: "office:completionGatesReworkLimit", group: "ceilings" },
     {
       key: "ceilingAttempts",
-      labelKey: "office:completionGatesVerificationAttempts",
+      labelKey: "office:completionGatesVerificationLimit",
       group: "ceilings",
     },
   ];
@@ -50,6 +56,7 @@ export function CompletionGatesCard() {
   const [limits, setLimits] = useState<Limits>({
     defaultAttempts: "3",
     defaultRework: "3",
+    defaultReviewWait: "",
     ceilingAttempts: "10",
     ceilingRework: "10",
   });
@@ -58,20 +65,29 @@ export function CompletionGatesCard() {
     if (!settings) return;
     setSelection(selectionFromCriteria(settings.default_criteria));
     setLimits({
-      defaultAttempts: String(settings.default_max_attempts),
-      defaultRework: String(settings.default_max_rework),
-      ceilingAttempts: String(settings.ceiling_attempts),
-      ceilingRework: String(settings.ceiling_rework),
+      defaultAttempts: String(settings.default_verification_limit),
+      defaultRework: String(settings.default_rework_limit),
+      defaultReviewWait: settings.default_review_wait_limit
+        ? String(settings.default_review_wait_limit)
+        : "",
+      ceilingAttempts: String(settings.verification_limit_ceiling),
+      ceilingRework: String(settings.rework_limit_ceiling),
     });
   }, [settings]);
   const payload = {
-    default_criteria: criteriaFromSelection({ ...selection, maxRework: "", maxAttempts: "" }),
-    default_max_attempts: Number(limits.defaultAttempts),
-    default_max_rework: Number(limits.defaultRework),
-    ceiling_attempts: Number(limits.ceilingAttempts),
-    ceiling_rework: Number(limits.ceilingRework),
+    default_criteria: criteriaFromSelection({
+      ...selection,
+      reworkLimit: "",
+      verificationLimit: "",
+      reviewWaitLimit: "",
+    }),
+    default_verification_limit: Number(limits.defaultAttempts),
+    default_rework_limit: Number(limits.defaultRework),
+    verification_limit_ceiling: Number(limits.ceilingAttempts),
+    rework_limit_ceiling: Number(limits.ceilingRework),
+    default_review_wait_limit: Number(limits.defaultReviewWait) || 0,
   };
-  const invalid = invalidLimits(payload);
+  const invalid = invalidLimits(payload) || payload.default_review_wait_limit < 0;
   const save = async () => {
     if (!workspaceId || invalid) return;
     setSaving(true);
@@ -95,11 +111,11 @@ export function CompletionGatesCard() {
           idPrefix="settings-criteria"
           value={selection}
           onChange={setSelection}
-          showCaps={false}
+          showLimits={false}
         />
       </div>
       <LimitGroup
-        title={t("office:completionGatesSettingsDefaultCaps")}
+        title={t("office:completionGatesSettingsDefaultLimits")}
         group="defaults"
         limits={limits}
         onChange={setLimits}
@@ -148,9 +164,14 @@ function LimitGroup(props: {
               id={`completion-gates-${field.key}`}
               data-testid={`completion-gates-${field.key}`}
               type="number"
-              min={1}
+              min={field.key === "defaultReviewWait" ? 0 : 1}
               inputMode="numeric"
               className="min-h-11 sm:min-h-0"
+              placeholder={
+                field.key === "defaultReviewWait"
+                  ? t("office:completionGatesReviewWaitLimitHint")
+                  : undefined
+              }
               value={props.limits[field.key]}
               onChange={(event) =>
                 props.onChange({ ...props.limits, [field.key]: event.target.value })

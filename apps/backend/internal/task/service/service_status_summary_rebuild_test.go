@@ -398,7 +398,6 @@ func TestReconcileTaskStatusSummariesRebuildsCompletionGate(t *testing.T) {
 	}
 	if *got.CompletionGate != (statussummary.CompletionGateSummary{
 		Revision: 1, CriteriaCount: 1, VerifiedCount: 0, BlockerCount: 1, Blocked: true,
-		WeakestConfidence: models.TaskCompletionConfidenceJudgement,
 	}) {
 		t.Fatalf("completion gate summary = %+v", got.CompletionGate)
 	}

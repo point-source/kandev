@@ -11,7 +11,6 @@ requirements:
 acceptance_criteria:
   - AC-OFFICE-COMPLETION-GATES-004.1
   - AC-OFFICE-COMPLETION-GATES-004.2
-  - AC-OFFICE-COMPLETION-GATES-004.4
   - AC-OFFICE-COMPLETION-GATES-005.2
   - AC-OFFICE-COMPLETION-GATES-005.4
 system_design:
@@ -32,7 +31,7 @@ approved the current heads. Assignee approvals never count.
   PostgreSQL), threaded through `RecordDecisionInput`, `engine.DecisionInfo`,
   `RecordStepDecision`, and decision reads.
 - Heads capture in `RecordAgentDecision` and `recordTaskDecision` for tasks
-  with a `review_at_head` criterion, using the shared heads reader from Task 01.
+  with a `review` criterion, using the shared heads reader from Task 01.
 - `completiongates.ReviewVerifier.OnDecision` after commit: seat coverage at
   current heads → `pass` with verifier kind `review_seats`.
 - Assignee fence: skip assignee decisions; runtime decision response notice

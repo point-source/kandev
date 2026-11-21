@@ -1,8 +1,13 @@
 # ADR-2026-11-20-host-verified-completion-criteria: Kandev verifies CI and review criteria in process
 
-**Status:** proposed
+**Status:** superseded by ADR-2026-11-21-completion-gates-people-act-on-exceptions
 **Date:** 2026-11-20
 **Area:** backend
+
+Superseded by
+[ADR-2026-11-21-completion-gates-people-act-on-exceptions](2026-11-21-completion-gates-people-act-on-exceptions.md),
+which keeps the in-process verifier design and replaces the person review
+shortcut, the confidence levels and the criterion kind names.
 
 ## Context
 
@@ -23,7 +28,7 @@ kind, not by identity. Proof uses one subject, the set of linked PR heads, so
 any push, link, or detach makes it stale.
 
 The task system keeps the primitive, the guard, and the audit history. Office
-keeps verifier policy, routing, caps, and UI in
+keeps verifier policy, routing, limits, and UI in
 `internal/office/completiongates`.
 
 ## Alternatives considered

@@ -42,7 +42,7 @@ func TestCIVerifierRecordsPassPinnedToHeads(t *testing.T) {
 	}
 	got := records[0]
 	if got.Result != models.TaskCompletionResultPass || got.SubjectRevision != "pr-1@h1" || got.VerifierKind != VerifierKindCI ||
-		got.ReleaseHold != HoldProtectedPathChanged || prs.fileReads != 0 {
+		got.ReleaseHold != HoldProtectedFilesChanged || prs.fileReads != 0 {
 		t.Fatalf("record = %+v fileReads=%d", got, prs.fileReads)
 	}
 }
@@ -66,17 +66,17 @@ func TestCIVerifierHoldsProtectedChangeAndSkipsCapHolds(t *testing.T) {
 	if err := verifier.Evaluate(context.Background(), "task-1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := gates.records(); len(got) != 1 || got[0].Hold != HoldProtectedPathChanged || got[0].ReleaseHold != "" {
+	if got := gates.records(); len(got) != 1 || got[0].Hold != HoldProtectedFilesChanged || got[0].ReleaseHold != "" {
 		t.Fatalf("records = %+v", got)
 	}
 	held := ciCriterion("tests/**")
-	held.HeldReason = HoldReworkCapReached
+	held.HoldKind = HoldReworkLimitReached
 	gates.setCriteria("task-1", held)
 	if err := verifier.Evaluate(context.Background(), "task-1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := gates.records(); len(got) != 1 {
-		t.Fatalf("cap-held criterion was evaluated: %+v", got)
+		t.Fatalf("limit-held criterion was evaluated: %+v", got)
 	}
 }
 
@@ -128,7 +128,7 @@ func TestPeriodicSweepQueriesOnlyDueCriteriaAcrossPages(t *testing.T) {
 	}
 	scheduled := map[string]bool{}
 	visit := func(taskID string) { scheduled[taskID] = true }
-	query := models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCIAtHead, Limit: sweepBatchSize}
+	query := models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCheck, Limit: sweepBatchSize}
 	dueBefore := now.Add(-ChecksMissingGrace)
 	query.DueBefore, query.AwaitingReason = &dueBefore, ReasonAwaitingChecks
 	if err := forEachSweepPage(context.Background(), gates, query, visit); err != nil {

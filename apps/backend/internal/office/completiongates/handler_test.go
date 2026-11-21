@@ -28,7 +28,7 @@ func mountedHandler(t *testing.T, svc *Service, agent bool) *gin.Engine {
 
 func TestSettingsUpdateRefusesAgentCallers(t *testing.T) {
 	svc, _ := newControlService(t, ciCriterion())
-	body := `{"default_max_attempts":3,"default_max_rework":3,"ceiling_attempts":10,"ceiling_rework":10}`
+	body := `{"default_verification_limit":3,"default_rework_limit":3,"verification_limit_ceiling":10,"rework_limit_ceiling":10}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/office/workspaces/ws-1/completion-gates/settings", strings.NewReader(body))
 	recorder := httptest.NewRecorder()
 	mountedHandler(t, svc, true).ServeHTTP(recorder, request)
@@ -47,20 +47,20 @@ func TestSettingsUpdateReportsMalformedBodiesAsSettingsErrors(t *testing.T) {
 	}
 }
 
-func TestEffectiveCapsRoute(t *testing.T) {
+func TestEffectiveLimitsRoute(t *testing.T) {
 	criterion := ciCriterion()
-	criterion.Config.MaxReworkRounds, criterion.ReworkCount = 5, 2
+	criterion.Config.ReworkLimit, criterion.ReworkCount = 5, 2
 	svc, _ := newControlService(t, criterion)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/office/tasks/task-1/completion-gate/caps", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/office/tasks/task-1/completion-gate/limits", nil)
 	recorder := httptest.NewRecorder()
 	mountedHandler(t, svc, false).ServeHTTP(recorder, request)
 	var response struct {
-		Caps []EffectiveCaps `json:"caps"`
+		Limits []EffectiveLimits `json:"limits"`
 	}
 	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &response) != nil {
-		t.Fatalf("caps = %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("limits = %d %s", recorder.Code, recorder.Body.String())
 	}
-	if len(response.Caps) != 1 || response.Caps[0].MaxReworkRounds != 5 || response.Caps[0].MaxVerificationAttempts != DefaultCap || response.Caps[0].ReworkCount != 2 {
-		t.Fatalf("caps = %+v", response.Caps)
+	if len(response.Limits) != 1 || response.Limits[0].ReworkLimit != 5 || response.Limits[0].VerificationLimit != DefaultLimit || response.Limits[0].ReworkCount != 2 {
+		t.Fatalf("limits = %+v", response.Limits)
 	}
 }

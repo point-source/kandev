@@ -1,21 +1,26 @@
 package models
 
 // CompletionGateCriterionSpec is a criterion requested at task creation or
-// configured as a workspace default. Kind is ci_at_head or review_at_head.
+// configured as a workspace default. Kind is check (with a runner) or review.
 type CompletionGateCriterionSpec struct {
-	Kind                    string   `json:"kind"`
-	ProtectedPaths          []string `json:"protected_paths,omitempty"`
-	MaxVerificationAttempts int      `json:"max_verification_attempts,omitempty"`
-	MaxReworkRounds         int      `json:"max_rework_rounds,omitempty"`
+	Kind              string   `json:"kind"`
+	Runner            string   `json:"runner,omitempty"`
+	ProtectedPaths    []string `json:"protected_paths,omitempty"`
+	VerificationLimit int      `json:"verification_limit,omitempty"`
+	ReworkLimit       int      `json:"rework_limit,omitempty"`
+	ReviewWaitLimit   int      `json:"review_wait_limit,omitempty"`
 }
 
-// CompletionGateSettings are a workspace's default criteria, cap defaults and
-// cap ceilings. Zero caps mean "use the shipped value".
+// CompletionGateSettings are a workspace's default criteria, limit defaults and
+// limit ceilings. Zero limits mean "use the shipped value"; a zero review wait
+// limit means a parked review waits indefinitely. The review wait limit has no
+// ceiling because waiting starts no runs.
 type CompletionGateSettings struct {
-	WorkspaceID        string                        `json:"workspace_id"`
-	DefaultCriteria    []CompletionGateCriterionSpec `json:"default_criteria"`
-	DefaultMaxAttempts int                           `json:"default_max_attempts"`
-	DefaultMaxRework   int                           `json:"default_max_rework"`
-	CeilingAttempts    int                           `json:"ceiling_attempts"`
-	CeilingRework      int                           `json:"ceiling_rework"`
+	WorkspaceID              string                        `json:"workspace_id"`
+	DefaultCriteria          []CompletionGateCriterionSpec `json:"default_criteria"`
+	DefaultVerificationLimit int                           `json:"default_verification_limit"`
+	DefaultReworkLimit       int                           `json:"default_rework_limit"`
+	VerificationLimitCeiling int                           `json:"verification_limit_ceiling"`
+	ReworkLimitCeiling       int                           `json:"rework_limit_ceiling"`
+	DefaultReviewWaitLimit   int                           `json:"default_review_wait_limit"`
 }

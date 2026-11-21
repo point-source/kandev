@@ -48,7 +48,7 @@ rework round, and passing criteria retry the completing transition.
 
 ## Out of scope
 
-- Caps enforcement beyond counting, holds, escalation (Task 05).
+- Limits enforcement beyond counting, holds, escalation (Task 05).
 
 ## Acceptance
 

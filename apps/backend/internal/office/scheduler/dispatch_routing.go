@@ -129,6 +129,9 @@ func (ss *SchedulerService) DispatchWithRouting(
 	}
 	if len(res.Candidates) == 0 {
 		_, _, perr := ss.parkRunBlocked(ctx, run, agent.WorkspaceID, res)
+		if perr == nil && excl.Applies {
+			ss.observeReviewSeatPark(ctx, run, res)
+		}
 		return false, true, perr
 	}
 	launched, _, terr := ss.tryCandidates(ctx, run, agent, res, launch, prior)
@@ -136,6 +139,10 @@ func (ss *SchedulerService) DispatchWithRouting(
 		return false, false, terr
 	}
 	if launched {
+		if excl.Applies && ss.reviewSeats != nil {
+			taskID, _ := runTaskAndStep(run.Payload)
+			ss.reviewSeats.ReviewSeatLaunched(ctx, taskID)
+		}
 		return true, false, nil
 	}
 	return false, true, nil

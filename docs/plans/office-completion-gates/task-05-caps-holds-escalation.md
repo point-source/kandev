@@ -1,6 +1,6 @@
 ---
-id: "05-caps-holds-escalation"
-title: "Caps, holds and escalation"
+id: "05-limits-holds-escalation"
+title: "Limits, holds and escalation"
 status: done
 wave: 4
 depends_on: ["04-result-routing"]
@@ -22,23 +22,23 @@ system_design:
   - ../../specs/office/system-design/completion-gates.md
 ---
 
-# Task 05: Caps, holds and escalation
+# Task 05: Limits, holds and escalation
 
 ## Summary
 
-Resolve caps, hold a criterion that reaches one, stop the assignee's runs
+Resolve limits, hold a criterion that reaches one, stop the assignee's runs
 while held, escalate once to the owner, and let the owner or a person extend
-the cap.
+the limit.
 
 ## In scope
 
-- `office_completion_gate_settings` table (caps defaults and ceilings; default
+- `office_completion_gate_settings` table (limits defaults and ceilings; default
   criteria column added here, consumed in Task 06), repository, service, and
   `GET/PUT /api/v1/office/workspaces/:wsId/completion-gates/settings`;
   workspace deletion cleanup and e2e reset.
-- `completion_gate_caps` workflow-step field: model, DTO, migration, portable
+- `completion_gate_limits` workflow-step field: model, DTO, migration, portable
   export/import, workflow sync retention.
-- `completiongates.EffectiveCaps` and its use in the Task 04 router: at the cap,
+- `completiongates.EffectiveLimits` and its use in the Task 04 router: at the limit,
   the evaluation command holds instead of counting.
 - Run guard: `SchedulerService.ProcessRunGuard` skips assignee runs of a task
   with a held criterion (`completion_gate_held`).
@@ -57,7 +57,7 @@ the cap.
 
 ## Acceptance
 
-- With caps of 1, a second CI failure holds the criterion, the task does not
+- With limits of 1, a second CI failure holds the criterion, the task does not
   move, assignee runs are skipped, and the owner agent receives exactly one
   wake even when the hold event is redelivered.
 - A human-owned hold and every protected-path hold appear once in the Inbox and
@@ -68,7 +68,7 @@ the cap.
 ## Verification
 
 ```bash
-(cd apps/backend && go test -trimpath ./internal/office/... ./internal/workflow/... -run 'CompletionGate|Caps|Inbox|RunGuard|GateExtend')
+(cd apps/backend && go test -trimpath ./internal/office/... ./internal/workflow/... -run 'CompletionGate|Limits|Inbox|RunGuard|GateExtend')
 (cd apps/backend && go test -trimpath ./cmd/agentctl/... -run 'Gate')
 (cd apps/backend && go run ./cmd/sqlguard ./internal && go test -race -trimpath ./internal/persistence/storeconformance -count=1)
 bash scripts/lint-go-changed $(git diff --name-only origin/main -- '*.go')
@@ -77,7 +77,7 @@ bash scripts/lint-go-changed $(git diff --name-only origin/main -- '*.go')
 ## Files likely touched
 
 - `apps/backend/internal/office/repository/sqlite/` (settings table, workspace deletion)
-- New `apps/backend/internal/office/completiongates/{caps.go,escalation.go,settings.go}`
+- New `apps/backend/internal/office/completiongates/{limits.go,escalation.go,settings.go}`
 - `apps/backend/internal/office/scheduler/run_processing.go`
 - `apps/backend/internal/office/service/` (wakeup, prompt)
 - `apps/backend/internal/office/dashboard/service_inbox.go`, `handler.go`
@@ -97,18 +97,18 @@ Task 04.
 
 ## Results
 
-Done. `office_completion_gate_settings` stores default criteria, cap defaults
+Done. `office_completion_gate_settings` stores default criteria, limit defaults
 and ceilings (workspace deletion and e2e reset clean it), served by
 `GET/PUT /api/v1/office/workspaces/:wsId/completion-gates/settings`. Workflow
-steps carry an optional `completion_gate_caps` (repository, clone, DTO,
-step events, controller, export/import and sync). `CapsPolicy` resolves
+steps carry an optional `completion_gate_limits` (repository, clone, DTO,
+step events, controller, export/import and sync). `LimitsPolicy` resolves
 criterion, completing step, workspace default, then 3, within the ceiling
 unless a person confirmed the value; the router uses it for attempt and rework
-caps. `SchedulerService.ProcessRunGuard` skips the assignee's runs on a task
+limits. `SchedulerService.ProcessRunGuard` skips the assignee's runs on a task
 with a held criterion. Holds escalate once through an idempotent Office run
 (`task_completion_gate_held`, registered and classified unattended) to the
-owner agent or the workspace CEO, with a dedicated prompt; person-owned cap
-holds and every protected-path hold appear as Inbox items. Cap extension is one
+owner agent or the workspace CEO, with a dedicated prompt; person-owned limit
+holds and every protected-path hold appear as Inbox items. Limit extension is one
 route, `POST /api/v1/office/tasks/:id/completion-gate/criteria/:criterionId/extend`:
 an agent JWT goes through the owner/CEO check within the ceiling (CLI
 `kandev task gate extend`), a person may go above it and is recorded as the

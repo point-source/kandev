@@ -16,10 +16,11 @@ func (r *Repository) GetCompletionGateSettings(ctx context.Context, workspaceID 
 	var settings models.CompletionGateSettings
 	var criteriaJSON string
 	err := r.ro.QueryRowxContext(ctx, r.ro.Rebind(`
-		SELECT default_criteria_json, default_max_attempts, default_max_rework, ceiling_attempts, ceiling_rework
+		SELECT default_criteria_json, default_verification_limit, default_rework_limit, verification_limit_ceiling, rework_limit_ceiling,
+			default_review_wait_limit
 		FROM office_completion_gate_settings WHERE workspace_id = ?
-	`), workspaceID).Scan(&criteriaJSON, &settings.DefaultMaxAttempts, &settings.DefaultMaxRework,
-		&settings.CeilingAttempts, &settings.CeilingRework)
+	`), workspaceID).Scan(&criteriaJSON, &settings.DefaultVerificationLimit, &settings.DefaultReworkLimit,
+		&settings.VerificationLimitCeiling, &settings.ReworkLimitCeiling, &settings.DefaultReviewWaitLimit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return models.CompletionGateSettings{WorkspaceID: workspaceID}, false, nil
 	}
@@ -45,17 +46,18 @@ func (r *Repository) SetCompletionGateSettings(ctx context.Context, settings mod
 	}
 	_, err = r.db.ExecContext(ctx, r.db.Rebind(`
 		INSERT INTO office_completion_gate_settings (
-			workspace_id, default_criteria_json, default_max_attempts, default_max_rework,
-			ceiling_attempts, ceiling_rework, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			workspace_id, default_criteria_json, default_verification_limit, default_rework_limit,
+			verification_limit_ceiling, rework_limit_ceiling, default_review_wait_limit, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(workspace_id) DO UPDATE SET
 			default_criteria_json = excluded.default_criteria_json,
-			default_max_attempts = excluded.default_max_attempts,
-			default_max_rework = excluded.default_max_rework,
-			ceiling_attempts = excluded.ceiling_attempts,
-			ceiling_rework = excluded.ceiling_rework,
+			default_verification_limit = excluded.default_verification_limit,
+			default_rework_limit = excluded.default_rework_limit,
+			verification_limit_ceiling = excluded.verification_limit_ceiling,
+			rework_limit_ceiling = excluded.rework_limit_ceiling,
+			default_review_wait_limit = excluded.default_review_wait_limit,
 			updated_at = excluded.updated_at
-	`), settings.WorkspaceID, string(encoded), settings.DefaultMaxAttempts, settings.DefaultMaxRework,
-		settings.CeilingAttempts, settings.CeilingRework, time.Now().UTC())
+	`), settings.WorkspaceID, string(encoded), settings.DefaultVerificationLimit, settings.DefaultReworkLimit,
+		settings.VerificationLimitCeiling, settings.ReworkLimitCeiling, settings.DefaultReviewWaitLimit, time.Now().UTC())
 	return err
 }

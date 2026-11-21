@@ -14,12 +14,14 @@ Office tasks complete on agent decisions alone. A task can reach Done with
 failing CI, a reviewer's approval still counts after new commits land, and
 nothing stops the worker from changing the tests that judge its own work.
 
-This capability lets an Office task carry two completion criteria that Kandev
-checks against the pull request as it stands:
+This capability lets an Office task carry completion criteria of two kinds
+that Kandev checks against the pull request as it stands:
 
-- **CI at head:** the PR's checks at its current head commit succeed, and the
-  PR does not touch paths the task creator protected.
-- **Review at head:** the reviewers approved the current head commit.
+- **Check:** a program decides, by exit status. Each check names a runner. In
+  phase 1 the only runner is `github`: the PR's CI checks at its current head
+  commit succeed, and the PR does not touch paths the task creator protected.
+- **Review:** judgement decides. The required reviewer seats approved the
+  current head commit.
 
 The task system's completion gate (`REQ-TASKS-COMPLETION-001`, `-005` and
 `-006`) stores the criteria, refuses every completing move until they pass,
@@ -27,14 +29,19 @@ and records the audit history. Office owns which tasks carry criteria, how
 Kandev verifies them, what happens when one fails, and how people see and
 recover a gated task.
 
-Every gated task ends in one of three states: Done at a stated confidence
-level, held with one question for one owner, or cancelled. It never fails
-silently or retries without end.
+People handle exceptions, not routine verification. Programs and agent
+reviewers decide; a person acts only when they cannot, from the Inbox or the
+task page, never as a seat or a workflow stage. Every person's decision is
+recorded as what it was, because these records later judge how reliable each
+kind of verifier is.
 
-Source: GitHub issue #5351, phase 1. Creator-owned acceptance scripts,
-disputes, reviewer quorum across providers, blind review, confidence on
-dependents, the reversibility policy and spot-check audits are later phases
-and are excluded here.
+Every gated task ends in one of three states: Done, held with one question
+for one owner, or cancelled. It never fails silently or retries without end.
+
+Source: GitHub issue #5351, phase 1. The Kandev check runner, disputes,
+reviewer quorum across providers, blind review, structured verdicts, the
+reversibility policy and spot-check audits are later phases and are excluded
+here.
 
 ## Terms
 
@@ -44,6 +51,8 @@ and are excluded here.
   is judged against all of them.
 - **Work stage, review stage:** the first step of the task's workflow with
   `stage_type` `work` or `review`.
+- **Required reviewer seat:** a decision-required `reviewer` participant seat
+  at the review stage.
 - **Rework round:** one return of the task to the work stage because a
   criterion failed.
 - **Verification attempt:** one evaluation that ends in `cannot_evaluate` for
@@ -51,8 +60,16 @@ and are excluded here.
 - **Owner:** the actor that set the criterion. For an agent-created task this
   is the creating agent; for a routine task it is the routine; for a task
   created by a person it is that person.
-- **Cap:** the maximum number of verification attempts or rework rounds for one
-  criterion. **Ceiling:** the workspace maximum for a cap.
+- **Limit:** the most rework rounds (`rework_limit`) or verification attempts
+  (`verification_limit`) for one criterion, or how long a parked reviewer may
+  wait (`review_wait_limit`, optional). **Ceiling:** the workspace maximum for
+  a counted limit.
+- **Hold:** automation has stopped on a criterion and waits for a person: the
+  assignee is not woken and the task does not move. A hold has a `hold_kind`
+  and never times out.
+- **Verdict source:** what produced a verified criterion's verdict, derived and
+  never stored: `program`, `person` or `agent`
+  (`AC-TASKS-COMPLETION-006.7`).
 
 ## Requirements
 
@@ -65,20 +82,22 @@ creation path, and let a workspace require it by default.
 
 - **AC-OFFICE-COMPLETION-GATES-001.1:** The Office new-task dialog, `$KANDEV_CLI
   kandev task create`, the `create_task_kandev` MCP tool, and routine task
-  templates shall accept CI-at-head (with optional protected paths and caps)
-  and review-at-head criteria. The created task shall carry them from its
-  first committed version.
+  templates shall accept a check criterion naming the `github` runner (with
+  optional protected paths and limits) and a review criterion (with optional
+  limits, including a review wait limit). A check without a runner, a check
+  naming another runner, or a review naming a runner shall be refused. The
+  created task shall carry the criteria from its first committed version.
 - **AC-OFFICE-COMPLETION-GATES-001.2:** A workspace setting shall define
   default criteria for new Office tasks. When a creation request does not name
   criteria, the default shall apply. A person creating a task can remove a
   default criterion; an agent or a routine cannot.
-- **AC-OFFICE-COMPLETION-GATES-001.3:** When a creation request adds a CI-at-head
-  or review-at-head criterion to a task with no repository, the system shall
-  refuse the creation with `completion_criteria_requires_repository`. When a
-  review-at-head criterion is added to a task whose workflow has no review
-  stage, the system shall refuse it with
-  `completion_criteria_requires_review_stage`. Criteria on a task that is not
-  an Office task shall be refused with
+- **AC-OFFICE-COMPLETION-GATES-001.3:** When a creation request adds a check
+  or review criterion to a task with no repository, the system shall refuse
+  the creation with `completion_criteria_requires_repository`. A review
+  criterion on a task whose workflow has no review stage shall be refused with
+  `completion_criteria_requires_review_stage`, at creation, when the criteria
+  are edited, and through the plugin write path. Criteria on a task that is
+  not an Office task shall be refused with
   `completion_criteria_requires_office_task`. A workspace default that cannot
   apply to such a task shall be skipped and recorded in the task's activity.
 - **AC-OFFICE-COMPLETION-GATES-001.4:** Office tasks without criteria shall
@@ -88,7 +107,7 @@ creation path, and let a workspace require it by default.
   empty or malformed pattern shall be refused at creation with
   `invalid_protected_path`.
 
-### REQ-OFFICE-COMPLETION-GATES-002: Kandev verifies CI at the head
+### REQ-OFFICE-COMPLETION-GATES-002: Kandev verifies the check at the head
 
 **Intent:** Treat CI as a fact Kandev reads from GitHub, never as a claim an
 agent makes.
@@ -121,22 +140,24 @@ agent makes.
 ### REQ-OFFICE-COMPLETION-GATES-003: Protected paths
 
 **Intent:** Stop a PR from weakening the tests or CI that judge it, because
-`pull_request` workflows run from the PR's own copy.
+`pull_request` workflows run from the PR's own copy. Until the Kandev check
+runner exists, an acceptance check is a CI job whose workflow and script sit
+under protected paths.
 
 #### Acceptance criteria
 
 - **AC-OFFICE-COMPLETION-GATES-003.1:** When any file the PR adds, modifies,
   deletes, or renames (old or new path) at the current head matches a
-  protected path, Kandev shall hold the CI criterion with reason
-  `protected_path_changed` and list the matching files. It shall not send the
+  protected path, Kandev shall hold the check with `hold_kind`
+  `protected_files_changed` and list the matching files. It shall not send the
   task back to the worker.
-- **AC-OFFICE-COMPLETION-GATES-003.2:** A protected-path hold shall create one
-  Inbox item for people, naming the task, the PR, and the matching files, with
-  **Allow for this commit** and **Send back** actions. The item shall not repeat
-  for the same heads.
+- **AC-OFFICE-COMPLETION-GATES-003.2:** A protected-files hold shall create one
+  Inbox item for people, naming the hold, the matching files and the task,
+  with **Allow for this commit** and **Send back** actions. The item shall not
+  repeat for the same heads.
 - **AC-OFFICE-COMPLETION-GATES-003.3:** **Allow for this commit** shall record
-  the person and the heads, then evaluate CI normally. A new head that still
-  touches a protected path shall need a new approval.
+  the person and the heads, then evaluate the check normally. A new head that
+  still touches a protected path shall need a new approval.
 - **AC-OFFICE-COMPLETION-GATES-003.4:** **Send back** shall record the person
   and a reason, fail the criterion at those heads with that reason, and count a
   rework round. A task in a later stage returns to the work stage; a task
@@ -157,19 +178,26 @@ earlier version of this task".
 - **AC-OFFICE-COMPLETION-GATES-004.1:** When a reviewer records `approved` on a
   gated task, the system shall store the heads at that moment with the
   decision.
-- **AC-OFFICE-COMPLETION-GATES-004.2:** The review-at-head criterion shall
-  pass when every decision-required reviewer seat at the review stage has a
-  current `approved` decision whose stored heads equal the current heads.
+- **AC-OFFICE-COMPLETION-GATES-004.2:** The review criterion shall count only
+  decisions from required reviewer seats. It shall pass when every required
+  reviewer seat has a current `approved` decision whose stored heads equal the
+  current heads, and fail when any of them has a current rejection. A person's
+  decision on the task is not a seat decision and shall not count.
 - **AC-OFFICE-COMPLETION-GATES-004.3:** When a head moves after the criterion
   passed, the criterion shall become stale and the task shall return to the
   review stage, which clears decisions and wakes reviewers again. When the
   task is already in the work stage, it shall stay there.
-- **AC-OFFICE-COMPLETION-GATES-004.4:** A person's approval of the task shall
-  count as a reviewer approval at the heads it was recorded against, whether
-  authentication is on or off.
-- **AC-OFFICE-COMPLETION-GATES-004.5:** A reviewer `rejected` decision that
-  returns the task to the work stage shall count as one rework round of the
-  review-at-head criterion.
+- **AC-OFFICE-COMPLETION-GATES-004.5:** A reviewer rejection that returns the
+  task to the work stage shall count as one rework round of the review
+  criterion.
+- **AC-OFFICE-COMPLETION-GATES-004.6:** A person can **Send back at this
+  commit** on a review criterion from the task page at any time, with a
+  required reason. It shall be refused when the heads moved since the page
+  showed them. It shall fail the criterion at those heads, record the person,
+  and route exactly like a seat rejection: count one rework round, return the
+  task to the work stage, and wake the worker with the reason. Approvals at the
+  same heads shall not override it; the criterion stays failed until the heads
+  move. Reaching the rework limit this way holds the criterion as usual.
 
 ### REQ-OFFICE-COMPLETION-GATES-005: The worker cannot verify its own work
 
@@ -178,19 +206,26 @@ caller is the synthetic admin.
 
 #### Acceptance criteria
 
-- **AC-OFFICE-COMPLETION-GATES-005.1:** Only Kandev's CI verifier shall record
-  a result or proof for a CI-at-head criterion. Any other caller shall be
+- **AC-OFFICE-COMPLETION-GATES-005.1:** Only Kandev's check verifier shall
+  record a result or proof for a check criterion. Any other caller shall be
   refused, whether authentication is on or off (`AC-TASKS-COMPLETION-006.2`).
 - **AC-OFFICE-COMPLETION-GATES-005.2:** An `approved` decision from the task's
   assignee agent, or from a run whose agent is the assignee, shall not count
-  toward review-at-head. The decision response shall say so with
+  toward the review criterion. The decision response shall say so with
   `review_self_approval_ignored`.
 - **AC-OFFICE-COMPLETION-GATES-005.3:** The assignee agent shall not change a
-  criterion, its protected paths, or its caps. Office runtime requests from
+  criterion, its protected paths, or its limits. Office runtime requests from
   the assignee's runs shall be refused with
-  `task_completion_self_verification`.
+  `task_completion_self_verification`. A person's gate actions (Allow, Send
+  back, Accept, Allow more rounds or attempts) shall be refused for a request
+  carrying an Office run token, with authentication on or off.
 - **AC-OFFICE-COMPLETION-GATES-005.4:** Every accepted result and proof shall
-  record its verifier: `kandev_ci`, the reviewer agent and run, or the person.
+  record its verifier: `kandev_ci`, the required reviewer seats, or the
+  person who accepted it.
+- **AC-OFFICE-COMPLETION-GATES-005.5:** The gate history and the API shall
+  carry each verified criterion's verdict source: `program` for a check,
+  `agent` for an agent reviewer's verdict, and `person` for a person's
+  acceptance. The verdict source shall not be shown on the task page.
 
 ### REQ-OFFICE-COMPLETION-GATES-006: Results route the work
 
@@ -198,11 +233,11 @@ caller is the synthetic admin.
 
 #### Acceptance criteria
 
-- **AC-OFFICE-COMPLETION-GATES-006.1:** When the CI criterion records `fail`
-  and the task is past the work stage, the system shall move the task to the
-  work stage, wake the assignee with the failing checks and heads, and count
-  one rework round. When the task is already in the work stage, it shall stay
-  there and the result shall be visible to the assignee's next run.
+- **AC-OFFICE-COMPLETION-GATES-006.1:** When the check records `fail` and the
+  task is past the work stage, the system shall move the task to the work
+  stage, wake the assignee with the failing checks and heads, and count one
+  rework round. When the task is already in the work stage, it shall stay there
+  and the result shall be visible to the assignee's next run.
 - **AC-OFFICE-COMPLETION-GATES-006.2:** A `cannot_evaluate` result shall not
   move the task or wake the worker. It shall count one verification attempt.
 - **AC-OFFICE-COMPLETION-GATES-006.3:** When a completing move was refused
@@ -212,98 +247,67 @@ caller is the synthetic admin.
 - **AC-OFFICE-COMPLETION-GATES-006.4:** Repeated delivery of the same PR
   update or decision shall not repeat a move, a wake, or a counter increment.
 
-### REQ-OFFICE-COMPLETION-GATES-007: Caps, hold, and escalate once
+### REQ-OFFICE-COMPLETION-GATES-007: Limits, holds, and escalate once
 
 **Intent:** Bound the cost of a criterion that keeps failing or cannot be
 checked, and hand it to one owner with the history attached.
 
 #### Acceptance criteria
 
-- **AC-OFFICE-COMPLETION-GATES-007.1:** Each cap shall resolve from the
-  criterion, then the task workflow's completing step, then the workspace
+- **AC-OFFICE-COMPLETION-GATES-007.1:** Each counted limit shall resolve from
+  the criterion, then the task workflow's completing step, then the workspace
   default, then the shipped default of 3. The result shall not exceed the
   workspace ceiling (shipped default 10) unless a person confirmed the higher
-  value on the criterion.
+  value on the criterion. The review wait limit shall resolve from the
+  criterion, then the step, then the workspace; it is unset by default, which
+  means a parked review waits indefinitely, and it has no ceiling.
 - **AC-OFFICE-COMPLETION-GATES-007.2:** A criterion value above the ceiling
   set by an agent or a routine shall be refused with
-  `completion_cap_above_ceiling`.
+  `completion_limit_above_ceiling`.
 - **AC-OFFICE-COMPLETION-GATES-007.3:** When a `fail` would start a rework
-  round beyond the cap, or a `cannot_evaluate` exceeds the attempt cap, the
-  system shall hold the criterion instead (`rework_cap_reached` or
-  `attempt_cap_reached`). It shall not move the task, and Office shall not
-  launch the assignee's runs for that task while the hold lasts.
-- **AC-OFFICE-COMPLETION-GATES-007.4:** A cap hold shall escalate once per
-  hold: the owner agent is woken when it is active, else the workspace CEO
-  agent; a person or a routine without an agent gets one Inbox item. The
-  escalation shall carry the result history for the criterion. Repeated
-  delivery shall not repeat it.
+  round beyond the limit, or a `cannot_evaluate` exceeds the verification
+  limit, the system shall hold the criterion instead (`rework_limit_reached` or
+  `verification_limit_reached`). It shall not move the task, and Office shall
+  not launch the assignee's runs for that task while the hold lasts.
+- **AC-OFFICE-COMPLETION-GATES-007.4:** A hold other than
+  `protected_files_changed` shall escalate once per hold: the owner agent is
+  woken when it is active, else the workspace CEO agent; a person or a routine
+  without an agent gets one Inbox item. The escalation shall carry the result
+  history for the criterion and name what the owner can do for that hold kind.
+  Repeated delivery shall not repeat it.
 - **AC-OFFICE-COMPLETION-GATES-007.5:** The owner agent or the CEO agent can
-  raise a held criterion's cap within the ceiling through `$KANDEV_CLI kandev
-  task gate extend`. A person can raise it above the ceiling from the task
-  page or the Inbox item. Raising a cap releases the hold and is recorded.
+  raise a held criterion's limit within the ceiling through `$KANDEV_CLI kandev
+  task gate extend` (`--rework-limit`, `--verification-limit`). A person can
+  raise it above the ceiling from the task page or the Inbox item. Raising a
+  limit releases the hold and is recorded.
 - **AC-OFFICE-COMPLETION-GATES-007.6:** Existing budget policies shall still
-  refuse runs regardless of remaining caps.
+  refuse runs regardless of remaining limits.
+- **AC-OFFICE-COMPLETION-GATES-007.7:** Every hold shall carry one `hold_kind`
+  in the API: `protected_files_changed`, `rework_limit_reached`,
+  `verification_limit_reached`, `no_reviewer_available`, or
+  `review_wait_limit_reached`. No hold shall time out; reaching a limit only
+  decides when a person is asked.
 
-### REQ-OFFICE-COMPLETION-GATES-008: Gate status and human recovery
-
-**Intent:** Let a person see why a task is or is not Done and act on it from
-the Office task page, on desktop and phone.
-
-#### Acceptance criteria
-
-- **AC-OFFICE-COMPLETION-GATES-008.1:** The Office task page of a gated task
-  shall show a **Completion criteria** section listing each criterion with its
-  kind, status (`pending`, `pass`, `fail`, `cannot_evaluate`, `held`, or
-  stale), what decided it (failing checks, protected files, a send-back reason,
-  or the reviewers who approved or requested changes, each marked as an agent
-  or a person), the commits it was decided at, and its rework and attempt
-  counts against the caps.
-- **AC-OFFICE-COMPLETION-GATES-008.2:** A completed gated task shall say
-  **Done**. An overridden completion shall say it was overridden and by whom.
-  The confidence level stays in the gate snapshot and summary
-  (`AC-TASKS-COMPLETION-006.7`) and is not shown on the page.
-- **AC-OFFICE-COMPLETION-GATES-008.3:** A person can override a blocked
-  completion from the section with a required reason. The override shall bind
-  to the current criteria revision and the intended move, as in
-  `AC-TASKS-COMPLETION-001.16`.
-- **AC-OFFICE-COMPLETION-GATES-008.4:** The section shall offer **Allow for
-  this commit** and **Send back** for a protected-path hold and **Allow more
-  attempts** for a cap hold. The same actions on the Inbox item shall have the
-  same effect, and acting in one place shall resolve the other.
-- **AC-OFFICE-COMPLETION-GATES-008.5:** The section shall update without a
-  reload when a result, proof, or hold changes. Tasks without criteria shall
-  show no section and request no gate data.
-- **AC-OFFICE-COMPLETION-GATES-008.6:** On a phone the section shall render in
-  the task's main column with touch targets of at least 44 pixels and no
-  horizontal page overflow. Dialogs shall open as bottom sheets. All copy shall
-  be localized.
-- **AC-OFFICE-COMPLETION-GATES-008.7:** The Office new-task dialog and the
-  Office workspace settings shall show the criteria and default editors on
-  desktop and phone with the same capabilities.
-- **AC-OFFICE-COMPLETION-GATES-008.8:** While authentication is not enabled,
-  selecting a review-at-head criterion in the new-task dialog or as a
-  workspace default shall show an inline warning. It shall state that
-  authentication is off, that any process on this machine can approve the
-  task as the user so the criterion can pass without a real review, and that
-  turning on authentication in Settings > System > Feature Toggles prevents
-  it. The warning shall not block saving or creation; the choice stays with
-  the user.
+Gate status, people's actions, and what happens when no reviewer is available
+(`REQ-OFFICE-COMPLETION-GATES-008` and `-009`) are in
+[part 1](completion-gates-01.md).
 
 ## Exclusions
 
-- Creator-owned acceptance scripts, red-before-green, disputes, reviewer
-  quorum across providers, blind review, and structured verdicts (issue #5351
-  phase 2).
-- Confidence on dependents, the reversibility policy, and spot-check audits
-  (phase 3).
-- CI and review criteria on non-Office tasks. The task primitive permits them,
-  but no surface creates them.
+- The Kandev check runner and check profiles with red-before-green, disputes,
+  reviewer quorum across providers, blind review, and structured verdicts
+  (issue #5351 phase 2). The phase 2 runner design lives in the system design.
+- The reversibility policy and spot-check audits (phase 3).
+- Check and review criteria on non-Office tasks. The task primitive permits
+  them, but no surface creates them.
 - Branch-protection required-check lists. "CI passes" uses PR-status check
   selection.
 - Native gate controls on the generic task page (`REQ-TASKS-COMPLETION-004`).
+- A person as a reviewer seat or a human review stage.
 
 ## Related documents
 
+- [Part 1: status, people's actions, reviewer availability](completion-gates-01.md)
 - [System design](../system-design/completion-gates.md)
 - [Task completion requirements](../../tasks/requirements/task-completion.md)
 - [Host-verified completion criteria](../../tasks/requirements/task-completion-host-verified.md)
@@ -311,3 +315,4 @@ the Office task page, on desktop and phone.
 - [Review author provider exclusion](review-author-provider-exclusion.md)
 - [Blocker terminal policy](blocker-terminal-policy.md)
 - [Implementation plan](../../../plans/office-completion-gates/plan.md)
+- [Decision: people act on exceptions](../../../decisions/2026-11-21-completion-gates-people-act-on-exceptions.md)

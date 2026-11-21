@@ -11,8 +11,10 @@ requirements:
   - REQ-OFFICE-COMPLETION-GATES-006
   - REQ-OFFICE-COMPLETION-GATES-007
   - REQ-OFFICE-COMPLETION-GATES-008
+  - REQ-OFFICE-COMPLETION-GATES-009
 system_design:
   - ../../specs/office/system-design/completion-gates.md
+  - ../../specs/office/system-design/completion-gates-01.md
   - ../../specs/tasks/system-design/coordination-controls.md
 legacy_specs: []
 ---
@@ -23,7 +25,7 @@ legacy_specs: []
 
 Phase 1 of GitHub issue #5351. Office tasks gain two criteria that Kandev
 verifies itself: CI at the PR head (with protected paths) and review at the
-PR head. Failures route the work back, caps bound retries, holds escalate
+PR head. Failures route the work back, limits bound retries, holds escalate
 once, and people see and recover gate state on the Office task page.
 
 Settled with the user on 2026-11-20:
@@ -32,19 +34,25 @@ Settled with the user on 2026-11-20:
 - Gate status and recovery appear on the Office task page only.
 - A CI failure moves the task to the work stage; a stale review returns it to
   the review stage.
-- Any human approval counts for review at head, including the synthetic admin
-  with authentication off. The UI warns about this when a review criterion is
-  configured with authentication off; the user decides whether to enable it.
+- Superseded on 2026-11-21 (Task 09, ADR
+  `2026-11-21-completion-gates-people-act-on-exceptions`): people act on
+  exceptions only. Review counts only required reviewer seats; a person
+  accepts a held review or sends a review back at the commit shown. Criteria
+  are a `check` naming a runner (`github`) or a `review`; verdict sources
+  (`program`, `person`, `agent`) replace confidence levels; holds carry a
+  `hold_kind` and show as **Needs you**; "limit" replaces "cap"; a review no
+  agent can approve holds as `no_reviewer_available`.
 - Assumption: "CI passes" uses PR-status check selection; no required-check
   list.
 
 Order: 01 is the task-owned primitive every other order writes through. 02 and
 03 add the two verifiers and can run in parallel. 04 adds routing and needs
-both. 05 adds caps, holds and escalation on top of 04. 06 adds the creation
+both. 05 adds limits, holds and escalation on top of 04. 06 adds the creation
 surfaces and workspace defaults and needs 05's settings table. 07 and 08 are
-the UI.
+the UI. 09 reworks the delivered package to the people-act-on-exceptions model
+and needs all of them.
 
-Waves: 1 = 01; 2 = 02 and 03; 3 = 04; 4 = 05; 5 = 06 and 07; 6 = 08. Each
+Waves: 1 = 01; 2 = 02 and 03; 3 = 04; 4 = 05; 5 = 06 and 07; 6 = 08; 7 = 09. Each
 wave ends with a working product. After wave 2, criteria set through the
 existing HTTP API are verified and enforced. After wave 3 the work routes
 itself; after wave 4 it is bounded. After wave 5 every surface can create
@@ -56,13 +64,13 @@ and settings UI.
 ### In scope
 
 - `REQ-TASKS-COMPLETION-006`: criterion kinds, host-verified reservation, PR
-  heads subject, results, counters, holds, owner, confidence, self-verification
+  heads subject, results, counters, holds, owner, verdict source, self-verification
   caller check, atomic creation.
 - Office CI verifier (check selection at head, missing-check grace, protected
   paths, complete file lists), review verifier (heads on decisions), routing,
-  caps, holds, escalation, cap extension, prompt section.
+  limits, holds, escalation, limit extension, prompt section.
 - Creation through the Office dialog, CLI, MCP and routine templates;
-  workspace defaults, caps and ceilings; a step-level cap default.
+  workspace defaults, limits and ceilings; a step-level limit default.
 - Office task page section, Inbox items, new-task dialog group, workspace
   settings card. Desktop and phone.
 
@@ -100,36 +108,52 @@ languages. Spacing is not a pixel specification.
 
 `UI-01: Completion criteria section`. Entry point: Office task page of a
 gated task, main column, after the task action row. State: CI failed, review
-stale.
+waiting for approval.
 
 ```text
 Desktop (main column; properties sidebar unchanged on the right)
 +---------------------------------------------------------------+
 | Completion criteria                                           |
+| (!) Authentication is off, so any process on this machine can |
+|     take these actions as you. ... Open Feature Toggles       |
 |---------------------------------------------------------------|
-| CI                     [x Failed]                             |
+| CI check (GitHub)      [x Failed]                             |
 |   Failing: backend-tests, lint · a1b2c3d                      |
 |   Rework rounds 1 of 3, verification attempts 0 of 3          |
 |---------------------------------------------------------------|
-| Review                 [! Stale]                              |
+| Review                 [Pending]                              |
 |   Needs approval · a1b2c3d                                    |
 |   Rework rounds 0 of 3, verification attempts 0 of 3          |
+|   [ Send back at this commit ]                                |
 |---------------------------------------------------------------|
 |                                    [ Override completion ]    |
 +---------------------------------------------------------------+
 ```
 
-`UI-02: Held criterion actions`. Same section, protected-path hold and cap
-hold.
+The warning shows only while authentication is off and the section offers
+actions.
+
+`UI-02: Holds`. Same section; every hold shows **Needs you** and the actions
+of its hold kind.
 
 ```text
-| CI                     [|| Held]                              |
+| CI check (GitHub)      [Needs you]                            |
 |   Protected file changed: tests/webhook_test.go · a1b2c3d     |
 |   [ Allow for this commit ]  [ Send back ]                    |
 |---------------------------------------------------------------|
-| Review                 [|| Held]                              |
-|   Rework round limit reached · a1b2c3d                        |
-|   [ Allow more attempts ]                                     |
+| Review                 [Needs you]                            |
+|   Rework limit reached: 3 of 3 rounds · a1b2c3d               |
+|   [ Allow more rounds ] [ Accept at this commit ]             |
+|   [ Send back at this commit ]                                |
+|---------------------------------------------------------------|
+| Review                 [Needs you]                            |
+|   No reviewer available: the only reviewer is the task's      |
+|   assignee · a1b2c3d                                          |
+|   [ Accept at this commit ]  [ Send back at this commit ]     |
+|---------------------------------------------------------------|
+| Review                 [Pending]                              |
+|   Waiting for a reviewer: another provider is unavailable     |
+|   until 15:00 · a1b2c3d                                       |
 ```
 
 `UI-03: Phone`. One scrolling column; the section is a full-width card.
@@ -141,67 +165,65 @@ Actions stack full width with 44-pixel targets. Dialogs open as bottom sheets.
 |-----------------------------|
 | ...title, description...    |  scrolls
 | Completion criteria         |
-| CI              [|| Held]   |
-| Protected file changed:     |
-| tests/webhook_test.go       |
+| CI check (GitHub) [Passed]  |
 | · a1b2c3d                   |
-| [ Allow for this commit   ] |
-| [ Send back               ] |
-| Review          [Passed]    |
-| Approved by [QA] QA agent   |
-| · a1b2c3d                   |
+| Review       [Needs you]    |
+| No reviewer available: the  |
+| only reviewer is the task's |
+| assignee · a1b2c3d          |
+| [ Accept at this commit   ] |
+| [ Send back at this commit] |
 | [ Override completion     ] |
 +-----------------------------+
 ```
 
-`UI-04: Done state`. Completed gated task.
+`UI-04: Done and accepted states`.
 
 ```text
 | Completion criteria                                     Done  |
 | Completion criteria              Done by override · Sam       |
+| Review                 [Passed]                               |
+|   Accepted by a person: Read the diff myself · a1b2c3d        |
 ```
 
 `UI-05: New-task dialog group`. Office new-task dialog, below the description.
 Prefilled from workspace defaults; collapsed to a summary line until opened.
 
 ```text
-| Completion criteria  (CI at head, Review at head)        [v]  |
-|   [x] CI passes at PR head                                    |
-|       Protected paths  [ tests/** ] [ .github/** ] [+ Add]    |
-|   [x] Review at PR head                                       |
-|   (!) Authentication is off. Any process on this machine can  |
-|       approve this task as you, so this review can pass       |
-|       without a real review. Turn on Authentication in        |
-|       Settings > System > Feature Toggles to prevent this.    |
-|   Max rework rounds [ 3 ]   Max verification attempts [ 3 ]   |
+| Completion criteria  (CI check (GitHub), Review)         [v]  |
+|   [x] CI check (GitHub)                                       |
+|       Protected paths  [ tests/**, .github/** ]               |
+|   [x] Review                                                  |
+|       Review wait limit (minutes) [ Blank: wait indefinitely ]|
+|   Rework limit [ 3 ]        Verification limit [ 3 ]          |
 ```
-
-The warning appears only while **Review at PR head** is selected and
-authentication is not enabled. It never disables **Create**.
 
 `UI-06: Workspace settings card`. Office workspace settings page.
 
 ```text
 | Completion gates                                              |
 |   Default criteria for new tasks                              |
-|   [x] CI at PR head   Protected paths [ tests/** ] [+ Add]    |
-|   [ ] Review at PR head                                       |
-|       (same authentication warning when checked and auth off) |
-|   Default caps:  rework [ 3 ]  attempts [ 3 ]                 |
-|   Ceilings:      rework [ 10 ] attempts [ 10 ]                |
+|   [x] CI check (GitHub)   Protected paths [ tests/** ]        |
+|   [ ] Review                                                  |
+|   Default limits:  Rework limit [ 3 ]  Verification limit [ 3 ]|
+|                    Review wait limit (minutes) [        ]     |
+|   Ceilings:        Rework limit [ 10 ] Verification limit [ 10 ]|
 |                                               [ Save ]        |
 ```
 
-`UI-07: Inbox items`. Office Inbox, shared desktop and phone list.
+`UI-07: Inbox items`. Office Inbox, shared desktop and phone list; the title
+is the hold's detail line and the task links to its page.
 
 ```text
-| (||) Protected test file changed · KAN-42 Fix webhook dup     |
-|      tests/webhook_test.go          [ Allow ] [ Send back ]   |
-| (||) Completion held: rework limit reached · KAN-51           |
-|                                     [ Allow more attempts ]   |
+| (!) Authentication is off, so any process ... Feature Toggles |
+| (||) Protected file changed: tests/webhook_test.go            |
+|      KAN-42 Fix webhook dup   [ Allow for this commit ] [ Send back ] |
+| (||) No reviewer available: the only reviewer is the task's   |
+|      assignee  ·  KAN-51               [ Accept at this commit ] |
 ```
 
-Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.8` and `003.2`.
+Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.10`, `003.2` and `009.2` to
+`.4`.
 
 ## Tests
 
@@ -214,7 +236,7 @@ Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.8` and `003.2`.
 | GATES-004.* | 03 decision and verifier tests |
 | GATES-005.* | 01 reservation and caller tests; 03 self-approval; 05 extend route |
 | GATES-006.* | 04 router tests |
-| GATES-007.* | 05 caps, hold, escalation tests |
+| GATES-007.* | 05 limits, hold, escalation tests |
 | GATES-008.* | 07 and 08 unit tests and E2E (chromium and mobile-chrome) |
 
 ## E2E tests
@@ -233,14 +255,15 @@ Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.8` and `003.2`.
 - [x] [Task 02: CI verifier with protected paths](task-02-ci-verifier.md)
 - [x] [Task 03: Review pinned to the head](task-03-review-at-head.md)
 - [x] [Task 04: Result routing](task-04-result-routing.md)
-- [x] [Task 05: Caps, holds and escalation](task-05-caps-holds-escalation.md)
+- [x] [Task 05: Limits, holds and escalation](task-05-limits-holds-escalation.md)
 - [x] [Task 06: Creation surfaces and workspace defaults](task-06-creation-surfaces.md)
 - [x] [Task 07: Gate status and recovery UI](task-07-gate-status-ui.md)
 - [x] [Task 08: Criteria in task creation and settings UI](task-08-creation-ui.md)
+- [x] [Task 09: People act on exceptions](task-09-people-act-on-exceptions.md)
 
 ## Verification results
 
-All eight work orders are implemented; see each work order's Results. Backend
+All nine work orders are implemented; see each work order's Results. Backend
 package tests, sqlguard, race store-conformance and changed-Go lint pass; web
 vitest, typecheck, lint and i18n checks pass; chromium and mobile-chrome E2E
 for CI, protected paths, override and creation pass. PostgreSQL runs were not
@@ -260,14 +283,14 @@ criterion and coverage is recomputed from each seat's newest decision; the
 all-pass retry only re-applies transitions into a completing step; protected
 Allow and Send back require a protected hold at the seen heads, and Send back
 has its own control and needs a reason; the public set-criteria command takes
-owner and caps confirmation from the caller; rework counting keeps recent keys
+owner and limits confirmation from the caller; rework counting keeps recent keys
 and reports the claim; a rejection counts only when the newest review decision
-is one; a cap extension releases only the causing cap above use and re-runs the
+is one; a limit extension releases only the causing limit above use and re-runs the
 held return; the CI sweep selects due rows and pages; file-read and
 workflow-read errors map to `changed_files_incomplete` and `pending`;
-escalation sets `escalated_at` and a sweep retries it, with unescalated cap
+escalation sets `escalated_at` and a sweep retries it, with unescalated limit
 holds shown in the Inbox; and `task_completion_sets.state_revision` drives the
-task page refresh, which also shows effective caps from a new caps route.
+task page refresh, which also shows effective limits from a new limits route.
 
 A live run-through on a dev instance (mock GitHub) found and fixed six more
 issues, each with a regression test: workflow-engine moves (turn-complete
@@ -292,6 +315,10 @@ operator: the "Weakest" summary and per-row confidence are gone; rows read
 checks, protected files, send-back reason, or the approving or
 change-requesting reviewers with agent or person avatars) and the commits.
 
+People-act-on-exceptions rework (Task 09, 2026-11-21): see the work order's
+Results. Backend, web unit, i18n, docs validators, and chromium (8) and
+mobile-chrome (4) completion-gate E2E pass.
+
 ## Risks
 
 - **Check freshness.** The batched GraphQL poller stores only a rollup. The CI
@@ -299,14 +326,15 @@ change-requesting reviewers with agent or person avatars) and the commits.
   Coalescing per task bounds it; watch GitHub rate limits on large workspaces.
 - **Check arrival race.** Checks may appear minutes after a push. The 10-minute
   grace avoids a false `cannot_evaluate`; slow CI providers can still exceed it
-  and spend attempts. The cap absorbs this.
+  and spend attempts. The limit absorbs this.
 - **Review-stage re-entry.** Re-entering the review stage while the task is
   already there depends on step-entry dispatch with a fresh entry identity.
   Task 04 must confirm the mechanism before relying on it.
 - **Create-path coverage.** Several repository methods create tasks. Task 01
   must route every one through `insertCompletionCriteriaTx`; a missed path
   creates a task without its criteria.
-- **Auth-off human approvals.** Accepted residual risk (ADR), surfaced to the
-  user as a configuration-time warning (UI-05, UI-06).
+- **Auth-off person actions.** An agent's shell calling the API without a run
+  token looks identical to the person. Accepted residual risk (ADR
+  2026-11-21), surfaced as a warning where people act (UI-01, UI-07).
 - **Size.** Eight orders across task, Office, GitHub, workflow and web. Keep
   each order's verification scoped to its packages.

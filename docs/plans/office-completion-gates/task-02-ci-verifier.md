@@ -27,7 +27,7 @@ system_design:
 
 ## Summary
 
-Kandev verifies `ci_at_head` criteria from PR checks at each linked head,
+Kandev verifies `check` criteria from PR checks at each linked head,
 using PR-status check selection, and holds the criterion when the PR touches a
 protected path.
 
@@ -37,7 +37,7 @@ protected path.
   bypassing the feedback cache, returning the observation struct in the design.
 - `github.Service.ChangedFilesAtHead` with head re-read; paginate
   `PATClient.ListPRFiles` with `getPaginated`; completeness against
-  `changed_files` and the 3000 cap; mock client support.
+  `changed_files` and the 3000 limit; mock client support.
 - New package `internal/office/completiongates`: `CIVerifier` subscribed to
   `github.task_pr.updated`, per-task keyed serialization and coalescing,
   aggregation rules 1 to 6, protected-path matching with `doublestar`

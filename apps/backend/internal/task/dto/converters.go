@@ -26,7 +26,7 @@ func FromWorkflowStep(step *wfmodels.WorkflowStep) WorkflowStepDTO {
 		DisableUnclassifiedFallback: step.DisableUnclassifiedFallback,
 		SessionTarget:               wfmodels.CloneWorkflowSessionTarget(step.SessionTarget),
 		WIPLimit:                    step.WIPLimit,
-		CompletionGateCaps:          step.CompletionGateCaps,
+		CompletionGateLimits:        step.CompletionGateLimits,
 		PullFromStepID:              step.PullFromStepID,
 		StageType:                   string(step.StageType),
 		AutoAdvanceRequiresSignal:   step.AutoAdvanceRequiresSignal,

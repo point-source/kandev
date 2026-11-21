@@ -33,7 +33,8 @@ type Props = {
   description: string;
   confirmLabel: string;
   reasonRequired?: boolean;
-  withCaps?: boolean;
+  /** The limit an extension raises: rework rounds or verification attempts. */
+  limit?: "rework" | "attempts";
   testId: string;
   onConfirm: (values: CompletionActionValues) => Promise<void>;
 };
@@ -68,24 +69,25 @@ export function CompletionActionDialog(props: Props) {
   );
 }
 
-function ActionBody({ reasonRequired, withCaps, confirmLabel, onConfirm, onOpenChange }: Props) {
+function ActionBody({ reasonRequired, limit, confirmLabel, onConfirm, onOpenChange }: Props) {
   const { t } = useTranslation();
   const { isMobile } = useResponsiveBreakpoint();
   const [reason, setReason] = useState("");
-  const [rework, setRework] = useState("");
-  const [attempts, setAttempts] = useState("");
+  const [limitValue, setLimitValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const caps = { rework: Number(rework) || 0, attempts: Number(attempts) || 0 };
-  const invalid =
-    (reasonRequired && reason.trim() === "") ||
-    (withCaps && caps.rework <= 0 && caps.attempts <= 0);
+  const raised = Number(limitValue) || 0;
+  const limits = {
+    rework: limit === "rework" ? raised : 0,
+    attempts: limit === "attempts" ? raised : 0,
+  };
+  const invalid = (reasonRequired && reason.trim() === "") || (limit !== undefined && raised <= 0);
 
   const submit = async () => {
     setBusy(true);
     setFailed(false);
     try {
-      await onConfirm({ reason: reason.trim(), ...caps });
+      await onConfirm({ reason: reason.trim(), ...limits });
       onOpenChange(false);
     } catch {
       setFailed(true);
@@ -98,23 +100,18 @@ function ActionBody({ reasonRequired, withCaps, confirmLabel, onConfirm, onOpenC
   const controlClass = isMobile ? "min-h-11" : undefined;
   return (
     <div className="flex flex-col gap-3 px-4 pb-2 sm:px-0">
-      {withCaps && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <CapField
-            id="completion-cap-rework"
-            label={t("office:completionGatesReworkRounds")}
-            value={rework}
-            onChange={setRework}
-            className={controlClass}
-          />
-          <CapField
-            id="completion-cap-attempts"
-            label={t("office:completionGatesVerificationAttempts")}
-            value={attempts}
-            onChange={setAttempts}
-            className={controlClass}
-          />
-        </div>
+      {limit && (
+        <LimitField
+          id={`completion-limit-${limit}`}
+          label={t(
+            limit === "rework"
+              ? "office:completionGatesReworkLimit"
+              : "office:completionGatesVerificationLimit",
+          )}
+          value={limitValue}
+          onChange={setLimitValue}
+          className={controlClass}
+        />
       )}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="completion-action-reason">
@@ -148,7 +145,7 @@ function ActionBody({ reasonRequired, withCaps, confirmLabel, onConfirm, onOpenC
   );
 }
 
-function CapField(props: {
+function LimitField(props: {
   id: string;
   label: ReactNode;
   value: string;

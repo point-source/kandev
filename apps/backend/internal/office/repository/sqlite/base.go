@@ -388,10 +388,11 @@ func (r *Repository) createCostTables() error {
 	CREATE TABLE IF NOT EXISTS office_completion_gate_settings (
 		workspace_id TEXT PRIMARY KEY,
 		default_criteria_json TEXT NOT NULL DEFAULT '[]',
-		default_max_attempts INTEGER NOT NULL DEFAULT 0,
-		default_max_rework INTEGER NOT NULL DEFAULT 0,
-		ceiling_attempts INTEGER NOT NULL DEFAULT 0,
-		ceiling_rework INTEGER NOT NULL DEFAULT 0,
+		default_verification_limit INTEGER NOT NULL DEFAULT 0,
+		default_rework_limit INTEGER NOT NULL DEFAULT 0,
+		verification_limit_ceiling INTEGER NOT NULL DEFAULT 0,
+		rework_limit_ceiling INTEGER NOT NULL DEFAULT 0,
+		default_review_wait_limit INTEGER NOT NULL DEFAULT 0,
 		updated_at TIMESTAMP NOT NULL
 	);
 	` + budgetClaimsDDL)

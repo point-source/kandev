@@ -148,7 +148,7 @@ type StepPortable struct {
 	AutoAdvanceRequiresSignal    bool                                         `json:"auto_advance_requires_signal" yaml:"auto_advance_requires_signal"`
 	CancelTriggersTurnComplete   bool                                         `json:"cancel_triggers_turn_complete" yaml:"cancel_triggers_turn_complete"`
 	CompleteTaskOnEnter          bool                                         `json:"complete_task_on_enter" yaml:"complete_task_on_enter"`
-	CompletionGateCaps           *CompletionGateCaps                          `json:"completion_gate_caps,omitempty" yaml:"completion_gate_caps,omitempty"`
+	CompletionGateLimits         *CompletionGateLimits                        `json:"completion_gate_limits,omitempty" yaml:"completion_gate_limits,omitempty"`
 	WIPLimit                     int                                          `json:"wip_limit,omitempty" yaml:"wip_limit,omitempty"`
 	PullFromStepPosition         *int                                         `json:"pull_from_step_position,omitempty" yaml:"pull_from_step_position,omitempty"`
 	StageType                    StageType                                    `json:"stage_type,omitempty" yaml:"stage_type,omitempty"`
@@ -326,7 +326,7 @@ func buildWorkflowPortable(wf *taskmodels.Workflow, steps []*WorkflowStep, resol
 			AutoAdvanceRequiresSignal:   s.AutoAdvanceRequiresSignal,
 			CancelTriggersTurnComplete:  s.CancelTriggersTurnComplete,
 			CompleteTaskOnEnter:         s.CompleteTaskOnEnter,
-			CompletionGateCaps:          s.CompletionGateCaps,
+			CompletionGateLimits:        s.CompletionGateLimits,
 			WIPLimit:                    s.WIPLimit,
 			StageType:                   s.StageType,
 		}

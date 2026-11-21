@@ -30,7 +30,7 @@ system_design:
 
 Extend the task-owned completion gate so a criterion has a kind, host-verified
 kinds accept results only from in-process commands, proof is pinned to the set
-of linked PR heads, and each criterion carries a result, owner, caps, counters
+of linked PR heads, and each criterion carries a result, owner, limits, counters
 and an optional hold. Criteria can be written in the task's create
 transaction.
 

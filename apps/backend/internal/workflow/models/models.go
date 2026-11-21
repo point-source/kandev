@@ -260,9 +260,9 @@ type WorkflowStep struct {
 	CancelTriggersTurnComplete bool `json:"cancel_triggers_turn_complete"`
 	// CompleteTaskOnEnter marks the final step as completing its task on entry.
 	CompleteTaskOnEnter bool `json:"complete_task_on_enter"`
-	// CompletionGateCaps are the default completion-gate caps for tasks whose
+	// CompletionGateLimits are the default completion-gate caps for tasks whose
 	// completing step this is. Nil means no step default.
-	CompletionGateCaps *CompletionGateCaps `json:"completion_gate_caps,omitempty"`
+	CompletionGateLimits *CompletionGateLimits `json:"completion_gate_limits,omitempty"`
 	// OrderRevision is bumped by ReorderStepTasks (AC-TASKS-KANBAN-TASK-
 	// REORDERING-001.25/.37) each time this step's task order changes. A
 	// consumer that records the value it last saw can reject a WS event
@@ -585,9 +585,11 @@ func remapActionStepID(config map[string]any, idMap map[string]string) map[strin
 	return cfg
 }
 
-// CompletionGateCaps are step-level defaults for completion-gate caps. Zero
+// CompletionGateLimits are step-level defaults for completion-gate caps. Zero
 // leaves a cap to the workspace default.
-type CompletionGateCaps struct {
-	MaxVerificationAttempts int `json:"max_verification_attempts,omitempty" yaml:"max_verification_attempts,omitempty"`
-	MaxReworkRounds         int `json:"max_rework_rounds,omitempty" yaml:"max_rework_rounds,omitempty"`
+type CompletionGateLimits struct {
+	VerificationLimit int `json:"verification_limit,omitempty" yaml:"verification_limit,omitempty"`
+	ReworkLimit       int `json:"rework_limit,omitempty" yaml:"rework_limit,omitempty"`
+	// ReviewWaitLimit is in minutes; zero leaves it to the workspace default.
+	ReviewWaitLimit int `json:"review_wait_limit,omitempty" yaml:"review_wait_limit,omitempty"`
 }

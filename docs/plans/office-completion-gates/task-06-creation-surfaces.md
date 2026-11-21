@@ -3,7 +3,7 @@ id: "06-creation-surfaces"
 title: "Creation surfaces and workspace defaults"
 status: done
 wave: 5
-depends_on: ["01-host-verified-criteria", "05-caps-holds-escalation"]
+depends_on: ["01-host-verified-criteria", "05-limits-holds-escalation"]
 plan: "plan.md"
 requirements:
   - REQ-OFFICE-COMPLETION-GATES-001

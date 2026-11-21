@@ -14,15 +14,15 @@ func TestCompletionGateSettingsLifecycle(t *testing.T) {
 		t.Fatalf("empty read found=%v err=%v", found, err)
 	}
 	want := models.CompletionGateSettings{
-		WorkspaceID:        "ws-1",
-		DefaultCriteria:    []models.CompletionGateCriterionSpec{{Kind: "ci_at_head", ProtectedPaths: []string{"tests/**"}}},
-		DefaultMaxAttempts: 2, DefaultMaxRework: 4, CeilingAttempts: 8, CeilingRework: 9,
+		WorkspaceID:              "ws-1",
+		DefaultCriteria:          []models.CompletionGateCriterionSpec{{Kind: "check", ProtectedPaths: []string{"tests/**"}}},
+		DefaultVerificationLimit: 2, DefaultReworkLimit: 4, VerificationLimitCeiling: 8, ReworkLimitCeiling: 9,
 	}
 	if err := repo.SetCompletionGateSettings(ctx, want); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	got, found, err := repo.GetCompletionGateSettings(ctx, "ws-1")
-	if err != nil || !found || got.CeilingRework != 9 || len(got.DefaultCriteria) != 1 || got.DefaultCriteria[0].ProtectedPaths[0] != "tests/**" {
+	if err != nil || !found || got.ReworkLimitCeiling != 9 || len(got.DefaultCriteria) != 1 || got.DefaultCriteria[0].ProtectedPaths[0] != "tests/**" {
 		t.Fatalf("got %+v found=%v err=%v", got, found, err)
 	}
 	if err := repo.DeleteWorkspaceData(ctx, "ws-1"); err != nil {

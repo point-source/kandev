@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/kandev/kandev/internal/office/models"
 	"github.com/kandev/kandev/internal/office/routing"
@@ -109,4 +110,32 @@ func runTaskAndStep(payload string) (string, string) {
 		return "", ""
 	}
 	return p.TaskID, p.WorkflowStepID
+}
+
+// ReviewSeatObserver hears about seat runs subject to the author-provider
+// exclusion, so the task's review completion criterion can show the wait or
+// hold when no reviewer can run (REQ-OFFICE-COMPLETION-GATES-009).
+type ReviewSeatObserver interface {
+	ReviewSeatParked(ctx context.Context, taskID string, onlyAuthorProvider bool, status string, retryAt time.Time)
+	ReviewSeatLaunched(ctx context.Context, taskID string)
+}
+
+// SetReviewSeatObserver installs the review seat observer.
+func (ss *SchedulerService) SetReviewSeatObserver(observer ReviewSeatObserver) {
+	ss.reviewSeats = observer
+}
+
+// observeReviewSeatPark reports a park the exclusion caused, and whether the
+// author's provider is the only provider in the effective order.
+func (ss *SchedulerService) observeReviewSeatPark(ctx context.Context, run *runsmodels.Run, res *routing.Resolution) {
+	authors := authorSkips(res)
+	if ss.reviewSeats == nil || len(authors) == 0 {
+		return
+	}
+	taskID, _ := runTaskAndStep(run.Payload)
+	onlyAuthor := true
+	for _, provider := range res.ProviderOrder {
+		onlyAuthor = onlyAuthor && provider == authors[0].ProviderID
+	}
+	ss.reviewSeats.ReviewSeatParked(ctx, taskID, onlyAuthor, res.BlockReason.Status, res.BlockReason.EarliestRetry)
 }

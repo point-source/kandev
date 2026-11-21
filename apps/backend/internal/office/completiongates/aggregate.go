@@ -43,7 +43,7 @@ func aggregateCI(input ciInput) ciOutcome {
 	}
 	allowed := input.criterion.ProtectedAllowedRevision != "" && input.criterion.ProtectedAllowedRevision == input.revision
 	if matched := protectedMatches(input.criterion.Config.ProtectedPaths, input.files); len(matched) > 0 && !allowed {
-		return ciOutcome{result: models.TaskCompletionResultPending, reason: HoldProtectedPathChanged, detail: matched, hold: HoldProtectedPathChanged}
+		return ciOutcome{result: models.TaskCompletionResultPending, reason: HoldProtectedFilesChanged, detail: matched, hold: HoldProtectedFilesChanged}
 	}
 	// Running checks decide nothing yet, so an incomplete file list waits for
 	// them instead of spending an attempt.

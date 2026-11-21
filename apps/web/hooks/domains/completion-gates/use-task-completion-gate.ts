@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  getEffectiveCompletionCaps,
+  getEffectiveCompletionLimits,
   getTaskCompletionGate,
   listTaskCompletionGateHistory,
-  type EffectiveCompletionCaps,
+  type EffectiveCompletionLimits,
   type TaskCompletionGateHistory,
   type TaskCompletionGateSnapshot,
 } from "@/lib/api/domains/task-completion-gates-api";
@@ -14,21 +14,21 @@ import { completingStepId } from "@/lib/completion-gates/criteria-display";
 type GateState = {
   gate: TaskCompletionGateSnapshot | null;
   history: TaskCompletionGateHistory[];
-  caps: EffectiveCompletionCaps[];
+  limits: EffectiveCompletionLimits[];
   error: boolean;
 };
 
 /**
- * Loads a gated task's completion gate, history and effective caps. It reads
+ * Loads a gated task's completion gate, history and effective limits. It reads
  * nothing when the task has no criteria and refetches when refreshKey changes
- * (built from the gate's state revision, bumped by every gate change). Caps
- * are optional: a failed caps read leaves the gate visible.
+ * (built from the gate's state revision, bumped by every gate change). Limits
+ * are optional: a failed limits read leaves the gate visible.
  */
 export function useTaskCompletionGate(taskId: string, enabled: boolean, refreshKey: string) {
   const [state, setState] = useState<GateState>({
     gate: null,
     history: [],
-    caps: [],
+    limits: [],
     error: false,
   });
   const generation = useRef(0);
@@ -36,12 +36,12 @@ export function useTaskCompletionGate(taskId: string, enabled: boolean, refreshK
   const load = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const [gate, history, caps] = await Promise.all([
+      const [gate, history, limits] = await Promise.all([
         getTaskCompletionGate(taskId),
         listTaskCompletionGateHistory(taskId),
-        getEffectiveCompletionCaps(taskId).catch(() => [] as EffectiveCompletionCaps[]),
+        getEffectiveCompletionLimits(taskId).catch(() => [] as EffectiveCompletionLimits[]),
       ]);
-      if (current === generation.current) setState({ gate, history, caps, error: false });
+      if (current === generation.current) setState({ gate, history, limits, error: false });
     } catch {
       if (current === generation.current) setState((prev) => ({ ...prev, error: true }));
     }

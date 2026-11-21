@@ -25,9 +25,9 @@ func newHostGateRepo(t *testing.T) (*Repository, *sqlx.DB) {
 
 func ciCriterion() models.TaskCompletionCriterion {
 	return models.TaskCompletionCriterion{
-		ID: "ci", Description: "CI passes at the PR head", Kind: models.TaskCompletionCriterionCIAtHead,
+		ID: "ci", Description: "CI passes at the PR head", Kind: models.TaskCompletionCriterionCheck,
 		EvidenceSubject: models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceGitHubPRHeads, ID: hostGateTaskID},
-		Config:          models.TaskCompletionCriterionConfig{ProtectedPaths: []string{"tests/**"}},
+		Config:          models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub, ProtectedPaths: []string{"tests/**"}},
 		OwnerKind:       "agent", OwnerID: "ceo",
 	}
 }
@@ -86,13 +86,10 @@ func TestHostCriterionIsStoredWithTaskCreation(t *testing.T) {
 		t.Fatalf("criteria = %d, want 1", len(snapshot.Criteria))
 	}
 	criterion := snapshot.Criteria[0]
-	if criterion.Kind != models.TaskCompletionCriterionCIAtHead || criterion.Result != models.TaskCompletionResultPending ||
-		criterion.Confidence != models.TaskCompletionConfidenceMachine || criterion.OwnerID != "ceo" ||
+	if criterion.Kind != models.TaskCompletionCriterionCheck || criterion.Result != models.TaskCompletionResultPending ||
+		criterion.VerdictSource != "" || criterion.OwnerID != "ceo" ||
 		len(criterion.Config.ProtectedPaths) != 1 {
 		t.Fatalf("criterion = %+v", criterion)
-	}
-	if snapshot.WeakestConfidence != models.TaskCompletionConfidenceMachine {
-		t.Fatalf("weakest confidence = %q", snapshot.WeakestConfidence)
 	}
 	if got := blockerReasons(snapshot); len(got) != 1 || got[0] != models.TaskCompletionBlockerPRMissing {
 		t.Fatalf("blockers = %v, want pr_missing", got)
@@ -206,7 +203,7 @@ func TestHoldBlocksUntilReleased(t *testing.T) {
 	linkPR(t, writer, "pr-1", "head-1")
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultFail, func(c *models.TaskCompletionEvaluationChange) {
 		c.Reason = "checks_failed"
-		c.Hold = "rework_cap_reached"
+		c.Hold = "rework_limit_reached"
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -214,19 +211,19 @@ func TestHoldBlocksUntilReleased(t *testing.T) {
 	if got := blockerReasons(snapshot); len(got) != 1 || got[0] != models.TaskCompletionBlockerHeld {
 		t.Fatalf("blockers = %v", got)
 	}
-	if snapshot.Criteria[0].HeldReason != "rework_cap_reached" || snapshot.Criteria[0].HeldAt == nil {
+	if snapshot.Criteria[0].HoldKind != "rework_limit_reached" || snapshot.Criteria[0].HeldAt == nil {
 		t.Fatalf("hold = %+v", snapshot.Criteria[0])
 	}
 	released, err := repo.ApplyTaskCompletionControl(context.Background(), models.TaskCompletionControlChange{
 		TaskID: hostGateTaskID, CriterionID: "ci", CriterionRevision: 1,
-		Action: models.TaskCompletionControlExtendCaps, MaxReworkRounds: 5,
+		Action: models.TaskCompletionControlExtendLimits, ReworkLimit: 5,
 		ActorKind: "human", ActorID: "user-1", Reason: "one more try",
 	})
 	if err != nil {
-		t.Fatalf("extend caps: %v", err)
+		t.Fatalf("extend limits: %v", err)
 	}
 	criterion := released.Snapshot.Criteria[0]
-	if criterion.HeldReason != "" || criterion.Config.MaxReworkRounds != 5 {
+	if criterion.HoldKind != "" || criterion.Config.ReworkLimit != 5 {
 		t.Fatalf("after extend = %+v", criterion)
 	}
 }
@@ -236,7 +233,7 @@ func TestAllowProtectedPathsBindsToHeads(t *testing.T) {
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultPending, func(c *models.TaskCompletionEvaluationChange) {
-		c.Hold = "protected_path_changed"
+		c.Hold = "protected_files_changed"
 		c.Detail = []string{"tests/a_test.go"}
 	}); err != nil {
 		t.Fatal(err)
@@ -255,7 +252,7 @@ func TestAllowProtectedPathsBindsToHeads(t *testing.T) {
 		t.Fatalf("allow: %v", err)
 	}
 	criterion := snapshot.Snapshot.Criteria[0]
-	if criterion.HeldReason != "" || criterion.ProtectedAllowedRevision != "pr-1@head-1" || criterion.ProtectedAllowedBy != "user-1" {
+	if criterion.HoldKind != "" || criterion.ProtectedAllowedRevision != "pr-1@head-1" || criterion.ProtectedAllowedBy != "user-1" {
 		t.Fatalf("after allow = %+v", criterion)
 	}
 }
@@ -275,7 +272,7 @@ func TestExistingVerifyPathRefusesHostCriteria(t *testing.T) {
 	}
 }
 
-func TestCriterionRetentionKeepsStateAndTakesNewCaps(t *testing.T) {
+func TestCriterionRetentionKeepsStateAndTakesNewLimits(t *testing.T) {
 	repo, writer := newHostGateRepo(t)
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
@@ -287,7 +284,7 @@ func TestCriterionRetentionKeepsStateAndTakesNewCaps(t *testing.T) {
 	}
 	current := gate(t, repo)
 	retained := ciCriterion()
-	retained.Config.MaxReworkRounds = 7
+	retained.Config.ReworkLimit = 7
 	snapshot, err := repo.SetTaskCompletionCriteria(context.Background(), models.TaskCompletionCriteriaChange{
 		TaskID: hostGateTaskID, WorkspaceID: current.WorkspaceID, ExpectedRevision: current.Revision,
 		Criteria: []models.TaskCompletionCriterion{retained}, ActorKind: "human", ActorID: "user-1",
@@ -296,7 +293,7 @@ func TestCriterionRetentionKeepsStateAndTakesNewCaps(t *testing.T) {
 		t.Fatalf("retain: %v", err)
 	}
 	criterion := snapshot.Criteria[0]
-	if criterion.CriterionRevision != 1 || criterion.ReworkCount != 1 || criterion.Config.MaxReworkRounds != 7 {
+	if criterion.CriterionRevision != 1 || criterion.ReworkCount != 1 || criterion.Config.ReworkLimit != 7 {
 		t.Fatalf("retained criterion = %+v", criterion)
 	}
 
@@ -328,9 +325,11 @@ func TestBatchSummaryCountsHostCriteria(t *testing.T) {
 		t.Fatal(err)
 	}
 	observation := batch.ByTaskID[hostGateTaskID]
-	if observation == nil || observation.VerifiedCount != 1 || observation.Blocked ||
-		observation.WeakestConfidence != models.TaskCompletionConfidenceMachine {
+	if observation == nil || observation.VerifiedCount != 1 || observation.Blocked {
 		t.Fatalf("observation = %+v", observation)
+	}
+	if source := gate(t, repo).Criteria[0].VerdictSource; source != models.TaskCompletionVerdictProgram {
+		t.Fatalf("verdict source = %q, want program", source)
 	}
 	linkPR(t, writer, "pr-1", "head-2")
 	batch, err = repo.GetTaskCompletionGateSummaries(context.Background(), []string{hostGateTaskID})
@@ -350,7 +349,7 @@ func TestHostCriterionColumnsSurviveSchemaReplay(t *testing.T) {
 		t.Fatalf("replay schema: %v", err)
 	}
 	snapshot := gate(t, replayed)
-	if len(snapshot.Criteria) != 1 || snapshot.Criteria[0].Kind != models.TaskCompletionCriterionCIAtHead ||
+	if len(snapshot.Criteria) != 1 || snapshot.Criteria[0].Kind != models.TaskCompletionCriterionCheck ||
 		len(snapshot.Criteria[0].Config.ProtectedPaths) != 1 {
 		t.Fatalf("criterion after replay = %+v", snapshot.Criteria)
 	}
@@ -361,21 +360,21 @@ func TestEvaluationReleasesOnlyTheNamedHold(t *testing.T) {
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultPending, func(c *models.TaskCompletionEvaluationChange) {
-		c.Hold = "protected_path_changed"
+		c.Hold = "protected_files_changed"
 	}); err != nil {
 		t.Fatal(err)
 	}
 	linkPR(t, writer, "pr-1", "head-2")
 	outcome, err := evaluate(repo, "pr-1@head-2", models.TaskCompletionResultPass, func(c *models.TaskCompletionEvaluationChange) {
-		c.ReleaseHold = "rework_cap_reached"
+		c.ReleaseHold = "rework_limit_reached"
 	})
-	if err != nil || outcome.Criterion.HeldReason != "protected_path_changed" {
+	if err != nil || outcome.Criterion.HoldKind != "protected_files_changed" {
 		t.Fatalf("mismatched release err=%v criterion=%+v", err, outcome.Criterion)
 	}
 	outcome, err = evaluate(repo, "pr-1@head-2", models.TaskCompletionResultPass, func(c *models.TaskCompletionEvaluationChange) {
-		c.ReleaseHold = "protected_path_changed"
+		c.ReleaseHold = "protected_files_changed"
 	})
-	if err != nil || !outcome.Changed || outcome.Criterion.HeldReason != "" || outcome.Snapshot.Blocked {
+	if err != nil || !outcome.Changed || outcome.Criterion.HoldKind != "" || outcome.Snapshot.Blocked {
 		t.Fatalf("release err=%v outcome=%+v", err, outcome)
 	}
 }
@@ -384,20 +383,20 @@ func TestListTaskIDsWithUnmetCompletionCriteria(t *testing.T) {
 	repo, writer := newHostGateRepo(t)
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
-	ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCIAtHead, Limit: 10})
+	ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCheck, Limit: 10})
 	if err != nil || len(ids) != 1 || ids[0] != hostGateTaskID {
 		t.Fatalf("unmet ids = %v, %v", ids, err)
 	}
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultPass); err != nil {
 		t.Fatal(err)
 	}
-	ids, err = repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCIAtHead, Limit: 10})
+	ids, err = repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCheck, Limit: 10})
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("unmet ids after pass = %v, %v", ids, err)
 	}
 }
 
-func TestCountReworkIsKeyedAndCapped(t *testing.T) {
+func TestCountReworkIsKeyedAndLimited(t *testing.T) {
 	repo, writer := newHostGateRepo(t)
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
@@ -405,7 +404,7 @@ func TestCountReworkIsKeyedAndCapped(t *testing.T) {
 		t.Helper()
 		snapshot, err := repo.ApplyTaskCompletionControl(context.Background(), models.TaskCompletionControlChange{
 			TaskID: hostGateTaskID, CriterionID: "ci", CriterionRevision: 1,
-			Action: models.TaskCompletionControlCountRework, Key: key, ReworkCap: 2,
+			Action: models.TaskCompletionControlCountRework, Key: key, CountReworkLimit: 2,
 			ActorKind: "system", ActorID: "router",
 		})
 		if err != nil {
@@ -419,11 +418,11 @@ func TestCountReworkIsKeyedAndCapped(t *testing.T) {
 	if c := count("a"); c.ReworkCount != 1 {
 		t.Fatalf("repeated key counted: %+v", c)
 	}
-	if c := count("b"); c.ReworkCount != 2 || c.HeldReason != "" {
+	if c := count("b"); c.ReworkCount != 2 || c.HoldKind != "" {
 		t.Fatalf("second count = %+v", c)
 	}
-	if c := count("c"); c.ReworkCount != 2 || c.HeldReason != "rework_cap_reached" {
-		t.Fatalf("over cap = %+v", c)
+	if c := count("c"); c.ReworkCount != 2 || c.HoldKind != "rework_limit_reached" {
+		t.Fatalf("over limit = %+v", c)
 	}
 }
 
@@ -435,12 +434,12 @@ func TestListHeldCompletionCriteria(t *testing.T) {
 		t.Fatalf("held before = %v, %v", held, err)
 	}
 	if _, err := evaluate(repo, "pr-1@head-1", models.TaskCompletionResultPending, func(c *models.TaskCompletionEvaluationChange) {
-		c.Hold = "protected_path_changed"
+		c.Hold = "protected_files_changed"
 	}); err != nil {
 		t.Fatal(err)
 	}
 	held, err := repo.ListHeldCompletionCriteria(context.Background(), "ws-host")
-	if err != nil || len(held) != 1 || held[0].TaskTitle != "Gated" || held[0].Criterion.HeldReason != "protected_path_changed" {
+	if err != nil || len(held) != 1 || held[0].TaskTitle != "Gated" || held[0].Criterion.HoldKind != "protected_files_changed" {
 		t.Fatalf("held = %+v, %v", held, err)
 	}
 }

@@ -117,7 +117,7 @@ type PromptContext struct {
 
 	// Completion-gate hold escalation fields (task_completion_gate_held).
 	CompletionGateCriterionID string
-	CompletionGateHeldReason  string
+	CompletionGateHoldKind    string
 	CompletionGateHistory     string
 
 	// CompletionGate lists the task's completion criteria; unmet ones are

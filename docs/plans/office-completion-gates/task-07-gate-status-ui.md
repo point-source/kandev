@@ -3,7 +3,7 @@ id: "07-gate-status-ui"
 title: "Gate status and recovery UI"
 status: done
 wave: 5
-depends_on: ["05-caps-holds-escalation"]
+depends_on: ["05-limits-holds-escalation"]
 plan: "plan.md"
 requirements:
   - REQ-OFFICE-COMPLETION-GATES-003
@@ -25,7 +25,7 @@ system_design:
 ## Summary
 
 The Office task page shows a **Completion criteria** section for gated tasks,
-with override, protected-path and cap actions, and the Inbox shows the matching
+with override, protected-path and limit actions, and the Inbox shows the matching
 items. Desktop and phone.
 
 ## ASCII UI preview
@@ -35,7 +35,7 @@ From the [plan](plan.md#ascii-ui-preview): UI-01, UI-02, UI-03, UI-04 and UI-07.
 ```text
 | Completion criteria                 Weakest: judgement        |
 | CI at PR head          [|| Held]    machine                   |
-|   protected_path_changed: tests/webhook_test.go               |
+|   protected_files_changed: tests/webhook_test.go               |
 |   [ Allow for this commit ]  [ Send back ]                    |
 | Review at PR head      [! Stale]    judgement                 |
 |   Approved at 9f8e7d6, head is now a1b2c3d                    |

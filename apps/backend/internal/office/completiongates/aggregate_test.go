@@ -10,7 +10,7 @@ import (
 
 func ciCriterion(protected ...string) models.TaskCompletionCriterion {
 	return models.TaskCompletionCriterion{
-		ID: "ci", Kind: models.TaskCompletionCriterionCIAtHead, CriterionRevision: 1,
+		ID: "ci", Kind: models.TaskCompletionCriterionCheck, CriterionRevision: 1,
 		Config: models.TaskCompletionCriterionConfig{ProtectedPaths: protected},
 	}
 }
@@ -52,7 +52,7 @@ func TestAggregateCI(t *testing.T) {
 func TestAggregateCIProtectedPaths(t *testing.T) {
 	files := []FilesObservation{{Paths: []string{"src/a.go", "tests/webhook_test.go"}, Complete: true}}
 	held := aggregateCI(ciInput{criterion: ciCriterion("tests/**"), revision: "pr@h1", checks: []CheckObservation{success()}, files: files})
-	if held.hold != HoldProtectedPathChanged || !slices.Equal(held.detail, []string{"tests/webhook_test.go"}) {
+	if held.hold != HoldProtectedFilesChanged || !slices.Equal(held.detail, []string{"tests/webhook_test.go"}) {
 		t.Fatalf("protected change = %+v", held)
 	}
 	allowed := ciCriterion("tests/**")
@@ -60,11 +60,11 @@ func TestAggregateCIProtectedPaths(t *testing.T) {
 	if got := aggregateCI(ciInput{criterion: allowed, revision: "pr@h1", checks: []CheckObservation{success()}, files: files}); got.result != models.TaskCompletionResultPass {
 		t.Fatalf("allowed protected change = %+v", got)
 	}
-	if got := aggregateCI(ciInput{criterion: allowed, revision: "pr@h2", checks: []CheckObservation{success()}, files: files}); got.hold != HoldProtectedPathChanged {
+	if got := aggregateCI(ciInput{criterion: allowed, revision: "pr@h2", checks: []CheckObservation{success()}, files: files}); got.hold != HoldProtectedFilesChanged {
 		t.Fatalf("allowance carried to a new head: %+v", got)
 	}
 	renamed := []FilesObservation{{Paths: []string{"src/moved.go", ".github/workflows/ci.yml"}, Complete: true}}
-	if got := aggregateCI(ciInput{criterion: ciCriterion(".github/**"), checks: []CheckObservation{success()}, files: renamed}); got.hold != HoldProtectedPathChanged {
+	if got := aggregateCI(ciInput{criterion: ciCriterion(".github/**"), checks: []CheckObservation{success()}, files: renamed}); got.hold != HoldProtectedFilesChanged {
 		t.Fatalf("rename source not matched: %+v", got)
 	}
 	partial := []FilesObservation{{Paths: []string{"src/a.go"}, Complete: false}}

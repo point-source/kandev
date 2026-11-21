@@ -371,7 +371,9 @@ func (r *Repository) readTaskCompletionGateTx(ctx context.Context, tx *sql.Tx, t
 	if err := r.appendCriterionBlockersTx(ctx, tx, taskID, snapshot, lockEvidence); err != nil {
 		return nil, err
 	}
-	snapshot.WeakestConfidence = models.WeakestTaskCompletionConfidence(snapshot.Criteria)
+	if err := r.readSnapshotHeadsTx(ctx, tx, snapshot); err != nil {
+		return nil, err
+	}
 	required, assigned, err := r.readRequiredSubtaskAssignmentsTx(ctx, tx, taskID)
 	if err != nil {
 		return nil, err
@@ -393,7 +395,7 @@ func (r *Repository) completionCriterionBlockedTx(ctx context.Context, tx *sql.T
 }
 
 func completionCriterionBlocked(criterion models.TaskCompletionCriterion, evidenceCurrent bool) bool {
-	return criterion.HeldReason != "" || criterion.VerifiedRevision != criterion.CriterionRevision ||
+	return criterion.HoldKind != "" || criterion.VerifiedRevision != criterion.CriterionRevision ||
 		criterion.Evidence == nil || !evidenceCurrent
 }
 
@@ -434,17 +436,17 @@ func (r *Repository) appendCriterionBlockersTx(ctx context.Context, tx *sql.Tx, 
 }
 
 // nextStoredCriterion keeps verification and runtime state for an unchanged
-// criterion, taking its new caps, and starts a fresh revision otherwise.
+// criterion, taking its new limits, and starts a fresh revision otherwise.
 func nextStoredCriterion(previousByID map[string]models.TaskCompletionCriterion, criterion models.TaskCompletionCriterion, actorKind, actorID string) models.TaskCompletionCriterion {
 	previous, exists := previousByID[criterion.ID]
 	if exists && completionCriterionEquivalent(previous, criterion) {
-		// A caps confirmation follows the caps it confirmed.
-		if previous.Config.MaxVerificationAttempts != criterion.Config.MaxVerificationAttempts ||
-			previous.Config.MaxReworkRounds != criterion.Config.MaxReworkRounds {
-			previous.Config.CapsConfirmedBy = criterion.Config.CapsConfirmedBy
+		// A limits confirmation follows the limits it confirmed.
+		if previous.Config.VerificationLimit != criterion.Config.VerificationLimit ||
+			previous.Config.ReworkLimit != criterion.Config.ReworkLimit {
+			previous.Config.LimitsConfirmedBy = criterion.Config.LimitsConfirmedBy
 		}
-		previous.Config.MaxVerificationAttempts = criterion.Config.MaxVerificationAttempts
-		previous.Config.MaxReworkRounds = criterion.Config.MaxReworkRounds
+		previous.Config.VerificationLimit = criterion.Config.VerificationLimit
+		previous.Config.ReworkLimit = criterion.Config.ReworkLimit
 		return previous
 	}
 	fresh := models.TaskCompletionCriterion{
@@ -734,4 +736,20 @@ func evidenceField(evidence *models.TaskCompletionEvidence, selectValue func(mod
 		return ""
 	}
 	return selectValue(*evidence)
+}
+
+// readSnapshotHeadsTx records the live PR heads of a task with host-verified
+// criteria, so a person's action can be pinned to the commit they saw.
+func (r *Repository) readSnapshotHeadsTx(ctx context.Context, tx *sql.Tx, snapshot *models.TaskCompletionGateSnapshot) error {
+	for _, criterion := range snapshot.Criteria {
+		if models.IsHostVerifiedCriterionKind(criterion.Kind) {
+			heads, err := r.readTaskPRHeadsTx(ctx, tx, snapshot.TaskID, false)
+			if err != nil {
+				return err
+			}
+			snapshot.HeadsRevision = heads.revision
+			return nil
+		}
+	}
+	return nil
 }

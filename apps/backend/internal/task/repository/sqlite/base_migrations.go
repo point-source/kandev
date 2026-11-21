@@ -706,7 +706,7 @@ func (r *Repository) runMigrations(ctx context.Context) error {
 	_ = r.migrate.Apply("task_completion_criteria.result_at", "ALTER TABLE task_completion_criteria ADD COLUMN result_at TIMESTAMP")
 	_ = r.migrate.Apply("task_completion_criteria.attempt_count", "ALTER TABLE task_completion_criteria ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
 	_ = r.migrate.Apply("task_completion_criteria.rework_count", "ALTER TABLE task_completion_criteria ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
-	_ = r.migrate.Apply("task_completion_criteria.held_reason", "ALTER TABLE task_completion_criteria ADD COLUMN held_reason TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.hold_kind", "ALTER TABLE task_completion_criteria ADD COLUMN hold_kind TEXT NOT NULL DEFAULT ''")
 	_ = r.migrate.Apply("task_completion_criteria.held_at", "ALTER TABLE task_completion_criteria ADD COLUMN held_at TIMESTAMP")
 	_ = r.migrate.Apply("task_completion_criteria.protected_allowed_revision", "ALTER TABLE task_completion_criteria ADD COLUMN protected_allowed_revision TEXT NOT NULL DEFAULT ''")
 	_ = r.migrate.Apply("task_completion_criteria.protected_allowed_by", "ALTER TABLE task_completion_criteria ADD COLUMN protected_allowed_by TEXT NOT NULL DEFAULT ''")

@@ -111,6 +111,9 @@ func (s *Service) SetTaskCompletionCriteria(ctx context.Context, taskID string, 
 	if err := guardCompletionGateSelfChange(ctx, task); err != nil {
 		return nil, err
 	}
+	if err := s.validateCompletionCriteriaChange(ctx, task, request.Criteria); err != nil {
+		return nil, err
+	}
 	repo, ok := s.tasks.(repository.TaskCompletionGateRepository)
 	if !ok {
 		return nil, repoerrors.ErrTaskCompletionGateBlocked
@@ -141,6 +144,13 @@ func (s *Service) SetTaskCompletionCriteriaExact(ctx context.Context, taskID str
 	if err := s.authorizeTaskScope(ctx, taskID, authz.ScopeTaskWrite); err != nil {
 		return nil, err
 	}
+	task, err := s.tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateCompletionCriteriaChange(ctx, task, request.Criteria); err != nil {
+		return nil, err
+	}
 	repo, ok := s.tasks.(repository.ExactTaskCompletionGateRepository)
 	if !ok {
 		return nil, repoerrors.ErrTaskCompletionGateBlocked
@@ -162,8 +172,8 @@ func (s *Service) SetTaskCompletionCriteriaExact(ctx context.Context, taskID str
 // Default descriptions for host-verified criteria stored when the caller
 // supplies none. They are task data, not UI copy.
 var hostCriterionDescriptions = map[string]string{
-	models.TaskCompletionCriterionCIAtHead:     "CI passes at the PR head commit",       // i18n-exempt: stored task data
-	models.TaskCompletionCriterionReviewAtHead: "Review approved at the PR head commit", // i18n-exempt: stored task data
+	models.TaskCompletionCriterionCheck:  "CI passes at the PR head commit",       // i18n-exempt: stored task data
+	models.TaskCompletionCriterionReview: "Review approved at the PR head commit", // i18n-exempt: stored task data
 }
 
 func sanitizeCompletionCriteria(criteria []models.TaskCompletionCriterion) []models.TaskCompletionCriterion {
@@ -199,14 +209,14 @@ func sanitizeCompletionCriteriaForTask(taskID string, criteria []models.TaskComp
 
 // publicCompletionCriteria sanitizes criteria from a caller-facing set
 // command. Ownership always comes from the acting caller, and only a person
-// confirms caps above the workspace ceiling, as themselves.
+// confirms limits above the workspace ceiling, as themselves.
 func publicCompletionCriteria(taskID string, criteria []models.TaskCompletionCriterion, actorID string, human bool) []models.TaskCompletionCriterion {
 	clean := sanitizeCompletionCriteriaForTask(taskID, criteria)
 	for index := range clean {
 		clean[index].OwnerKind, clean[index].OwnerID = "", ""
-		clean[index].Config.CapsConfirmedBy = ""
+		clean[index].Config.LimitsConfirmedBy = ""
 		if human {
-			clean[index].Config.CapsConfirmedBy = actorID
+			clean[index].Config.LimitsConfirmedBy = actorID
 		}
 	}
 	return clean

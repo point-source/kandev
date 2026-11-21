@@ -36,7 +36,7 @@ type ReviewStore interface {
 }
 
 // ReviewVerifier pins review decisions to the PR heads and records
-// review_at_head results. It implements the dashboard review hook.
+// review results. It implements the dashboard review hook.
 type ReviewVerifier struct {
 	gates   GateService
 	prs     PRSource
@@ -89,11 +89,13 @@ func (v *ReviewVerifier) reviewCriterion(ctx context.Context, taskID string) (mo
 	if err != nil {
 		return models.TaskCompletionCriterion{}, false
 	}
-	return findCriterionOfKind(snapshot, models.TaskCompletionCriterionReviewAtHead)
+	return findCriterionOfKind(snapshot, models.TaskCompletionCriterionReview)
 }
 
-// evaluate recomputes the review criterion from the step's current decisions:
-// an active rejection fails it, and full approval of the live heads passes it.
+// evaluate recomputes the review criterion from the decisions of the
+// step's required reviewer seats: an active rejection fails it, and approval
+// of the live heads by every required seat passes it. A person's send back
+// stands until the heads move.
 func (v *ReviewVerifier) evaluate(ctx context.Context, taskID, stepID string) error {
 	criterion, ok := v.reviewCriterion(ctx, taskID)
 	if !ok {
@@ -103,12 +105,19 @@ func (v *ReviewVerifier) evaluate(ctx context.Context, taskID, stepID string) er
 	if err != nil || len(links) == 0 {
 		return err
 	}
+	revision := HeadsRevision(links)
+	if criterion.ResultReason == models.TaskCompletionReasonSentBack && criterion.ResultSubjectRevision == revision {
+		return nil
+	}
+	seats, err := v.requiredSeats(ctx, taskID, stepID)
+	if err != nil || len(seats) == 0 {
+		return err
+	}
 	decisions, err := v.reviews.ListStepDecisions(ctx, taskID, stepID)
 	if err != nil {
 		return err
 	}
-	active := latestActiveBySeat(decisions)
-	revision := HeadsRevision(links)
+	active := seatDecisions(latestActiveBySeat(decisions), seats)
 	change := models.TaskCompletionEvaluationChange{
 		TaskID: taskID, CriterionID: criterion.ID, CriterionRevision: criterion.CriterionRevision,
 		SubjectRevision: revision, VerifierKind: VerifierKindReviews,
@@ -120,14 +129,40 @@ func (v *ReviewVerifier) evaluate(ctx context.Context, taskID, stepID string) er
 			return v.record(ctx, criterion, change)
 		}
 	}
-	approvers, covered, err := v.coverage(ctx, taskID, stepID, revision, active)
-	if err != nil || !covered {
-		return err
+	approvers, covered := coverage(seats, revision, active)
+	if !covered {
+		return nil
 	}
 	change.Result, change.Reason = models.TaskCompletionResultPass, ReasonReviewApproved
 	change.VerifierID = approvers[len(approvers)-1].DeciderID
 	change.EvidenceReference = decisionIDs(approvers)
 	return v.record(ctx, criterion, change)
+}
+
+// requiredSeats returns the step's decision-required reviewer seats.
+func (v *ReviewVerifier) requiredSeats(ctx context.Context, taskID, stepID string) (map[string]bool, error) {
+	participants, err := v.reviews.ListStepParticipantsForTask(ctx, stepID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	seats := map[string]bool{}
+	for _, seat := range participants {
+		if seat.Role == workflowmodels.ParticipantRoleReviewer && seat.DecisionRequired {
+			seats[seat.ID] = true
+		}
+	}
+	return seats, nil
+}
+
+// seatDecisions keeps the decisions recorded by the required seats.
+func seatDecisions(decisions []*workflowmodels.WorkflowStepDecision, seats map[string]bool) []*workflowmodels.WorkflowStepDecision {
+	kept := make([]*workflowmodels.WorkflowStepDecision, 0, len(decisions))
+	for _, decision := range decisions {
+		if seats[decision.ParticipantID] {
+			kept = append(kept, decision)
+		}
+	}
+	return kept
 }
 
 // latestActiveBySeat keeps each seat's newest unsuperseded decision, in
@@ -167,43 +202,23 @@ func (v *ReviewVerifier) LatestDecision(ctx context.Context, taskID, stepID stri
 	return latest
 }
 
-// coverage reports whether every decision-required reviewer seat, or a
-// person, approved the current heads. It returns the counting approvals.
-func (v *ReviewVerifier) coverage(
-	ctx context.Context, taskID, stepID, revision string, active []*workflowmodels.WorkflowStepDecision,
-) ([]*workflowmodels.WorkflowStepDecision, bool, error) {
-	seats, err := v.reviews.ListStepParticipantsForTask(ctx, stepID, taskID)
-	if err != nil {
-		return nil, false, err
-	}
-	approvedBySeat := map[string]*workflowmodels.WorkflowStepDecision{}
+// coverage reports whether every required seat approved the current heads.
+// It returns the counting approvals.
+func coverage(seats map[string]bool, revision string, active []*workflowmodels.WorkflowStepDecision) ([]*workflowmodels.WorkflowStepDecision, bool) {
+	approved := map[string]bool{}
 	var counting []*workflowmodels.WorkflowStepDecision
-	humanApproved := false
 	for _, decision := range active {
-		if decision.Decision != decisionApproved || decision.PRHeads != revision {
-			continue
-		}
-		approvedBySeat[decision.ParticipantID] = decision
-		counting = append(counting, decision)
-		humanApproved = humanApproved || decision.DeciderType != deciderTypeAgent
-	}
-	if len(counting) == 0 {
-		return nil, false, nil
-	}
-	if humanApproved {
-		return counting, true, nil
-	}
-	required := 0
-	for _, seat := range seats {
-		if seat.Role != workflowmodels.ParticipantRoleReviewer || !seat.DecisionRequired {
-			continue
-		}
-		required++
-		if approvedBySeat[seat.ID] == nil {
-			return nil, false, nil
+		if decision.Decision == decisionApproved && decision.PRHeads == revision {
+			approved[decision.ParticipantID] = true
+			counting = append(counting, decision)
 		}
 	}
-	return counting, required > 0, nil
+	for seat := range seats {
+		if !approved[seat] {
+			return nil, false
+		}
+	}
+	return counting, len(counting) > 0
 }
 
 func decisionIDs(decisions []*workflowmodels.WorkflowStepDecision) string {
@@ -228,7 +243,7 @@ func (v *ReviewVerifier) record(ctx context.Context, criterion models.TaskComple
 	if err != nil || !outcome.Changed {
 		return err
 	}
-	recordEvaluationMetric(models.TaskCompletionCriterionReviewAtHead, change.Result)
+	recordEvaluationMetric(models.TaskCompletionCriterionReview, change.Result)
 	if v.policy != nil {
 		v.policy.AfterRecord(ctx, change.TaskID, outcome)
 	}

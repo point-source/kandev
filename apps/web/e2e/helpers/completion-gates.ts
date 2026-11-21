@@ -6,12 +6,18 @@ export const GATE_PR = 4242;
 
 type Seed = { workspaceId: string; workflowId: string };
 
-/** Creates an Office task in the work step carrying one ci_at_head criterion. */
+type GateKind = "check" | "review";
+
+/**
+ * Creates an Office task in the work step carrying the given criteria: a
+ * GitHub check (with optional protected paths) and/or a review.
+ */
 export async function seedGatedTask(
   apiClient: ApiClient,
   seed: Seed,
   title: string,
   protectedPaths: string[] = [],
+  kinds: GateKind[] = ["check"],
 ): Promise<string> {
   const { steps } = await apiClient.listWorkflowSteps(seed.workflowId);
   const work = steps.find((step) => step.stage_type === "work") ?? steps[0];
@@ -19,26 +25,36 @@ export async function seedGatedTask(
     workflow_id: seed.workflowId,
     workflow_step_id: work.id,
   });
+  const criteria = kinds.map((kind) => ({
+    id: kind === "check" ? "github_check" : "review",
+    description: "",
+    kind,
+    config:
+      kind === "check"
+        ? {
+            runner: "github",
+            ...(protectedPaths.length ? { protected_paths: protectedPaths } : {}),
+          }
+        : {},
+    evidence_subject: { kind: "github_pr_heads", id: task.id },
+    criterion_revision: 0,
+  }));
   const response = await apiClient.rawRequest(
     "PUT",
     `/api/v1/tasks/${task.id}/completion-gate/criteria`,
-    {
-      expected_revision: 0,
-      criteria: [
-        {
-          id: "ci_at_head",
-          description: "",
-          kind: "ci_at_head",
-          config: protectedPaths.length ? { protected_paths: protectedPaths } : {},
-          evidence_subject: { kind: "github_pr_heads", id: task.id },
-          criterion_revision: 0,
-        },
-      ],
-    },
+    { expected_revision: 0, criteria },
   );
   if (!response.ok)
     throw new Error(`set criteria failed: ${response.status} ${await response.text()}`);
   return task.id;
+}
+
+/** Moves a task to the workflow's review step, which seats its reviewers. */
+export async function moveToReviewStep(apiClient: ApiClient, seed: Seed, taskId: string) {
+  const { steps } = await apiClient.listWorkflowSteps(seed.workflowId);
+  const review = steps.find((step) => step.stage_type === "review");
+  if (!review) throw new Error("the Office workflow has no review step");
+  await apiClient.moveTask(taskId, seed.workflowId, review.id);
 }
 
 /**
@@ -98,13 +114,22 @@ export function completedCheck(name: string, conclusion: "success" | "failure"):
   return { name, status: "completed", conclusion };
 }
 
-/** The stored CI criterion's result, hold and heads, read from the backend. */
-export async function ciCriterionState(apiClient: ApiClient, taskId: string): Promise<string> {
+/** A stored criterion's result or hold kind, read from the backend. */
+export async function criterionState(
+  apiClient: ApiClient,
+  taskId: string,
+  criterionId: string,
+): Promise<string> {
   const response = await apiClient.rawRequest("GET", `/api/v1/tasks/${taskId}/completion-gate`);
   if (!response.ok) return `http ${response.status}`;
   const gate = (await response.json()) as {
-    criteria: Array<{ id: string; result?: string; held_reason?: string }>;
+    criteria: Array<{ id: string; result?: string; hold_kind?: string }>;
   };
-  const ci = gate.criteria.find((criterion) => criterion.id === "ci_at_head");
-  return ci?.held_reason ? `held:${ci.held_reason}` : (ci?.result ?? "missing");
+  const criterion = gate.criteria.find((item) => item.id === criterionId);
+  return criterion?.hold_kind ? `held:${criterion.hold_kind}` : (criterion?.result ?? "missing");
+}
+
+/** The stored check criterion's result or hold kind. */
+export function ciCriterionState(apiClient: ApiClient, taskId: string): Promise<string> {
+  return criterionState(apiClient, taskId, "github_check");
 }

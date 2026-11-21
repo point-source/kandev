@@ -1965,6 +1965,7 @@ func wireOfficeSvcsDependencies(
 		services.OfficeSvcs.Dashboard.SetReviewHeadsHook(gates.Review)
 		services.OfficeSvcs.Dashboard.SetCompletionGateInbox(gates)
 		services.OfficeSvcs.Scheduler.SetCompletionHoldChecker(gates)
+		services.OfficeSvcs.Scheduler.SetReviewSeatObserver(gates)
 		services.Task.SetCompletionCriteriaResolver(gates)
 	}
 	// Wire the event bus into the dashboard service for status-change events.
@@ -2271,8 +2272,12 @@ func startSchedulingRuntime(
 	// Phase 4 (ADR-0004): wire the workflow engine's dependencies and a
 	// dispatcher so office event subscribers route through the engine
 	// unconditionally.
+	var reviewerObserver officeengineadapters.ReviewerCastObserver
+	if services.OfficeSvcs != nil && services.OfficeSvcs.CompletionGates != nil {
+		reviewerObserver = services.OfficeSvcs.CompletionGates
+	}
 	engineDispatcher, engineParticipants := wireWorkflowEngineForOffice(
-		orchestratorSvc, runProcessorSvc, services.Task, services.Workflow, repos, runsSvc, log,
+		orchestratorSvc, runProcessorSvc, services.Task, services.Workflow, repos, runsSvc, reviewerObserver, log,
 	)
 	if services.OfficeSvcs != nil {
 		services.OfficeSvcs.Dashboard.SetWorkflowEngineDispatcher(engineDispatcher)
@@ -2356,6 +2361,7 @@ func wireWorkflowEngineForOffice(
 	workflowSvc *workflowservice.Service,
 	repos *Repositories,
 	runsSvc *runsservice.Service,
+	reviewerObserver officeengineadapters.ReviewerCastObserver,
 	log *logger.Logger,
 ) (*officeenginedispatcher.Dispatcher, workflowengine.ParticipantStore) {
 	// Build the workflow-domain adapters.
@@ -2388,7 +2394,9 @@ func wireWorkflowEngineForOffice(
 	// (system design "Casting resolution") over the workspace's CEO agents,
 	// falling back to the task's runner when none are eligible.
 	orchestratorSvc.SetEngineParticipantSeatWriter(workflowadapters.NewParticipantSeatWriterAdapter(repos.Workflow))
-	orchestratorSvc.SetEngineParticipantSeatCaster(officeengineadapters.NewSeatCasterAdapter(repos.Office, repos.Workflow))
+	seatCaster := officeengineadapters.NewSeatCasterAdapter(repos.Office, repos.Workflow)
+	seatCaster.Observer = reviewerObserver
+	orchestratorSvc.SetEngineParticipantSeatCaster(seatCaster)
 	// REQ-OFFICE-REVIEW-SEATS-004.3: drop a required seat whose agent profile
 	// was deleted after casting, rather than waiting forever on it.
 	orchestratorSvc.SetEngineAgentProfileResolver(officeengineadapters.NewAgentProfileResolverAdapter(repos.Office))

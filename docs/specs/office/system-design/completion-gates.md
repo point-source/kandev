@@ -9,7 +9,6 @@ requirements:
   - REQ-OFFICE-COMPLETION-GATES-005
   - REQ-OFFICE-COMPLETION-GATES-006
   - REQ-OFFICE-COMPLETION-GATES-007
-  - REQ-OFFICE-COMPLETION-GATES-008
 created: 2026-11-20
 ---
 
@@ -20,13 +19,14 @@ created: 2026-11-20
 | Requirement | Design section |
 | --- | --- |
 | `REQ-OFFICE-COMPLETION-GATES-001` | [Creation surfaces and workspace defaults](#creation-surfaces-and-workspace-defaults) |
-| `REQ-OFFICE-COMPLETION-GATES-002` | [CI verifier](#ci-verifier) |
+| `REQ-OFFICE-COMPLETION-GATES-002` | [Check verifier (github runner)](#check-verifier-github-runner) |
 | `REQ-OFFICE-COMPLETION-GATES-003` | [Protected paths](#protected-paths) |
 | `REQ-OFFICE-COMPLETION-GATES-004` | [Review at head](#review-at-head) |
 | `REQ-OFFICE-COMPLETION-GATES-005` | [Fences](#fences) |
 | `REQ-OFFICE-COMPLETION-GATES-006` | [Result routing](#result-routing) |
-| `REQ-OFFICE-COMPLETION-GATES-007` | [Caps, holds and escalation](#caps-holds-and-escalation) |
-| `REQ-OFFICE-COMPLETION-GATES-008` | [User interface](#user-interface) |
+| `REQ-OFFICE-COMPLETION-GATES-007` | [Limits, holds and escalation](#limits-holds-and-escalation) |
+| `REQ-OFFICE-COMPLETION-GATES-008` | [Part 1: Person actions and User interface](completion-gates-01.md) |
+| `REQ-OFFICE-COMPLETION-GATES-009` | [Part 1: No reviewer available](completion-gates-01.md#no-reviewer-available) |
 
 ## Purpose and boundaries
 
@@ -36,8 +36,8 @@ this feature is `REQ-TASKS-COMPLETION-006`, designed in
 [Task-owned primitive](#task-owned-primitive) below and in the
 [coordination controls design](../../tasks/system-design/coordination-controls.md#completion-gates).
 
-Office owns policy: which tasks carry criteria, the CI and review verifiers,
-what a result does to the workflow, cap resolution, escalation, and the Office
+Office owns policy: which tasks carry criteria, the check and review verifiers,
+what a result does to the workflow, limit resolution, escalation, and the Office
 UI. Office code lives in a new package `internal/office/completiongates`. It
 writes to the gate only through task-service commands. It never writes gate
 tables directly.
@@ -59,19 +59,22 @@ migrations in `base_migrations.go` (SQLite and PostgreSQL):
 
 | Column | Meaning |
 | --- | --- |
-| `kind` | `attested` (default), `ci_at_head`, `review_at_head` |
-| `config_json` | `{"protected_paths": [...], "max_verification_attempts": n, "max_rework_rounds": n, "caps_confirmed_by": "<user>"}` |
+| `kind` | `attested` (default), `check`, `review` |
+| `config_json` | `{"runner": "github", "protected_paths": [...], "verification_limit": n, "rework_limit": n, "review_wait_limit": minutes, "limits_confirmed_by": "<user>"}`; `runner` is required on a check and absent elsewhere, `review_wait_limit` only on a review |
 | `owner_kind`, `owner_id` | `user`, `agent`, `routine`, or `plugin`, and its ID |
 | `result`, `result_reason`, `result_detail_json` | Latest evaluation (`AC-TASKS-COMPLETION-006.4`); detail is bounded (at most 20 names, 200 bytes each) |
 | `result_subject_revision`, `result_first_seen_at`, `result_at` | The PR heads the result observed and when Kandev first saw them |
 | `attempt_count`, `rework_count` | Counters (`AC-TASKS-COMPLETION-006.5`) |
-| `held_reason`, `held_at` | Hold (`AC-TASKS-COMPLETION-006.6`); empty when not held |
+| `hold_kind`, `held_at` | Hold (`AC-TASKS-COMPLETION-006.6`); empty when not held. Values: `protected_files_changed`, `rework_limit_reached`, `verification_limit_reached`, `no_reviewer_available`, `review_wait_limit_reached` |
 | `protected_allowed_revision`, `protected_allowed_by` | Person approval of a protected-path change at one heads revision |
+
+A host criterion's ID is derived from its kind: `<runner>_check` for a check
+(`github_check`) and `review` for a review (`models.TaskCompletionCriterionID`).
 
 `criterion_revision` increments when `kind`, `description`, or
 `config_json.protected_paths` changes. That reset zeroes counters, clears the
 hold and the protected approval, and sets `result` to `pending`
-(`completionCriterionEquivalent` gains `kind` and `protected_paths`). A cap
+(`completionCriterionEquivalent` gains `kind` and `protected_paths`). A limit
 change alone does not change the revision.
 
 ### PR heads subject
@@ -104,9 +107,14 @@ All are task-service methods. None has an HTTP route of its own.
   sets or clears the hold, and appends history. It is idempotent on
   `(criterion_id, criterion_revision, subject_revision, result, reason)`: a
   repeat returns `changed=false` and counts nothing.
-- `ReleaseTaskCompletionHold`, `ExtendTaskCompletionCaps` and
-  `AllowTaskCompletionProtectedPaths` take an actor and a reason and append
-  history.
+- `ApplyTaskCompletionControl` applies one recovery action and appends
+  history with the actor, the reason, the hold kind and the verdict source:
+  `hold` (sets a `hold_kind` with its detail and the heads it holds at; a
+  repeat of the same hold writes nothing), `release_hold` (clears only the named
+  hold kind), `extend_limits`, `allow_protected_paths`, `send_back`,
+  `accept`, `count_rework` and `mark_escalated`. `allow_protected_paths`,
+  `send_back` and `accept` are bound to the heads the person saw and return
+  409 when the live heads differ.
 - `VerifyTaskCompletionCriterion`, its Exact variant, and the plugin Host
   method (`plugins/host_completion_gates.go`) refuse host-verified criteria
   with `repoerrors.ErrTaskCompletionVerifierReserved`
@@ -127,20 +135,28 @@ Each task-creating repository method calls one shared
 committed task version (`AC-TASKS-COMPLETION-006.9`). Validation failure
 returns a validation error and nothing is written.
 
-### Confidence
+### Verdict source
 
-Confidence is derived from `kind`, never stored. The snapshot adds
-`confidence` to each criterion and `weakest_confidence` to the gate.
-`TaskCompletionGateSummaryObservation` adds `weakest_confidence` and
-`held_count`; the task status summary carries them so lists show gate state
-without detail reads.
+The verdict source is derived, never stored
+(`models.TaskCompletionVerdictSource`): empty while unverified; `person` when
+the verifier kind is `human` (a person's acceptance or a person's attested
+evidence); otherwise `program` for a check and `agent` for every other kind.
+Each criterion in the snapshot carries `verdict_source`, and every evaluation
+and control history entry records it in `details`. There is no task-level
+summary: the snapshot and the status summary carry no weakest source, and the
+status summary's gate projection keeps only the counts lists already used plus
+`state_revision`.
+
+The snapshot also carries `heads_revision`, the live PR heads of a task with
+host criteria, so a person's action on a criterion that has no result yet is
+pinned to the commit the page showed.
 
 ## Creation surfaces and workspace defaults
 
 | Surface | Change |
 | --- | --- |
 | Office new-task dialog | `POST /api/v1/tasks` body gains `completion_criteria` (`httpCreateTaskRequest`) |
-| CLI | `kandev task create --require ci-at-head --require review-at-head --protect <glob> --max-rework <n> --max-attempts <n>` (`cmd/agentctl/kandev_task.go`), through `office/runtime` `CreateTaskInput` |
+| CLI | `kandev task create --require github-check --require review --protect <glob> --rework-limit <n> --verification-limit <n> --review-wait-limit <duration>` (`cmd/agentctl/kandev_task_gate.go`), through `office/runtime` `CreateTaskInput` |
 | MCP | `create_task_kandev` gains `completion_criteria` (`mcp/handlers/create_task_mode.go`, schema in `mcp/server/server.go`) |
 | Routines | `taskTemplate` gains `completion_criteria` (`office/routines/service.go`), passed through `RoutineTaskOptions` |
 
@@ -159,26 +175,37 @@ Refusals are typed `CompletionCriteriaRefusal` codes mapped to 400. Rules:
   dropped and logged. (`AC-OFFICE-COMPLETION-GATES-001.3` also asks for a
   task activity entry; that is not implemented yet because the task does not
   exist when the resolver runs.)
-- Caps above the ceiling from an agent or routine are refused
-  (`completion_cap_above_ceiling`). A person's value above the ceiling sets
-  `caps_confirmed_by`.
+- Limits above the ceiling from an agent or routine are refused
+  (`completion_limit_above_ceiling`). A person's value above the ceiling sets
+  `limits_confirmed_by`.
 - Protected paths are validated with `doublestar.ValidatePattern`.
+- A check must name the `github` runner and carry no review wait limit; a
+  review names no runner. The repository applies the same rule.
 - Owner is the creating user, agent profile, or routine.
+
+Edits go through the same policy: `completiongates.Service` also implements
+`taskservice.CompletionCriteriaChangeValidator`, which
+`SetTaskCompletionCriteria` and `SetTaskCompletionCriteriaExact` (the plugin
+write path) call before writing. It refuses a review criterion when the task's
+workflow has no review stage with the same
+`completion_criteria_requires_review_stage` refusal, mapped to 400 by the task
+HTTP handler. Plugin criteria cannot name a kind, so the plugin path never adds
+a review; the check still runs.
 
 Workspace settings live in a new Office table
 `office_completion_gate_settings(workspace_id PK, default_criteria_json,
-default_max_attempts, default_max_rework, ceiling_attempts, ceiling_rework,
-updated_at)`, exposed as `GET/PUT
+default_verification_limit, default_rework_limit, verification_limit_ceiling, rework_limit_ceiling,
+default_review_wait_limit, updated_at)`, exposed as `GET/PUT
 /api/v1/office/workspaces/:wsId/completion-gates/settings`. Absent rows mean
-no default criteria, defaults 3, ceilings 10. The workspace deletion handler
+no default criteria, defaults 3, ceilings 10, and no review wait limit. The workspace deletion handler
 removes the row (`office/repository/sqlite/workspace_deletion.go`), and the e2e
 reset deletes it.
 
-## CI verifier
+## Check verifier (github runner)
 
 `completiongates.CIVerifier` subscribes to `github.task_pr.updated`. The payload
 is the full `TaskPR` row. For its task the verifier loads the gate; it returns
-at once when there is no `ci_at_head` criterion. Evaluations are serialized per
+at once when there is no `check` criterion. Evaluations are serialized per
 task with a keyed mutex and coalesced: a newer event for the same task replaces
 a queued one.
 
@@ -195,7 +222,7 @@ Aggregation across PRs, first match wins:
 
 1. Any PR `failure` → `fail` / `checks_failed`.
 2. Protected-path match not allowed for these heads → hold
-   `protected_path_changed` (see below).
+   `protected_files_changed` (see below).
 3. Any PR `pending` → `pending` (running checks decide nothing yet, so an
    incomplete file list waits instead of spending an attempt).
 4. Changed-file list incomplete → `cannot_evaluate` /
@@ -210,7 +237,7 @@ Aggregation across PRs, first match wins:
 The verifier records the result with `RecordTaskCompletionEvaluation`. The
 first `pending` for a new heads revision stamps `result_first_seen_at`.
 
-A one-minute sweep re-evaluates gated tasks whose CI criterion was never
+A one-minute sweep re-evaluates gated tasks whose check was never
 evaluated or is `awaiting_checks` with `result_first_seen_at` older than 10
 minutes, and runs once at startup for every unmet CI criterion
 (`AC-OFFICE-COMPLETION-GATES-002.7`). The repository selects only due rows
@@ -238,49 +265,49 @@ list is complete when its length equals the PR's `changed_files` and is below
 Matching uses `doublestar.Match` against `Filename` and, for renames,
 `OldPath`. Matches feed the hold detail (at most 20 paths).
 
-A protected hold sets `held_reason = protected_path_changed` without counting a
+A protected hold sets `hold_kind = protected_files_changed` without counting a
 rework round. Both decisions are task controls that require a protected hold
 whose `result_subject_revision` equals the live heads and the heads the person
-saw; anything else returns 409. **Allow** (`allow_protected_paths`) records the
+saw; anything else returns 409. **Allow for this commit** (`allow_protected_paths`) records the
 person and the heads in `protected_allowed_*`, clears the hold, and triggers a
 re-evaluation. A new heads revision no longer matches the allowed revision, so
 a protected change needs a new approval. **Send back**
-(`send_back_protected_paths`) needs a nonblank reason, clears the hold,
+(`send_back`) needs a nonblank reason, clears the hold,
 records `result=fail`, `result_reason=sent_back` and the reason as the result
 detail at the seen heads, and runs the rework path of
 [Result routing](#result-routing). The CI verifier skips a criterion whose
 `sent_back` result is pinned to the live heads, so the person's decision
 stands until a new head arrives.
 
-Human routes: `POST
-/api/v1/office/tasks/:id/completion-gate/criteria/:criterionId/protected-paths`
-with `{action: "allow" | "send_back", expected_subject_revision, reason}`.
-A stale `expected_subject_revision` returns 409.
+Human routes: see [Person actions](#person-actions).
 
 ## Review at head
 
 `workflow_step_decisions` gains `pr_heads TEXT NOT NULL DEFAULT ''`
 (`workflow/repository/phase2_sqlite.go`). `RecordDecisionInput`
 (`office/engine_dispatcher/dispatcher.go`) and `engine.DecisionInfo` carry it.
-Two producers fill it for gated tasks with a `review_at_head` criterion:
+Two producers fill it for gated tasks with a `review` criterion:
 
 - `DashboardService.RecordAgentDecision`
   (`office/dashboard/agent_decisions.go`), before building the input.
-- The human path `recordTaskDecision` (`office/dashboard/decisions.go`),
-  for any identity including the synthetic admin
-  (`AC-OFFICE-COMPLETION-GATES-004.4`).
+- The human path `recordTaskDecision` (`office/dashboard/decisions.go`). A
+  person's decision keeps its heads for the workflow's own approval quorum,
+  but the review criterion ignores it (`AC-OFFICE-COMPLETION-GATES-004.2`).
 
 Both read the canonical heads string through a `TaskPRHeads(ctx, taskID)`
 reader shared with the task primitive.
 
 After any decision commits, `completiongates.ReviewVerifier` recomputes the
-criterion from the step's current decisions: each seat's newest non-superseded
-decision. An active `rejected` or `changes_requested` decision records `fail`
-(reference: that decision), even over a human approval. Otherwise, if each
-decision-required reviewer seat, or a person, has an `approved` decision whose
-`pr_heads` equals the current heads, it records `pass` with verifier kind
-`review_seats`, verifier ID the last approver, and reference listing decision
-IDs. Otherwise it records nothing.
+criterion from the decisions of the step's required reviewer seats only (role
+`reviewer`, `decision_required`): each seat's newest non-superseded decision.
+Decisions under any other participant, including a person's, are ignored. An
+active `rejected` or `changes_requested` seat decision records `fail`
+(reference: that decision). Otherwise, if every required seat has an
+`approved` decision whose `pr_heads` equals the current heads, it records
+`pass` with verifier kind `review_seats`, verifier ID the last approver, and
+reference listing decision IDs. Otherwise, and when the step has no required
+seat, it records nothing. A person's `sent_back` result pinned to the live heads
+is left alone, so approvals cannot override it before the heads move.
 
 Decisions from the assignee are written as today (the workflow quorum is
 unchanged) but are skipped by `OnDecision`, and the runtime decision response
@@ -291,16 +318,18 @@ gains `notice: "review_self_approval_ignored"`.
 | Path | Fence |
 | --- | --- |
 | HTTP, plugin, MCP evidence for host kinds | `task_completion_verifier_reserved`, independent of identity |
-| CI result | Only `CIVerifier` calls `RecordTaskCompletionEvaluation` for `ci_at_head`; the command is not routed |
+| CI result | Only `CIVerifier` calls `RecordTaskCompletionEvaluation` for `check`; the command is not routed |
 | Review result | Assignee decisions are ignored by `ReviewVerifier` |
-| Criteria and caps edits | `CompletionGateCaller` from the run JWT; assignee refused |
-| Cap extension by agents | Runtime route checks the caller is the owner agent or the workspace CEO, and not the assignee |
+| Criteria and limits edits | `CompletionGateCaller` from the run JWT; assignee refused |
+| Person actions | Refused for a request carrying an Office run token (agent claims or `CompletionGateCaller`), with authentication on or off |
+| Limit extension by agents | Runtime route checks the caller is the owner agent or the workspace CEO, and not the assignee |
 
-Residual risk, accepted: with authentication off the human decision endpoint
-attributes every caller to the synthetic admin, so a local process that
-calls it directly can approve as a person. CI criteria are not exposed to this
-risk. The user is told at configuration time (see
-[User interface](#user-interface)) and decides whether to enable
+Residual risk, accepted: with authentication off every caller without a run
+token is the synthetic admin, so an agent's shell calling the API on localhost
+looks identical to the person and can take every person action (Allow, Send
+back, Accept, Allow more rounds or attempts, Override). The run-token fence
+cannot catch it. The person is warned where they act (see
+[part 1](completion-gates-01.md#user-interface)) and decides whether to enable
 authentication; Kandev does not refuse the configuration.
 
 ## Result routing
@@ -317,8 +346,8 @@ through the task service's existing `MoveTask` with no human identity, so
 moves pass normal admission and publish normal events. Every rework round is
 counted by the task command `count_rework` with a key. The command keeps the
 last 32 counted keys and reports whether this call counted, so redelivery never
-counts twice. At the rework cap the same command holds the criterion and does
-not keep the key, so the same return counts once the cap is raised.
+counts twice. At the rework limit the same command holds the criterion and does
+not keep the key, so the same return counts once the limit is raised.
 
 - **CI `fail` recorded, task past the work stage:** count (key
   `ci:<heads>`) and move to the work stage. The work stage's `on_enter`
@@ -328,7 +357,7 @@ not keep the key, so the same return counts once the cap is raised.
   review failing CI.
 - **CI `fail`, task in the work stage:** no move and no count.
 - **`cannot_evaluate`:** `Prepare` asks the evaluation command to count an
-  attempt, or holds at the attempt cap.
+  attempt, or holds at the attempt limit.
 - **Reviewer rejection:** a move from the review stage to the work stage on a
   task with a review criterion counts a rework round only when the newest
   decision at the review step is a rejection, keyed by that decision
@@ -352,13 +381,19 @@ not keep the key, so the same return counts once the cap is raised.
   filter that admits only the workflow's completing steps. Other satisfied
   guarded transitions are not re-applied. Unsatisfied guards do nothing.
 
-Protected-path **Send back** counts a rework round (key `send-back:<heads>`).
+A person's **Send back** (a protected-files hold on a check, or **Send back at
+this commit** on a review) counts a rework round (key `send-back:<heads>`),
+exactly like a seat rejection.
 A task past the work stage returns to it, and the work stage's entry wakes the
 assignee. A task already in the work stage stays put, and the service queues a
 `task_changes_requested` run for the assignee with the reason as
 `decision_comment` (idempotency key `completion_gate_send_back:<task>:<key>`).
 
-After a cap extension that releases a hold, the router re-runs the return the
+After **Accept at this commit**, when the gate is no longer blocked, the
+router runs the same guarded-transition retry as an all-pass result; Accept
+itself never moves the task.
+
+After a limit extension that releases a hold, the router re-runs the return the
 hold stopped (a CI failure back to the work stage, or a review left stale by a
 push back to the review stage) with the original key.
 
@@ -368,15 +403,20 @@ criterion, its blocker, result, reason, and detail (failing checks or
 protected files). `SchedulerIntegration.SetCompletionGateReader` supplies the
 gate. This is how the woken worker learns why it is back.
 
-## Caps, holds and escalation
+## Limits, holds and escalation
 
-`completiongates.EffectiveCaps(criterion, completingStep, settings)` resolves
-each cap: criterion value, then the completing step's
-`completion_gate_caps`, then the workspace default, then 3. It clamps to the
-workspace ceiling unless `caps_confirmed_by` is set.
+`completiongates.EffectiveLimits(criterion, completingStep, settings)` resolves
+each limit: criterion value, then the completing step's
+`completion_gate_limits`, then the workspace default, then 3. It clamps to the
+workspace ceiling unless `limits_confirmed_by` is set.
 
-`completion_gate_caps` is a new optional workflow-step field
-(`{max_verification_attempts, max_rework_rounds}`) on the step model, the
+The review wait limit resolves from the criterion, then the completing
+step's `completion_gate_limits.review_wait_limit`, then the workspace
+`default_review_wait_limit`, in minutes. Zero everywhere means a parked review
+waits indefinitely; it has no ceiling because waiting starts no runs.
+
+`completion_gate_limits` is a new optional workflow-step field
+(`{verification_limit, rework_limit, review_wait_limit}`) on the step model, the
 step DTO, portable export and import, and workflow sync, retaining explicit
 values. Only the task's completing step's value is read.
 
@@ -397,72 +437,41 @@ Escalation follows the blocker-failure pattern
 - Marker: a successful wake sets `escalated_at` through the
   `mark_escalated` control. A one-minute sweep retries every held,
   unescalated criterion, so a failed or impossible wake is retried.
-- Inbox: derived projections in `office/dashboard/service_inbox.go` with kinds
-  `completion_gate_protected_path` (always, for people) and
-  `completion_gate_held` (person owners, and any cap hold not yet
-  escalated). They are computed from held criteria, so releasing the hold
-  removes them.
+- Prompt: the escalation names the hold kind and what the owner can do: raise
+  a limit with `kandev task gate extend` for a limit hold, or add a reviewer
+  agent on another provider, reassign, or ask a person to accept the review
+  for `no_reviewer_available` and `review_wait_limit_reached`.
+- Inbox: derived projections in `office/dashboard/service_inbox.go` with the
+  single kind `completion_gate_hold`; the payload carries the hold kind, the
+  detail, the heads and the counts. A protected-files hold always shows; other
+  holds show for person owners and while not escalated to an agent. They are
+  computed from held criteria, so releasing the hold removes them.
 
-Cap extension: runtime route `POST
+Limit extension: runtime route `POST
 /api/v1/office/runtime/tasks/:id/completion-gate/extend` (CLI `kandev task gate
-extend --criterion <id> [--attempts n] [--rework n]`), within the ceiling, and
+extend --criterion <id> [--verification-limit n] [--rework-limit n]`), within the ceiling, and
 human route `POST
 /api/v1/office/tasks/:id/completion-gate/criteria/:criterionId/extend`, above
-the ceiling allowed. Both apply the `extend_caps` control, which releases a
-cap hold only when the cap that caused it rises above its used count.
-`GET /api/v1/office/tasks/:id/completion-gate/caps` returns each host
-criterion's effective caps and counts for the task page.
+the ceiling allowed. Both apply the `extend_limits` control, which releases a
+limit hold only when the limit that caused it rises above its used count.
+`GET /api/v1/office/tasks/:id/completion-gate/limits` returns each host
+criterion's effective limits and counts for the task page.
 
 On the public set-criteria command the owner is always the acting caller and
-only a person confirms caps above the ceiling, as themselves; caller-supplied
+only a person confirms limits above the ceiling, as themselves; caller-supplied
 owner and confirmation fields are discarded. Workspace settings updates refuse
 agent callers.
 
-## User interface
+## People, status and reviewer availability
 
-The Office task page (`components/task/simple/OfficeSimplePane.tsx`) renders a
-new `CompletionCriteriaSection` in the main column after `TaskActionRow`,
-only when the task status summary reports `criteria_count > 0`. It reads `GET
-/api/v1/tasks/:id/completion-gate` and the effective caps, and refetches when
-the status summary's gate `revision` or `state_revision` changes. Every gate
-write (criteria set, evidence, result, hold, control) bumps `state_revision` on
-`task_completion_sets`, and the batch and standalone summaries both carry it.
-
-The header shows the title only, plus **Done** or **Done by override · actor**
-once the task is done. Each row shows the kind name (**CI**, **Review**), the
-status badge, a detail line, and the rework and attempt counts against the
-caps. The detail line (`lib/completion-gates/criterion-detail.ts`) names what
-decided the result, then the short heads (7 characters per PR): failing check
-names, changed protected files, or a send-back reason for CI; **Needs
-approval**, or the reviewers who approved (decision IDs in
-`evidence.reference`) or requested changes (the task's active
-`changes_requested` decisions) for review. Each reviewer carries the agent
-avatar or the person icon. Other states keep their reason text. Actions open
-dialogs (bottom sheets on phones): **Override completion** (reason required;
-calls the existing move with `TaskCompletionMoveOverrideRequest` to the
-completing step), **Allow for this commit**, **Send back**, **Allow more
-attempts**. Inbox items reuse the same dialogs.
-
-The new-task dialog (`app/office/components/new-task-dialog.tsx`) gets a
-**Completion criteria** group prefilled from workspace settings. Workspace
-settings (`app/office/workspace/settings/components/settings-content.tsx`) get
-a **Completion gates** card for defaults, caps and ceilings. API clients live
-in `lib/api/domains/task-completion-gates-api.ts` and
-`office-extended-api.ts`. All copy is in seven locales.
-
-Both the new-task group and the settings card render an inline warning
-(`AC-OFFICE-COMPLETION-GATES-008.8`) when **Review at PR head** is selected and
-`state.auth.mode` is not `enabled`. It is a non-blocking alert with a link to
-the Feature Toggles settings page; it reads only existing boot state, so no
-backend change is needed.
-
-The phone composition follows the existing Office task page: one scrolling
-main column; the section uses full-width rows and 44-pixel action targets.
+How a review that no agent can approve holds, the person actions, the user
+interface, and the phase 2 check runner design are in
+[part 1](completion-gates-01.md).
 
 ## Persistence and recovery
 
 All state is in task and Office tables. On restart the CI sweep re-evaluates
-unmet CI criteria; holds, counters and Inbox items survive because they are
+unmet checks; holds, counters and Inbox items survive because they are
 rows. Every new SQL path gets SQLite and PostgreSQL replay tests and
 store-conformance updates (`internal/persistence/storeconformance`).
 
@@ -481,10 +490,12 @@ Each is also logged as a structured zap entry.
 ## Related documents
 
 - [Requirements](../requirements/completion-gates.md)
+- [Part 1: people, status and reviewer availability](completion-gates-01.md)
 - [Task completion requirements](../../tasks/requirements/task-completion.md)
 - [Host-verified completion criteria](../../tasks/requirements/task-completion-host-verified.md)
 - [Coordination controls design](../../tasks/system-design/coordination-controls.md)
 - [Blocker terminal policy design](blocker-terminal-policy.md)
 - [GitHub PR check results](../../integrations/system-design/github-pr-check-results.md)
-- [ADR: Host-verified completion criteria](../../../decisions/2026-11-20-host-verified-completion-criteria.md)
+- [ADR: Host-verified completion criteria (superseded)](../../../decisions/2026-11-20-host-verified-completion-criteria.md)
+- [ADR: People act on exceptions](../../../decisions/2026-11-21-completion-gates-people-act-on-exceptions.md)
 - [Implementation plan](../../../plans/office-completion-gates/plan.md)

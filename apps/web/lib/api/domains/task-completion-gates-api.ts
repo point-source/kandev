@@ -12,17 +12,32 @@ export type TaskCompletionEvidence = {
   reference?: string;
 };
 
-export type TaskCompletionCriterionKind = "attested" | "ci_at_head" | "review_at_head";
+export type TaskCompletionCriterionKind = "attested" | "check" | "review";
 
 export type TaskCompletionResult = "pending" | "pass" | "fail" | "cannot_evaluate";
 
-export type TaskCompletionConfidence = "machine" | "independent_check" | "judgement";
+/** What produced a verified criterion's verdict. Derived by the backend. */
+export type TaskCompletionVerdictSource = "program" | "person" | "agent";
+
+/** The program that decides a check criterion. */
+export type TaskCompletionCheckRunner = "github";
+
+/** Why automation stopped on a criterion and is waiting for a person. */
+export type TaskCompletionHoldKind =
+  | "protected_files_changed"
+  | "rework_limit_reached"
+  | "verification_limit_reached"
+  | "no_reviewer_available"
+  | "review_wait_limit_reached";
 
 export type TaskCompletionCriterionConfig = {
+  runner?: TaskCompletionCheckRunner;
   protected_paths?: string[];
-  max_verification_attempts?: number;
-  max_rework_rounds?: number;
-  caps_confirmed_by?: string;
+  verification_limit?: number;
+  rework_limit?: number;
+  /** Minutes a parked reviewer may wait before a person is asked. */
+  review_wait_limit?: number;
+  limits_confirmed_by?: string;
 };
 
 export type TaskCompletionCriterion = {
@@ -37,7 +52,7 @@ export type TaskCompletionCriterion = {
   verified_at?: string | null;
   kind?: TaskCompletionCriterionKind;
   config?: TaskCompletionCriterionConfig;
-  confidence?: TaskCompletionConfidence;
+  verdict_source?: TaskCompletionVerdictSource;
   owner_kind?: string;
   owner_id?: string;
   result?: TaskCompletionResult;
@@ -48,7 +63,7 @@ export type TaskCompletionCriterion = {
   result_at?: string | null;
   attempt_count?: number;
   rework_count?: number;
-  held_reason?: string;
+  hold_kind?: TaskCompletionHoldKind;
   held_at?: string | null;
   protected_allowed_revision?: string;
   protected_allowed_by?: string;
@@ -66,7 +81,8 @@ export type TaskCompletionGateSnapshot = {
   criteria: TaskCompletionCriterion[];
   blockers?: TaskCompletionBlocker[];
   blocked: boolean;
-  weakest_confidence?: TaskCompletionConfidence;
+  /** Live PR heads ("pr@sha,...") of a task with host-verified criteria. */
+  heads_revision?: string;
   /** Increases on every result, hold or control change. */
   state_revision?: number;
 };
@@ -145,8 +161,8 @@ export function verifyTaskCompletionCriterion(
   );
 }
 
-export type ProtectedPathsDecision = {
-  action: "allow" | "send_back";
+/** A person's decision on one criterion at the heads they saw. */
+export type PersonCriterionAction = {
   expected_criterion_revision: number;
   expected_subject_revision: string;
   reason?: string;
@@ -154,28 +170,37 @@ export type ProtectedPathsDecision = {
 
 export type ExtendCompletionCriterionRequest = {
   expected_criterion_revision: number;
-  max_verification_attempts?: number;
-  max_rework_rounds?: number;
+  verification_limit?: number;
+  rework_limit?: number;
   reason?: string;
 };
 
 const officeCriterionPath = (taskId: string, criterionId: string) =>
   `/api/v1/office/tasks/${encodeURIComponent(taskId)}/completion-gate/criteria/${encodeURIComponent(criterionId)}`;
 
-/** A person's Allow or Send back decision on a protected-path hold. */
-export function decideProtectedPaths(
-  taskId: string,
-  criterionId: string,
-  request: ProtectedPathsDecision,
-  options?: ApiRequestOptions,
-) {
-  return fetchJson<TaskCompletionGateSnapshot>(
-    `${officeCriterionPath(taskId, criterionId)}/protected-paths`,
-    { ...options, init: { ...options?.init, method: "POST", body: JSON.stringify(request) } },
-  );
+function postPersonAction(route: string) {
+  return (
+    taskId: string,
+    criterionId: string,
+    request: PersonCriterionAction,
+    options?: ApiRequestOptions,
+  ) =>
+    fetchJson<TaskCompletionGateSnapshot>(`${officeCriterionPath(taskId, criterionId)}/${route}`, {
+      ...options,
+      init: { ...options?.init, method: "POST", body: JSON.stringify(request) },
+    });
 }
 
-/** Raises a criterion's caps and releases a cap hold. */
+/** Allows a check's protected file changes at the heads shown. */
+export const allowProtectedFiles = postPersonAction("allow");
+
+/** Fails a criterion at the heads shown and returns the task to its worker. */
+export const sendBackCriterion = postPersonAction("send-back");
+
+/** Accepts a held review at the heads shown as the person's verdict. */
+export const acceptCriterion = postPersonAction("accept");
+
+/** Raises a criterion's limits and releases a limit hold. */
 export function extendCompletionCriterion(
   taskId: string,
   criterionId: string,
@@ -191,38 +216,42 @@ export function extendCompletionCriterion(
   );
 }
 
-/** A host-verified criterion's resolved caps and how much of each is used. */
-export type EffectiveCompletionCaps = {
+/** A host-verified criterion's resolved limits and how much of each is used. */
+export type EffectiveCompletionLimits = {
   criterion_id: string;
-  max_verification_attempts: number;
-  max_rework_rounds: number;
+  verification_limit: number;
+  rework_limit: number;
   attempt_count: number;
   rework_count: number;
 };
 
-/** Reads the effective caps of a task's host-verified criteria. */
-export async function getEffectiveCompletionCaps(taskId: string, options?: ApiRequestOptions) {
-  const response = await fetchJson<{ caps: EffectiveCompletionCaps[] }>(
-    `/api/v1/office/tasks/${encodeURIComponent(taskId)}/completion-gate/caps`,
+/** Reads the effective limits of a task's host-verified criteria. */
+export async function getEffectiveCompletionLimits(taskId: string, options?: ApiRequestOptions) {
+  const response = await fetchJson<{ limits: EffectiveCompletionLimits[] }>(
+    `/api/v1/office/tasks/${encodeURIComponent(taskId)}/completion-gate/limits`,
     options,
   );
-  return response.caps ?? [];
+  return response.limits ?? [];
 }
 
 export type TaskCompletionCriterionRequest = {
-  kind: "ci_at_head" | "review_at_head";
+  kind: "check" | "review";
+  runner?: TaskCompletionCheckRunner;
   protected_paths?: string[];
-  max_verification_attempts?: number;
-  max_rework_rounds?: number;
+  verification_limit?: number;
+  rework_limit?: number;
+  review_wait_limit?: number;
 };
 
 export type CompletionGateSettings = {
   workspace_id: string;
   default_criteria: TaskCompletionCriterionRequest[];
-  default_max_attempts: number;
-  default_max_rework: number;
-  ceiling_attempts: number;
-  ceiling_rework: number;
+  default_verification_limit: number;
+  default_rework_limit: number;
+  verification_limit_ceiling: number;
+  rework_limit_ceiling: number;
+  /** Minutes; zero means a parked review waits indefinitely. */
+  default_review_wait_limit: number;
 };
 
 const settingsPath = (workspaceId: string) =>

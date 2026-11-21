@@ -1779,13 +1779,15 @@ func (s *Server) registerCreateTaskTool() {
 				mcp.Items(map[string]any{"type": "string"}),
 			),
 			mcp.WithArray("related_task_ids", mcp.Description("Task IDs to associate with this task without blocking or ordering them."), mcp.Items(map[string]any{"type": "string"})),
-			mcp.WithArray("completion_criteria", mcp.Description("Office tasks only: completion criteria Kandev verifies itself. Each item has kind (ci_at_head or review_at_head), optional protected_paths (glob list, ci_at_head only), max_verification_attempts and max_rework_rounds. Omit to apply the workspace default; an agent cannot remove a default."), mcp.Items(map[string]any{
+			mcp.WithArray("completion_criteria", mcp.Description("Office tasks only: completion criteria Kandev verifies itself. Each item has kind (check or review); a check also names its runner (github) and may list protected_paths (globs). Optional limits: verification_limit and rework_limit (counts) and, for a review, review_wait_limit (minutes a parked reviewer may wait before a person is asked). Omit to apply the workspace default; an agent cannot remove a default."), mcp.Items(map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"kind":                      map[string]any{"type": "string", "enum": []string{"ci_at_head", "review_at_head"}},
-					"protected_paths":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"max_verification_attempts": map[string]any{"type": "integer"},
-					"max_rework_rounds":         map[string]any{"type": "integer"},
+					"kind":               map[string]any{"type": "string", "enum": []string{"check", "review"}},
+					"runner":             map[string]any{"type": "string", "enum": []string{"github"}},
+					"protected_paths":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"verification_limit": map[string]any{"type": "integer"},
+					"rework_limit":       map[string]any{"type": "integer"},
+					"review_wait_limit":  map[string]any{"type": "integer"},
 				},
 				"required": []string{"kind"},
 			})),

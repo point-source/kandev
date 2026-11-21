@@ -22,7 +22,7 @@ const (
 	sweepBatchSize = 100
 )
 
-// CIVerifier records ci_at_head results from PR checks at each linked head.
+// CIVerifier records check results from PR checks at each linked head.
 type CIVerifier struct {
 	gates  GateService
 	prs    PRSource
@@ -152,7 +152,7 @@ func (v *CIVerifier) sweepLoop(ctx context.Context, done chan struct{}) {
 // afterwards only never-evaluated ones and those whose missing-check grace
 // has expired.
 func (v *CIVerifier) sweep(ctx context.Context, all bool) {
-	query := models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCIAtHead, Limit: sweepBatchSize}
+	query := models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionCheck, Limit: sweepBatchSize}
 	if !all {
 		dueBefore := v.now().Add(-ChecksMissingGrace)
 		query.DueBefore, query.AwaitingReason = &dueBefore, ReasonAwaitingChecks
@@ -193,8 +193,8 @@ func (v *CIVerifier) Evaluate(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	criterion, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionCIAtHead)
-	if !ok || criterion.HeldReason == HoldAttemptCapReached || criterion.HeldReason == HoldReworkCapReached {
+	criterion, ok := findCriterionOfKind(snapshot, models.TaskCompletionCriterionCheck)
+	if !ok || criterion.HoldKind == HoldVerificationLimitReached || criterion.HoldKind == HoldReworkLimitReached {
 		return nil
 	}
 	links, err := v.prs.LinkedPRs(ctx, taskID)
@@ -252,7 +252,7 @@ func (v *CIVerifier) record(ctx context.Context, taskID string, criterion models
 		VerifierKind: VerifierKindCI, VerifierID: VerifierKindCI, Hold: outcome.hold,
 	}
 	if outcome.hold == "" {
-		change.ReleaseHold = HoldProtectedPathChanged
+		change.ReleaseHold = HoldProtectedFilesChanged
 	}
 	if outcome.result == models.TaskCompletionResultPass {
 		change.EvidenceSummary = fmt.Sprintf("%d pull request(s) passed CI", len(input.checks))
@@ -271,8 +271,8 @@ func (v *CIVerifier) record(ctx context.Context, taskID string, criterion models
 	if !result.Changed {
 		return nil
 	}
-	recordEvaluationMetric(models.TaskCompletionCriterionCIAtHead, outcome.result)
-	if change.Hold != "" && result.Criterion.HeldReason == change.Hold {
+	recordEvaluationMetric(models.TaskCompletionCriterionCheck, outcome.result)
+	if change.Hold != "" && result.Criterion.HoldKind == change.Hold {
 		recordHoldMetric(change.Hold)
 	}
 	v.logger.Info("completion gate CI result recorded", zap.String("task_id", taskID),

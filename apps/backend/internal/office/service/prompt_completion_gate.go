@@ -65,8 +65,8 @@ func completionStatusLine(criterion models.TaskCompletionCriterion, blocker stri
 	if criterion.ResultReason != "" {
 		parts = append(parts, criterion.ResultReason)
 	}
-	if criterion.HeldReason != "" {
-		parts = append(parts, "held: "+criterion.HeldReason)
+	if criterion.HoldKind != "" {
+		parts = append(parts, "held: "+criterion.HoldKind)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -75,12 +75,25 @@ func completionStatusLine(criterion models.TaskCompletionCriterion, blocker stri
 func buildCompletionGateHeldPrompt(pc *PromptContext) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "A completion criterion on task %s is held and needs your decision.\n\n", taskRef(pc))
-	fmt.Fprintf(&b, "Criterion: %s\nReason: %s\n", sanitizePromptField(pc.CompletionGateCriterionID), sanitizePromptField(pc.CompletionGateHeldReason))
+	fmt.Fprintf(&b, "Criterion: %s\nHold kind: %s\n", sanitizePromptField(pc.CompletionGateCriterionID), sanitizePromptField(pc.CompletionGateHoldKind))
 	if pc.CompletionGateHistory != "" {
 		fmt.Fprintf(&b, "\nRecent history:\n%s\n", capRunes(pc.CompletionGateHistory, 2000))
 	}
-	b.WriteString("\nThe assignee will not run until the hold is released. Choose one: raise the cap within the workspace ceiling with " +
-		"`$KANDEV_CLI kandev task gate extend --task <id> --criterion <id> --rework <n>` (or `--attempts <n>`), " +
-		"reassign the task, comment with guidance, or ask a person to decide in the Inbox.")
+	b.WriteString("\nThe assignee will not run until the hold is released. ")
+	b.WriteString(completionGateHoldChoices(pc.CompletionGateHoldKind))
 	return b.String()
+}
+
+// completionGateHoldChoices names what the owner can do about a hold kind.
+func completionGateHoldChoices(holdKind string) string {
+	switch holdKind {
+	case "no_reviewer_available", "review_wait_limit_reached":
+		return "No reviewer agent can approve this commit. Choose one: add a reviewer agent that runs on a different provider " +
+			"from the task's author, reassign the task, comment with guidance, or ask a person to accept the review at this " +
+			"commit in the Inbox."
+	default:
+		return "Choose one: raise the limit within the workspace ceiling with " +
+			"`$KANDEV_CLI kandev task gate extend --task <id> --criterion <id> --rework-limit <n>` (or `--verification-limit <n>`), " +
+			"reassign the task, comment with guidance, or ask a person to decide in the Inbox."
+	}
 }

@@ -6,17 +6,17 @@ import AppLink from "@/components/routing/app-link";
 import { useAppStore } from "@/components/state-provider";
 
 /**
- * Non-blocking warning shown while a review criterion is selected and
- * authentication is not enabled: anyone on the machine can approve as the user.
+ * Non-blocking warning shown where people act on completion criteria while
+ * authentication is off: any process on the machine can act as the person.
  */
-export function ReviewAuthWarning({ reviewSelected }: { reviewSelected: boolean }) {
+export function GateActionsAuthWarning({ className }: { className?: string }) {
   const { t } = useTranslation();
   const authMode = useAppStore((state) => state.auth.mode);
-  if (!reviewSelected || authMode === "enabled") return null;
+  if (authMode === "enabled") return null;
   return (
     <Alert
-      data-testid="completion-review-auth-warning"
-      className="border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+      data-testid="completion-auth-warning"
+      className={`border-amber-300 bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 ${className ?? ""}`}
     >
       <AlertDescription className="text-xs">
         {t("office:completionGatesAuthWarning")}{" "}

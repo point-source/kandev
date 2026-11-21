@@ -14,7 +14,6 @@ export async function saveGateDefaults(page: Page) {
   await card.getByTestId("settings-criteria-ci").click();
   await card.getByTestId("settings-criteria-protected").fill("tests/**, .github/**");
   await card.getByTestId("settings-criteria-review").click();
-  await expect(card.getByTestId("completion-review-auth-warning")).toBeVisible();
   await card.getByTestId("completion-gates-save").click();
   await expect(page.getByText("Completion gate settings saved")).toBeVisible();
   await page.reload();
@@ -35,14 +34,12 @@ export async function createWithCriteriaWithoutRepository(
   await dialog.getByPlaceholder("Task title").fill("Gated without repo");
   await chooseProject(page, dialog, project.name);
   const group = dialog.getByTestId("new-task-completion-criteria");
-  await expect(group).toContainText("(CI, Review)");
+  await expect(group).toContainText("(CI check (GitHub), Review)");
   await group.getByRole("button").first().click();
   await expect(group.getByTestId("new-task-criteria-ci")).toBeChecked();
-  await expect(group.getByTestId("completion-review-auth-warning")).toBeVisible();
   // An explicit choice (CI only) is validated; untouched defaults that cannot
   // apply are skipped instead.
   await group.getByTestId("new-task-criteria-review").click();
-  await expect(group.getByTestId("completion-review-auth-warning")).toHaveCount(0);
   await dialog.getByTestId("new-task-create-button").click();
   await expect(page.getByText("CI and review criteria need a repository")).toBeVisible();
 }

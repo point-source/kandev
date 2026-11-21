@@ -28,7 +28,7 @@ func (f *fakeReviews) ListStepParticipantsForTask(context.Context, string, strin
 }
 
 func reviewCriterion() models.TaskCompletionCriterion {
-	return models.TaskCompletionCriterion{ID: "review", Kind: models.TaskCompletionCriterionReviewAtHead, CriterionRevision: 1}
+	return models.TaskCompletionCriterion{ID: "review", Kind: models.TaskCompletionCriterionReview, CriterionRevision: 1}
 }
 
 func reviewerSeat(id, agent string) *workflowmodels.WorkflowStepParticipant {
@@ -85,13 +85,31 @@ func TestReviewPassesWhenEverySeatApprovedTheCurrentHeads(t *testing.T) {
 	}
 }
 
-// @covers AC-OFFICE-COMPLETION-GATES-004.4
-func TestHumanApprovalCountsAtItsHeads(t *testing.T) {
+// @covers AC-OFFICE-COMPLETION-GATES-004.2
+func TestReviewCountsOnlyRequiredReviewerSeats(t *testing.T) {
 	verifier, gates, reviews := setupReview(t)
-	reviews.decisions = []*workflowmodels.WorkflowStepDecision{approval("human-seat", "user", "default", "pr-1@h1")}
+	person := approval("user", "user", "user", "pr-1@h1")
+	personRejection := rejection("user", "d-person", 1)
+	personRejection.DeciderType = "user"
+	outsider := rejection("not-a-seat", "d-outsider", 2)
+	reviews.decisions = []*workflowmodels.WorkflowStepDecision{person, personRejection, outsider}
 	verifier.DecisionRecorded(context.Background(), "task-1", "review", "approved")
-	if records := gates.records(); len(records) != 1 || records[0].Result != models.TaskCompletionResultPass {
-		t.Fatalf("records = %+v", records)
+	if records := gates.records(); len(records) != 0 {
+		t.Fatalf("decisions outside the required seats counted: %+v", records)
+	}
+}
+
+// @covers AC-OFFICE-COMPLETION-GATES-004.6
+func TestReviewKeepsAPersonsSendBackUntilTheHeadsMove(t *testing.T) {
+	verifier, gates, reviews := setupReview(t)
+	sentBack := reviewCriterion()
+	sentBack.Result, sentBack.ResultReason, sentBack.ResultSubjectRevision =
+		models.TaskCompletionResultFail, models.TaskCompletionReasonSentBack, "pr-1@h1"
+	gates.setCriteria("task-1", sentBack)
+	reviews.decisions = []*workflowmodels.WorkflowStepDecision{approval("seat-a", "agent", "qa", "pr-1@h1"), approval("seat-b", "agent", "sec", "pr-1@h1")}
+	verifier.DecisionRecorded(context.Background(), "task-1", "review", "approved")
+	if records := gates.records(); len(records) != 0 {
+		t.Fatalf("approvals overrode a send back at the same heads: %+v", records)
 	}
 }
 

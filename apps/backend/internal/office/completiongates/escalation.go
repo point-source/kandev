@@ -64,7 +64,7 @@ func NewEscalator(gates GateService, tasks TaskReader, agents AgentDirectory, ru
 // EscalateHold queues one wake for the hold's recipient agent, then marks the
 // hold escalated. A failed wake stays unmarked so the sweep retries it.
 func (e *Escalator) EscalateHold(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion) {
-	if criterion.HeldReason == "" || criterion.HeldReason == HoldProtectedPathChanged || criterion.EscalatedAt != nil {
+	if criterion.HoldKind == "" || criterion.HoldKind == HoldProtectedFilesChanged || criterion.EscalatedAt != nil {
 		return
 	}
 	task, err := e.tasks.GetTask(ctx, taskID)
@@ -81,7 +81,7 @@ func (e *Escalator) EscalateHold(ctx context.Context, taskID string, criterion m
 	}
 	payload, _ := json.Marshal(map[string]string{
 		"task_id": taskID, "criterion_id": criterion.ID, "criterion_kind": criterion.Kind,
-		"held_reason": criterion.HeldReason, "history": strings.Join(e.historyLines(ctx, taskID), "\n"),
+		"hold_kind": criterion.HoldKind, "history": strings.Join(e.historyLines(ctx, taskID), "\n"),
 	})
 	key := "completion_gate_held:" + taskID + ":" + criterion.ID + ":" + heldAt
 	if err := e.runs.QueueRun(ctx, recipient, RunReasonCompletionGateHeld, string(payload), key); err != nil {
@@ -148,11 +148,9 @@ func (e *Escalator) historyLines(ctx context.Context, taskID string) []string {
 	return lines
 }
 
-// Inbox item types for completion gates.
-const (
-	InboxTypeProtectedPath = "completion_gate_protected_path"
-	InboxTypeHeld          = "completion_gate_held"
-)
+// InboxTypeHold is the Inbox item type of a held completion criterion. Its
+// payload names the hold kind, which decides the item's title and actions.
+const InboxTypeHold = "completion_gate_hold"
 
 // HeldLister lists held criteria of a workspace.
 type HeldLister interface {
@@ -163,10 +161,7 @@ func inboxItems(held []models.HeldTaskCompletionCriterion) []*officemodels.Inbox
 	items := make([]*officemodels.InboxItem, 0, len(held))
 	for _, entry := range held {
 		criterion := entry.Criterion
-		itemType := InboxTypeHeld
-		if criterion.HeldReason == HoldProtectedPathChanged {
-			itemType = InboxTypeProtectedPath
-		} else if ownedByAgentOrRoutine(criterion) && criterion.EscalatedAt != nil {
+		if criterion.HoldKind != HoldProtectedFilesChanged && ownedByAgentOrRoutine(criterion) && criterion.EscalatedAt != nil {
 			continue
 		}
 		created := time.Now().UTC()
@@ -174,12 +169,12 @@ func inboxItems(held []models.HeldTaskCompletionCriterion) []*officemodels.Inbox
 			created = *criterion.HeldAt
 		}
 		items = append(items, &officemodels.InboxItem{
-			ID: "completion-gate:" + entry.TaskID + ":" + criterion.ID, Type: itemType,
+			ID: "completion-gate:" + entry.TaskID + ":" + criterion.ID, Type: InboxTypeHold,
 			Title: entry.TaskTitle, Description: strings.Join(criterion.ResultDetail, ", "),
 			Status: "pending", EntityID: entry.TaskID, EntityType: "task",
 			Payload: map[string]any{
 				"task_id": entry.TaskID, "criterion_id": criterion.ID, "criterion_kind": criterion.Kind,
-				"criterion_revision": criterion.CriterionRevision, "held_reason": criterion.HeldReason,
+				"criterion_revision": criterion.CriterionRevision, "hold_kind": criterion.HoldKind,
 				"detail": criterion.ResultDetail, "subject_revision": criterion.ResultSubjectRevision,
 				"rework_count": criterion.ReworkCount, "attempt_count": criterion.AttemptCount,
 			},

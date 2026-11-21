@@ -101,9 +101,9 @@ func buildCompletionGatesService(
 	}
 	return completiongates.NewService(completiongates.Dependencies{
 		Gates: taskSvc, PRs: completionGatePRSource{github: githubSvc}, Tasks: taskSvc,
-		Reviews: repos.Workflow, Settings: repos.Office, Steps: completionGateStepCaps{steps: repos.Workflow},
+		Reviews: repos.Workflow, Settings: repos.Office, Steps: completionGateStepLimits{steps: repos.Workflow},
 		Agents: completionGateAgents{office: officeSvc}, Runs: completionGateRuns{office: officeSvc},
-		History: taskSvc, Held: taskSvc, Stages: completionGateStepCaps{steps: repos.Workflow}, Ledger: taskSvc,
+		History: taskSvc, Held: taskSvc, Stages: completionGateStepLimits{steps: repos.Workflow}, Ledger: taskSvc,
 		Bus: eventBus, Logger: log,
 	})
 }
@@ -239,18 +239,18 @@ func (a completionGateRuns) QueueRun(ctx context.Context, agentID, reason, paylo
 	return err
 }
 
-// completionGateStepCaps reads the cap defaults of a workflow's completing step.
-type completionGateStepCaps struct {
+// completionGateStepLimits reads the limit defaults of a workflow's completing step.
+type completionGateStepLimits struct {
 	steps workflowStepLister
 }
 
-func (a completionGateStepCaps) CompletingStepCaps(ctx context.Context, workflowID string) (int, int, error) {
+func (a completionGateStepLimits) CompletingStepLimits(ctx context.Context, workflowID string) (workflowmodels.CompletionGateLimits, error) {
 	if workflowID == "" {
-		return 0, 0, nil
+		return workflowmodels.CompletionGateLimits{}, nil
 	}
 	steps, err := a.steps.ListStepsByWorkflow(ctx, workflowID)
 	if err != nil {
-		return 0, 0, err
+		return workflowmodels.CompletionGateLimits{}, err
 	}
 	var final *workflowmodels.WorkflowStep
 	for _, step := range steps {
@@ -258,14 +258,14 @@ func (a completionGateStepCaps) CompletingStepCaps(ctx context.Context, workflow
 			final = step
 		}
 	}
-	if final == nil || !final.CompleteTaskOnEnter || final.CompletionGateCaps == nil {
-		return 0, 0, nil
+	if final == nil || !final.CompleteTaskOnEnter || final.CompletionGateLimits == nil {
+		return workflowmodels.CompletionGateLimits{}, nil
 	}
-	return final.CompletionGateCaps.MaxVerificationAttempts, final.CompletionGateCaps.MaxReworkRounds, nil
+	return *final.CompletionGateLimits, nil
 }
 
 // HasReviewStage reports whether a workflow has a review-stage step.
-func (a completionGateStepCaps) HasReviewStage(ctx context.Context, workflowID string) (bool, error) {
+func (a completionGateStepLimits) HasReviewStage(ctx context.Context, workflowID string) (bool, error) {
 	if workflowID == "" {
 		return false, nil
 	}

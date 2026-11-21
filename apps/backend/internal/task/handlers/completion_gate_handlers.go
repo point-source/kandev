@@ -63,6 +63,10 @@ func (h *TaskHandlers) httpVerifyTaskCompletionCriterion(c *gin.Context) {
 }
 
 func (h *TaskHandlers) handleCompletionGateError(c *gin.Context, err error) {
+	if code, ok := service.IsCompletionCriteriaRefusal(err); ok {
+		c.JSON(http.StatusBadRequest, gin.H{"code": code})
+		return
+	}
 	switch {
 	case errors.Is(err, repository.ErrTaskCompletionGateBlocked):
 		snapshot, readErr := h.service.GetTaskCompletionGate(c.Request.Context(), c.Param("id"))

@@ -1484,7 +1484,7 @@ func (si *SchedulerIntegration) buildPromptContext(
 
 	if reason == RunReasonTaskCompletionGateHeld {
 		pc.CompletionGateCriterionID = parsed["criterion_id"]
-		pc.CompletionGateHeldReason = parsed["held_reason"]
+		pc.CompletionGateHoldKind = parsed["hold_kind"]
 		pc.CompletionGateHistory = parsed["history"]
 	}
 

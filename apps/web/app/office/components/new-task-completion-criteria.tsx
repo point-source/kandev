@@ -27,7 +27,7 @@ export function NewTaskCompletionCriteria({ workspaceId, draft, onUpdate }: Prop
   const defaults = settings ? selectionFromCriteria(settings.default_criteria) : EMPTY_SELECTION;
   const selection: CriteriaSelection = draft.completionCriteria ?? defaults;
   const summary = [
-    selection.ci ? t("office:completionGatesKindCi") : null,
+    selection.ci ? t("office:completionGatesKindCheckGithub") : null,
     selection.review ? t("office:completionGatesKindReview") : null,
   ].filter(Boolean);
   return (
@@ -39,7 +39,7 @@ export function NewTaskCompletionCriteria({ workspaceId, draft, onUpdate }: Prop
     >
       <CollapsibleTrigger className="flex min-h-11 w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-sm sm:min-h-0">
         <span>
-          {t("office:completionGatesCreateGroup")}
+          {t("office:completionGatesTitle")}
           {summary.length > 0 && (
             <span className="text-muted-foreground"> ({summary.join(", ")})</span>
           )}

@@ -25,7 +25,7 @@ test.describe("Office completion gate: CI at the PR head", () => {
 
     await expect.poll(() => ciCriterionState(apiClient, taskId)).toBe("fail");
     await testPage.goto(`/office/tasks/${taskId}`);
-    const row = testPage.getByTestId("completion-criterion-ci_at_head");
+    const row = testPage.getByTestId("completion-criterion-github_check");
     await expect(row.getByTestId("completion-criterion-status")).toHaveText("Failed");
     await expect(row.getByTestId("completion-criterion-detail")).toHaveText(
       "Failing: unit·aaaa111",
@@ -53,16 +53,16 @@ test.describe("Office completion gate: CI at the PR head", () => {
 
     await expect
       .poll(() => ciCriterionState(apiClient, taskId))
-      .toBe("held:protected_path_changed");
+      .toBe("held:protected_files_changed");
     await testPage.goto(`/office/tasks/${taskId}`);
-    const row = testPage.getByTestId("completion-criterion-ci_at_head");
-    await expect(row.getByTestId("completion-criterion-status")).toHaveText("Held");
+    const row = testPage.getByTestId("completion-criterion-github_check");
+    await expect(row.getByTestId("completion-criterion-status")).toHaveText("Needs you");
     await expect(row.getByTestId("completion-criterion-detail")).toHaveText(
       "Protected file changed: tests/webhook_test.go·cccc333",
     );
 
     await testPage.goto("/office/inbox");
-    await expect(testPage.getByTestId("inbox-item-completion_gate_protected_path")).toBeVisible();
+    await expect(testPage.getByTestId("inbox-item-completion_gate_hold")).toBeVisible();
 
     await testPage.goto(`/office/tasks/${taskId}`);
     await row.getByTestId("completion-allow").click();
@@ -71,7 +71,7 @@ test.describe("Office completion gate: CI at the PR head", () => {
     await expect(row.getByTestId("completion-criterion-status")).toHaveText("Passed");
 
     await testPage.goto("/office/inbox");
-    await expect(testPage.getByTestId("inbox-item-completion_gate_protected_path")).toHaveCount(0);
+    await expect(testPage.getByTestId("inbox-item-completion_gate_hold")).toHaveCount(0);
   });
 
   test("sends a protected change back to the worker with a reason", async ({
@@ -87,10 +87,10 @@ test.describe("Office completion gate: CI at the PR head", () => {
     });
     await expect
       .poll(() => ciCriterionState(apiClient, taskId))
-      .toBe("held:protected_path_changed");
+      .toBe("held:protected_files_changed");
 
     await testPage.goto(`/office/tasks/${taskId}`);
-    const row = testPage.getByTestId("completion-criterion-ci_at_head");
+    const row = testPage.getByTestId("completion-criterion-github_check");
     await row.getByTestId("completion-send-back").click();
     const dialog = testPage.getByTestId("completion-dialog-send_back");
     await dialog.getByTestId("completion-action-reason").fill("Keep the old assertions");

@@ -20,10 +20,10 @@ func TestCreateTaskStoresHostCriteriaForItsOwnPRHeads(t *testing.T) {
 	created, err := svc.CreateTask(ctx, &CreateTaskRequest{
 		WorkspaceID: "gate-create", WorkflowID: wf, Title: "Gated",
 		CompletionCriteria: []models.TaskCompletionCriterion{{
-			ID: "ci", Kind: models.TaskCompletionCriterionCIAtHead,
-			Config: models.TaskCompletionCriterionConfig{ProtectedPaths: []string{"tests/**"}},
+			ID: "ci", Kind: models.TaskCompletionCriterionCheck,
+			Config: models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub, ProtectedPaths: []string{"tests/**"}},
 			// Caller-supplied state is discarded.
-			ReworkCount: 9, HeldReason: "forged", Result: models.TaskCompletionResultPass,
+			ReworkCount: 9, HoldKind: "forged", Result: models.TaskCompletionResultPass,
 		}},
 	})
 	if err != nil {
@@ -40,7 +40,7 @@ func TestCreateTaskStoresHostCriteriaForItsOwnPRHeads(t *testing.T) {
 	if criterion.EvidenceSubject.Kind != models.TaskCompletionEvidenceGitHubPRHeads || criterion.EvidenceSubject.ID != created.Task.ID {
 		t.Fatalf("subject = %+v", criterion.EvidenceSubject)
 	}
-	if criterion.ReworkCount != 0 || criterion.HeldReason != "" || criterion.Result != models.TaskCompletionResultPending {
+	if criterion.ReworkCount != 0 || criterion.HoldKind != "" || criterion.Result != models.TaskCompletionResultPending {
 		t.Fatalf("forged state kept: %+v", criterion)
 	}
 	if criterion.OwnerKind != completionGateActorHuman || criterion.OwnerID != "user-1" || criterion.Description == "" {
@@ -55,8 +55,8 @@ func TestCreateTaskWithInvalidCriteriaCreatesNothing(t *testing.T) {
 	_, err := svc.CreateTask(ctx, &CreateTaskRequest{
 		WorkspaceID: "gate-create-invalid", WorkflowID: wf, Title: "Gated",
 		CompletionCriteria: []models.TaskCompletionCriterion{{
-			ID: "ci", Kind: models.TaskCompletionCriterionCIAtHead,
-			Config: models.TaskCompletionCriterionConfig{ProtectedPaths: []string{"[unclosed"}},
+			ID: "ci", Kind: models.TaskCompletionCriterionCheck,
+			Config: models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub, ProtectedPaths: []string{"[unclosed"}},
 		}},
 	})
 	if err == nil {
@@ -79,7 +79,7 @@ func TestSetCriteriaRefusesTheTasksOwnRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := SetTaskCompletionCriteriaRequest{Criteria: []models.TaskCompletionCriterion{{
-		ID: "ci", Kind: models.TaskCompletionCriterionCIAtHead,
+		ID: "ci", Kind: models.TaskCompletionCriterionCheck, Config: models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub},
 	}}}
 	ownRun := models.WithCompletionGateCaller(ctx, models.CompletionGateCaller{AgentProfileID: "reviewer", RunID: "run-1", TaskID: created.Task.ID})
 	if _, err := svc.SetTaskCompletionCriteria(ownRun, created.Task.ID, request); !errors.Is(err, repoerrors.ErrTaskCompletionSelfVerification) {
@@ -97,7 +97,8 @@ func TestRecordTaskCompletionEvaluationPassesThrough(t *testing.T) {
 	wf := seedWorkspaceAndWorkflowForCreate(t, ctx, repo, "gate-eval")
 	ensureTaskPRTable(t, repo)
 	created, err := svc.CreateTask(ctx, &CreateTaskRequest{WorkspaceID: "gate-eval", WorkflowID: wf, Title: "Gated",
-		CompletionCriteria: []models.TaskCompletionCriterion{{ID: "ci", Kind: models.TaskCompletionCriterionCIAtHead}}})
+		CompletionCriteria: []models.TaskCompletionCriterion{{ID: "ci", Kind: models.TaskCompletionCriterionCheck,
+			Config: models.TaskCompletionCriterionConfig{Runner: models.TaskCompletionCheckRunnerGitHub}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

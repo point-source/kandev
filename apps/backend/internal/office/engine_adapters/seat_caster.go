@@ -50,6 +50,14 @@ type SeatCasterWorkflowRepo interface {
 type SeatCasterAdapter struct {
 	Office   OfficeRepo
 	Workflow SeatCasterWorkflowRepo
+	// Observer, when set, hears every reviewer seat cast so a review
+	// completion criterion can hold when no seat can approve.
+	Observer ReviewerCastObserver
+}
+
+// ReviewerCastObserver hears the result of casting a reviewer seat.
+type ReviewerCastObserver interface {
+	ReviewerCast(ctx context.Context, taskID, agentProfileID string, unfillable bool)
 }
 
 // NewSeatCasterAdapter builds a SeatCasterAdapter wrapping the office and
@@ -86,7 +94,11 @@ func (a *SeatCasterAdapter) CastParticipantSeat(
 		return engine.ParticipantSeatCastResult{}, fmt.Errorf("list eligible candidates: %w", err)
 	}
 
-	return castFromCandidates(candidates, runner, a.alreadySeatedAgents(ctx, taskID, workflowID), fields.WorkspaceID), nil
+	cast := castFromCandidates(candidates, runner, a.alreadySeatedAgents(ctx, taskID, workflowID), fields.WorkspaceID)
+	if a.Observer != nil && role == string(wfmodels.ParticipantRoleReviewer) {
+		a.Observer.ReviewerCast(ctx, taskID, cast.AgentProfileID, cast.Unfillable)
+	}
+	return cast, nil
 }
 
 // eligibleCandidates returns the workspace's Office agents eligible for
