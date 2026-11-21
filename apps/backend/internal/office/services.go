@@ -4,6 +4,7 @@ import (
 	"github.com/kandev/kandev/internal/office/agents"
 	"github.com/kandev/kandev/internal/office/approvals"
 	"github.com/kandev/kandev/internal/office/channels"
+	"github.com/kandev/kandev/internal/office/completiongates"
 	"github.com/kandev/kandev/internal/office/config"
 	"github.com/kandev/kandev/internal/office/configloader"
 	"github.com/kandev/kandev/internal/office/configsync"
@@ -45,6 +46,8 @@ type Services struct {
 	Reconciler   *infra.Reconciler
 	Repo         *sqlite.Repository
 	GitManager   *configloader.GitManager
+	// CompletionGates verifies Kandev-checked completion criteria.
+	CompletionGates *completiongates.Service
 	// KandevHome is the base storage directory for attachment files.
 	KandevHome string
 }

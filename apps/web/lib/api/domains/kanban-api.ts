@@ -1,4 +1,5 @@
 import type { BuiltinMCPInitialPreferences } from "@/lib/types/builtin-mcp";
+import type { TaskCompletionCriterionRequest } from "./task-completion-gates-api";
 import type { RepositoryCheckoutOptions } from "@/lib/types/repository-checkout-options";
 import { fetchJson, type ApiRequestOptions } from "../client";
 import { getBackendConfig } from "@/lib/config";
@@ -112,6 +113,8 @@ export async function createTask(
       delivery_mode?: "prompt" | "path";
     }>;
     parent_id?: string;
+    /** Office completion criteria; omitted applies the workspace default. */
+    completion_criteria?: TaskCompletionCriterionRequest[];
     /**
      * Task IDs this task depends on. With these set, an agent-start request is
      * recorded as a start-when-unblocked intent rather than launching now.

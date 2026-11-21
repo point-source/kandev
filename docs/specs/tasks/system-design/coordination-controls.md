@@ -5,8 +5,9 @@ requirements:
   - REQ-TASKS-COMPLETION-003
   - REQ-TASKS-COMPLETION-001
   - REQ-TASKS-COMPLETION-004
+  - REQ-TASKS-COMPLETION-006
 created: 2026-09-25
-updated: 2026-09-28
+updated: 2026-11-20
 owners:
   - kandev
 ---
@@ -20,6 +21,7 @@ owners:
 | `REQ-TASKS-COMPLETION-003` | [Management claims](#management-claims) |
 | `REQ-TASKS-COMPLETION-001` | [Completion gates](#completion-gates)   |
 | `REQ-TASKS-COMPLETION-004` | [UI and contracts](#ui-and-contracts) |
+| `REQ-TASKS-COMPLETION-006` | [Host-verified criteria](#host-verified-criteria) |
 
 ## Purpose and boundaries
 
@@ -86,12 +88,37 @@ An override is one action, not a persistent bypass. Reopening retains history an
 rechecks criteria on the next completion. Tasks already complete before gates are
 introduced remain complete; criteria edits do not silently reopen them.
 
+### Host-verified criteria
+
+A criterion has a `kind`. `attested` keeps the behavior above. `ci_at_head`
+and `review_at_head` are host-verified: their evidence and results come only
+from task-service commands called by in-process verifiers, never from the
+HTTP, plugin Host, or MCP evidence paths, which refuse them with
+`task_completion_verifier_reserved`. This fence does not depend on caller
+identity, so it holds with authentication off.
+
+Host-verified criteria use the `github_pr_heads` subject: the sorted set of
+linked, non-detached PR heads of the task, as one revision recomputed at the
+completing commit. Each criterion also stores its latest evaluation result
+(`pending`, `pass`, `fail`, `cannot_evaluate`) with reason and observed
+revision, an owner, optional caps, attempt and rework counters, and an
+optional hold. Only `pass` with current proof satisfies the guard. Confidence
+is derived from kind and reported per criterion and as the weakest level.
+Criteria supplied at creation are inserted in the task's create transaction.
+
+Office is the first consumer; its verifiers, routing, caps, and UI are in the
+[Office completion gates design](../../office/system-design/completion-gates.md),
+which also specifies the schema columns and commands.
+
 ## UI and contracts
 
 The September 28 amendment removes the native task-detail controls from PR #3994.
 The task system owns this amendment because it owns task details and the claims
 and gates behind those controls. Plugin presentation remains a plugin concern.
 The host retains enforcement, authorization, and public contracts.
+
+The November 20 amendment lets the Office task page present gate status and
+the Office recovery actions; the generic task page stays without controls.
 
 Remove `TaskCoordinationControls` from `task-page-inner.tsx`. Remove its private
 `task-management-claim-*`, `task-completion-gate-*`, and

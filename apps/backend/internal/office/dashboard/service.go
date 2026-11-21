@@ -428,6 +428,8 @@ type WorkspaceSettings struct {
 
 // DashboardService provides dashboard, inbox, activity, run, and task-search business logic.
 type DashboardService struct {
+	completionGateInbox   CompletionGateInbox
+	reviewHeads           ReviewHeadsHook
 	repo                  Repository
 	logger                *logger.Logger
 	activity              shared.ActivityLogger

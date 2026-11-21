@@ -74,6 +74,9 @@ type RecordAgentDecisionResult struct {
 	DecidedAt         time.Time
 	TransitionApplied bool
 	Guards            []GuardStateDTO
+	// Notice explains a decision that was recorded but does not count toward
+	// a completion criterion.
+	Notice string
 }
 
 // roleResolvingDispatcher is the AC-2/3/4/4a additive capability this
@@ -153,10 +156,13 @@ func (s *DashboardService) RecordAgentDecision(
 		Comment:       in.Reason,
 	}
 	decisionInput.SessionID = in.SessionID
+	var notice string
+	decisionInput.PRHeads, notice = s.reviewHeadsForDecision(ctx, in.TaskID, models.DeciderTypeAgent, in.AgentProfileID)
 	result, err := dispatcher.RecordDecision(ctx, decisionInput)
 	if err != nil {
 		return nil, fmt.Errorf("record decision: %w", err)
 	}
+	s.notifyReviewDecisionRecorded(ctx, in.TaskID, result.StepID, in.Decision)
 
 	rec := fromWorkflowDecision(&workflowmodels.WorkflowStepDecision{
 		ID:            result.DecisionID,
@@ -182,6 +188,7 @@ func (s *DashboardService) RecordAgentDecision(
 		DecidedAt:         result.DecidedAt,
 		TransitionApplied: result.Transitioned,
 		Guards:            s.agentDecisionGuardsSnapshot(ctx, in.TaskID, result),
+		Notice:            notice,
 	}
 	return out, nil
 }

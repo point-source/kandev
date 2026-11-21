@@ -53,14 +53,15 @@ var attendedForTest = map[string]bool{
 }
 
 var unattendedForTest = map[string]bool{
-	"agent_error":           true,
-	"budget_alert":          true,
-	"heartbeat":             true,
-	"queue_run":             true,
-	"routine_dispatch":      true,
-	"routine_dispatch_cron": true,
-	"routine_trigger":       true,
-	"task_blocker_failed":   true,
+	"agent_error":               true,
+	"budget_alert":              true,
+	"heartbeat":                 true,
+	"queue_run":                 true,
+	"routine_dispatch":          true,
+	"routine_dispatch_cron":     true,
+	"routine_trigger":           true,
+	"task_blocker_failed":       true,
+	"task_completion_gate_held": true,
 }
 
 // runReasonBlock names one of AC-OFFICE-BUDGET-007.3's seven enumerated

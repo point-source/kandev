@@ -27,19 +27,20 @@ import (
 // Run reason constants. Aliases of shared's canonical declarations
 // (AC-OFFICE-BACKPRESSURE-001.8) — see shared/runreasons.go.
 const (
-	RunReasonTaskAssigned          = shared.RunReasonTaskAssigned
-	RunReasonTaskComment           = shared.RunReasonTaskComment
-	RunReasonHandoffCompleted      = shared.RunReasonHandoffCompleted
-	RunReasonTaskBlockersResolved  = shared.RunReasonTaskBlockersResolved
-	RunReasonTaskChildrenCompleted = shared.RunReasonTaskChildrenCompleted
-	RunReasonTaskBlockerFailed     = shared.RunReasonTaskBlockerFailed
-	RunReasonApprovalResolved      = shared.RunReasonApprovalResolved
-	RunReasonTaskReviewRequested   = shared.RunReasonTaskReviewRequested
-	RunReasonTaskChangesRequested  = shared.RunReasonTaskChangesRequested
-	RunReasonRoutineTrigger        = shared.RunReasonRoutineTrigger
-	RunReasonHeartbeat             = shared.RunReasonHeartbeat
-	RunReasonBudgetAlert           = shared.RunReasonBudgetAlert
-	RunReasonAgentError            = shared.RunReasonAgentError
+	RunReasonTaskAssigned           = shared.RunReasonTaskAssigned
+	RunReasonTaskComment            = shared.RunReasonTaskComment
+	RunReasonHandoffCompleted       = shared.RunReasonHandoffCompleted
+	RunReasonTaskBlockersResolved   = shared.RunReasonTaskBlockersResolved
+	RunReasonTaskChildrenCompleted  = shared.RunReasonTaskChildrenCompleted
+	RunReasonTaskBlockerFailed      = shared.RunReasonTaskBlockerFailed
+	RunReasonTaskCompletionGateHeld = shared.RunReasonTaskCompletionGateHeld
+	RunReasonApprovalResolved       = shared.RunReasonApprovalResolved
+	RunReasonTaskReviewRequested    = shared.RunReasonTaskReviewRequested
+	RunReasonTaskChangesRequested   = shared.RunReasonTaskChangesRequested
+	RunReasonRoutineTrigger         = shared.RunReasonRoutineTrigger
+	RunReasonHeartbeat              = shared.RunReasonHeartbeat
+	RunReasonBudgetAlert            = shared.RunReasonBudgetAlert
+	RunReasonAgentError             = shared.RunReasonAgentError
 )
 
 // These reasons were persisted by earlier workflow templates. Keep them

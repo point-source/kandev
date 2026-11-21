@@ -1090,6 +1090,7 @@ func (s *Service) stepFromPortableWithMatcherOptions(
 		AutoAdvanceRequiresSignal:   sp.AutoAdvanceRequiresSignal,
 		CancelTriggersTurnComplete:  sp.CancelTriggersTurnComplete,
 		CompleteTaskOnEnter:         sp.CompleteTaskOnEnter,
+		CompletionGateCaps:          sp.CompletionGateCaps,
 		WIPLimit:                    sp.WIPLimit,
 		PullFromStepID:              sp.PullFromStepID(posToID),
 		StageType:                   sp.StageType,

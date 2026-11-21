@@ -24,6 +24,7 @@ import type { WorkspaceState } from "@/lib/state/slices/workspace/types";
 import { ConfigSection } from "./config-section";
 import { DangerZoneSection } from "./danger-zone-section";
 import { GitSection } from "./git-section";
+import { CompletionGatesSection } from "./completion-gates-card";
 import { OfficeConfigSyncSection } from "./office-config-sync-section";
 import { useTranslation } from "react-i18next";
 
@@ -622,6 +623,8 @@ export function SettingsContent() {
           onSave={s.handleSavePermissions}
         />
       </div>
+
+      <CompletionGatesSection />
 
       <div>
         <SectionHeader>{t("office:recovery")}</SectionHeader>

@@ -1094,6 +1094,9 @@ type httpCreateTaskRequest struct {
 	BlockedBy              []string               `json:"blocked_by,omitempty"`
 	RelatedTaskIDs         []string               `json:"related_task_ids,omitempty"`
 	InitialWorkspaceLayout string                 `json:"initial_workspace_layout,omitempty"`
+	// CompletionCriteria names Office completion criteria; omitted means the
+	// workspace default applies.
+	CompletionCriteria *[]models.TaskCompletionCriterionRequest `json:"completion_criteria,omitempty"`
 	// StartWhenUnblocked records the agent start as an intent consumed by
 	// dependency resolution. nil derives it from StartAgent when BlockedBy is set.
 	StartWhenUnblocked *bool  `json:"start_when_unblocked,omitempty"`
@@ -1327,6 +1330,7 @@ func (h *TaskHandlers) httpCreateTask(c *gin.Context) {
 		WorkspacePath:                         body.WorkspacePath,
 		BlockedBy:                             body.BlockedBy,
 		RelatedTaskIDs:                        body.RelatedTaskIDs,
+		CompletionCriteriaRequest:             body.CompletionCriteria,
 		StartWhenUnblocked:                    body.StartWhenUnblocked,
 		ProjectID:                             body.ProjectID,
 		Labels:                                labels,

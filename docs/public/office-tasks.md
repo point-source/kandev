@@ -136,6 +136,40 @@ To finish a task, drop its card on **Done** in the Office board or choose **Done
 
 Pending approvers or unmet completion criteria can refuse the move, leaving the task in its original status and step. Resolve the named gate before trying again. Tasks already on the final step keep their existing approval check, which can redirect a Done request to review.
 
+## Require CI and review before Done
+
+An Office task can carry completion criteria that Kandev checks itself against
+the linked pull request, so a task cannot reach Done on agent decisions alone.
+
+- **CI at PR head** passes when every check at the pull request's current head
+  commit succeeded. List protected paths (for example `tests/**` or
+  `.github/**`) to stop a pull request from weakening its own tests or CI: a
+  change to a protected path holds the criterion until a person chooses
+  **Allow for this commit** or **Send back**.
+- **Review at PR head** passes when every required reviewer approved the
+  current head commit. A new commit makes earlier approvals stale.
+
+Add criteria in the **Completion criteria** group of the new-task dialog, or set
+workspace defaults under **Preferences → Completion gates**. An agent or routine
+cannot remove a workspace default; a person creating a task can. Both criteria
+need a repository on the task.
+
+When CI fails after the task left Work, Kandev returns it to Work and wakes the
+assignee with the failing checks. Rework rounds and verification attempts are
+capped (default 3, workspace ceiling 10). Reaching a cap holds the criterion,
+stops the assignee's runs, and asks the criterion's owner once: the creating
+agent, the workspace CEO, or you through the Inbox.
+
+The task page's **Completion criteria** section shows each criterion's status,
+the commit its proof is pinned to, who verified it, and its confidence level
+(**machine** for CI, **judgement** for review). Use **Override completion** with
+a reason to finish a blocked task anyway; the override is recorded.
+
+With authentication off, any process on this machine can approve a task as you,
+so a review criterion can pass without a real review. The dialog and settings
+warn about this; turn on Authentication in **Settings → System → Feature
+Toggles** to prevent it.
+
 ## Handle human requests
 
 Open **Inbox** to review pending approval requests and items needing attention. Inspect the linked task or agent before approving or rejecting an action. Workspace governance requests, such as hiring an agent or changing skills, have their own human approval controls. Workflow review requests link back to the task, where you guide the reviewer or approver agent as described above.

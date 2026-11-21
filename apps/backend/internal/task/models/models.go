@@ -1652,6 +1652,9 @@ type Task struct {
 	// this field are routed to SetTaskRunner / ClearTaskRunner inside
 	// the task repository.
 	AssigneeAgentProfileID string `json:"assignee_agent_profile_id,omitempty"`
+	// CompletionCriteria are inserted in the task's create transaction. It is
+	// transient and is not read back on task loads.
+	CompletionCriteria []TaskCompletionCriterion `json:"-"`
 	// AssigneeUserID is the HUMAN assignee, entirely independent of the agent
 	// assignee above: a task can carry both, and setting one never clears the
 	// other. It is advisory and gates nothing; taking a task over is a

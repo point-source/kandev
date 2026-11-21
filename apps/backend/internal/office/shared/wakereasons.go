@@ -32,6 +32,7 @@ var WakeReasonRegistry = map[string]runsmodels.PriorityClass{
 	RunReasonTaskBlockersResolved:     runsmodels.PriorityClassEvent,
 	RunReasonTaskChildrenCompleted:    runsmodels.PriorityClassEvent,
 	RunReasonTaskBlockerFailed:        runsmodels.PriorityClassEvent,
+	RunReasonTaskCompletionGateHeld:   runsmodels.PriorityClassEvent,
 	RunReasonApprovalResolved:         runsmodels.PriorityClassEvent,
 	RunReasonTaskReviewRequested:      runsmodels.PriorityClassEvent,
 	RunReasonTaskChangesRequested:     runsmodels.PriorityClassEvent,

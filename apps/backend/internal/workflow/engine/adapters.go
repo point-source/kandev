@@ -127,6 +127,8 @@ type DecisionInfo struct {
 	DeciderID   string
 	Role        string
 	Comment     string
+	// PRHeads is the linked PR heads revision observed at decision time.
+	PRHeads string
 
 	// SupersededAt is non-nil once a rework round has superseded this row
 	// (workflow_step_decisions.superseded_at). ListStepDecisions returns

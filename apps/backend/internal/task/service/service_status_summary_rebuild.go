@@ -505,7 +505,9 @@ func completionGateSummaryFromObservation(
 	return &statussummary.CompletionGateSummary{
 		Revision: observation.Revision, CriteriaCount: observation.CriteriaCount,
 		VerifiedCount: observation.VerifiedCount, BlockerCount: observation.BlockerCount,
-		Blocked: observation.Blocked,
+		Blocked: observation.Blocked, HeldCount: observation.HeldCount,
+		FailedCount: observation.FailedCount, CannotEvaluateCount: observation.CannotEvaluateCount,
+		WeakestConfidence: observation.WeakestConfidence, StateRevision: observation.StateRevision,
 	}
 }
 

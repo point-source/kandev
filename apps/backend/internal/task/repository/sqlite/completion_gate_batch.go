@@ -15,6 +15,7 @@ const completionGateSummaryBatchSize = 100
 type completionGateSummaryTask struct {
 	updatedAt           time.Time
 	revision            int64
+	stateRevision       int64
 	criteria            []models.TaskCompletionCriterion
 	requiredAssignments int
 	assignedChildren    int
@@ -105,15 +106,15 @@ func (r *Repository) readTaskCompletionGateSummaryChunk(
 	}
 
 	placeholders, args := buildInPlaceholders(taskIDs)
-	setQuery := `SELECT task_id, revision FROM task_completion_sets WHERE task_id IN (` + placeholders + `)`
+	setQuery := `SELECT task_id, revision, state_revision FROM task_completion_sets WHERE task_id IN (` + placeholders + `)`
 	if err := readCompletionGateSummaryRows(ctx, tx, r.ro.Rebind(setQuery), args, func(rows *sql.Rows) error {
 		var taskID string
-		var revision int64
-		if err := rows.Scan(&taskID, &revision); err != nil {
+		var revision, stateRevision int64
+		if err := rows.Scan(&taskID, &revision, &stateRevision); err != nil {
 			return err
 		}
 		if task := tasks[taskID]; task != nil {
-			task.revision = revision
+			task.revision, task.stateRevision = revision, stateRevision
 		}
 		return nil
 	}); err != nil {
@@ -121,7 +122,8 @@ func (r *Repository) readTaskCompletionGateSummaryChunk(
 	}
 
 	criteriaQuery := `
-		SELECT task_id, criterion_revision, verified_revision, evidence_kind, evidence_id, evidence_revision
+		SELECT task_id, criterion_revision, verified_revision, evidence_kind, evidence_id, evidence_revision,
+			kind, held_reason, result
 		FROM task_completion_criteria
 		WHERE task_id IN (` + placeholders + `)
 		ORDER BY task_id, criterion_id`
@@ -138,6 +140,13 @@ func (r *Repository) readTaskCompletionGateSummaryChunk(
 	executions, err := r.readCompletionGateBatchExecutions(ctx, tx, tasks, placeholders, args)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load completion-gate execution evidence: %w", err)
+	}
+	headSets, err := r.readCompletionGateBatchPRHeadSets(ctx, tx, tasks, placeholders, args)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load completion-gate pull-request head sets: %w", err)
+	}
+	for key, revision := range headSets {
+		prHeads[key] = revision
 	}
 
 	observations := completionGateBatchObservations(tasks, prHeads, executions)
@@ -260,8 +269,11 @@ func completionGateBatchEvidenceCurrent(
 	switch subject.Kind {
 	case models.TaskCompletionEvidenceTaskRevision:
 		return completionEvidenceSubjectCurrent(subject, &taskUpdatedAt, "", true)
-	case models.TaskCompletionEvidenceGitHubPRHead:
-		head, exists := prHeads[key]
+	case models.TaskCompletionEvidenceGitHubPRHead, models.TaskCompletionEvidenceGitHubPRHeads:
+		head, exists := prHeads[completionGateEvidenceKey{taskID: taskID, id: subject.Kind + ":" + subject.ID}]
+		if subject.Kind == models.TaskCompletionEvidenceGitHubPRHead {
+			head, exists = prHeads[key]
+		}
 		return completionEvidenceSubjectCurrent(subject, nil, head, exists)
 	case models.TaskCompletionEvidenceExecution:
 		_, exists := executions[key]
@@ -282,9 +294,20 @@ func completionGateBatchObservations(tasks map[string]*completionGateSummaryTask
 		}
 		observation := &models.TaskCompletionGateSummaryObservation{
 			Revision:      task.revision,
+			StateRevision: task.stateRevision,
 			CriteriaCount: len(task.criteria),
 		}
+		observation.WeakestConfidence = models.WeakestTaskCompletionConfidence(task.criteria)
 		for _, criterion := range task.criteria {
+			if criterion.HeldReason != "" {
+				observation.HeldCount++
+			}
+			switch criterion.Result {
+			case models.TaskCompletionResultFail:
+				observation.FailedCount++
+			case models.TaskCompletionResultCannotEvaluate:
+				observation.CannotEvaluateCount++
+			}
 			evidenceCurrent := completionGateBatchEvidenceCurrent(criterion, task.updatedAt, prHeads, executions, taskID)
 			if completionCriterionBlocked(criterion, evidenceCurrent) {
 				observation.BlockerCount++
@@ -320,9 +343,10 @@ func scanCompletionGateBatchCriterion(rows *sql.Rows, tasks map[string]*completi
 		evidenceRevision string
 	)
 	if err := rows.Scan(&taskID, &criterion.CriterionRevision, &criterion.VerifiedRevision,
-		&evidenceKind, &evidenceID, &evidenceRevision); err != nil {
+		&evidenceKind, &evidenceID, &evidenceRevision, &criterion.Kind, &criterion.HeldReason, &criterion.Result); err != nil {
 		return err
 	}
+	criterion.Kind = models.NormalizeTaskCompletionCriterionKind(criterion.Kind)
 	if evidenceKind != "" {
 		criterion.Evidence = &models.TaskCompletionEvidence{
 			Subject: models.TaskCompletionEvidenceSubject{
@@ -334,4 +358,35 @@ func scanCompletionGateBatchCriterion(rows *sql.Rows, tasks map[string]*completi
 		task.criteria = append(task.criteria, criterion)
 	}
 	return nil
+}
+
+// readCompletionGateBatchPRHeadSets returns the live PR heads revision of each
+// task that has verified host-criterion evidence, keyed by
+// "github_pr_heads:<task id>".
+func (r *Repository) readCompletionGateBatchPRHeadSets(
+	ctx context.Context,
+	tx *sql.Tx,
+	tasks map[string]*completionGateSummaryTask,
+	placeholders string,
+	args []interface{},
+) (map[completionGateEvidenceKey]string, error) {
+	if !completionGateBatchHasEvidence(tasks, models.TaskCompletionEvidenceGitHubPRHeads) {
+		return map[completionGateEvidenceKey]string{}, nil
+	}
+	query := `SELECT task_id, id, head_sha FROM github_task_prs WHERE task_id IN (` + placeholders + `) AND detached_at IS NULL`
+	byTask := make(map[string][]models.TaskPRHead)
+	err := readCompletionGateSummaryRows(ctx, tx, r.ro.Rebind(query), args, func(rows *sql.Rows) error {
+		var taskID string
+		var head models.TaskPRHead
+		if err := rows.Scan(&taskID, &head.ID, &head.HeadSHA); err != nil {
+			return err
+		}
+		byTask[taskID] = append(byTask[taskID], head)
+		return nil
+	})
+	observed := make(map[completionGateEvidenceKey]string, len(byTask))
+	for taskID, heads := range byTask {
+		observed[completionGateEvidenceKey{taskID: taskID, id: models.TaskCompletionEvidenceGitHubPRHeads + ":" + taskID}] = models.TaskPRHeadsRevision(heads)
+	}
+	return observed, err
 }

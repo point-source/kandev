@@ -44,6 +44,9 @@ type RecordAgentDecisionResult struct {
 	DecidedAt         time.Time       `json:"decided_at"`
 	TransitionApplied bool            `json:"transition_applied"`
 	Guards            []DecisionGuard `json:"guards"`
+	// Notice explains a recorded decision that does not count toward a
+	// completion criterion, for example review_self_approval_ignored.
+	Notice string `json:"notice,omitempty"`
 }
 
 // DecisionValidationError identifies a caller-correctable decision request.

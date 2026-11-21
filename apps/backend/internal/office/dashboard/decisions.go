@@ -305,6 +305,7 @@ func (s *DashboardService) recordTaskDecision(
 		return nil, err
 	}
 
+	prHeads, _ := s.reviewHeadsForDecision(ctx, in.taskID, in.callerType, in.callerID)
 	result, err := dispatcher.RecordDecision(ctx, officeenginedispatcher.RecordDecisionInput{
 		TaskID:        in.taskID,
 		StepID:        stepID,
@@ -314,10 +315,12 @@ func (s *DashboardService) recordTaskDecision(
 		DeciderID:     in.callerID,
 		Role:          role,
 		Comment:       in.comment,
+		PRHeads:       prHeads,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("record decision: %w", err)
 	}
+	s.notifyReviewDecisionRecorded(ctx, in.taskID, result.StepID, in.decision)
 
 	// AC-57b-i: the engine stamped decision_id/decided_at once at write
 	// time; they are echoed back here, never re-derived. result.StepID is

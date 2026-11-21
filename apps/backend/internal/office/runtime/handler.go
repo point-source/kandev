@@ -544,6 +544,11 @@ func (h *Handler) respondRuntimeError(
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if code, ok := taskservice.IsCompletionCriteriaRefusal(err); ok {
+		h.appendDeniedRunEvent(c.Request.Context(), runCtx, action, targetType, targetID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": code, "error_code": code})
+		return
+	}
 	var decisionValidation *DecisionValidationError
 	if errors.As(err, &decisionValidation) {
 		h.appendDeniedRunEvent(c.Request.Context(), runCtx, action, targetType, targetID, err)

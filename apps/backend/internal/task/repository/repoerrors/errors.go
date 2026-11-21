@@ -68,6 +68,14 @@ var ErrTaskCompletionEvidenceChanged = errors.New("task completion evidence chan
 // an unmet criterion needs an explicit native human confirmation.
 var ErrTaskCompletionHumanConfirmationRequired = errors.New("human confirmation required to weaken unmet completion criteria")
 
+// ErrTaskCompletionVerifierReserved reports evidence submitted for a
+// host-verified criterion by a caller other than its in-process verifier.
+var ErrTaskCompletionVerifierReserved = errors.New("task completion criterion is verified by Kandev")
+
+// ErrTaskCompletionSelfVerification reports a gate change requested by one
+// of the task's own runs or by its assignee agent.
+var ErrTaskCompletionSelfVerification = errors.New("a task's own runs cannot change its completion criteria")
+
 // ErrTaskOperationConflict reports reuse of an exact operation identity with
 // a different task or payload.
 var ErrTaskOperationConflict = errors.New("task operation identity conflict")

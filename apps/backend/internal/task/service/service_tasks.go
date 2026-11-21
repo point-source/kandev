@@ -429,6 +429,9 @@ func (s *Service) prepareTaskForCreation(ctx context.Context, req *CreateTaskReq
 		return nil, err
 	}
 
+	if err := s.resolveCompletionCriteria(ctx, req); err != nil {
+		return nil, err
+	}
 	workflowStepID := s.resolveWorkflowStep(ctx, req)
 	// Only the untrusted HTTP create path (RequireAssigneeAgentProfileValidation)
 	// promises a runner seat for its assignee; internal callers that set
@@ -1125,8 +1128,10 @@ func (s *Service) buildTask(ctx context.Context, req *CreateTaskRequest, workflo
 		}
 		metadata[models.MetaKeyWorkspacePath] = wsPath
 	}
+	taskID := uuid.New().String()
 	return &models.Task{
-		ID:                     uuid.New().String(),
+		ID:                     taskID,
+		CompletionCriteria:     prepareCreateCompletionCriteria(ctx, taskID, req.CompletionCriteria),
 		WorkspaceID:            req.WorkspaceID,
 		WorkflowID:             req.WorkflowID,
 		WorkflowStepID:         workflowStepID,

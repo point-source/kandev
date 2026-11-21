@@ -194,6 +194,7 @@ type TaskStarter interface {
 // The unexported service helpers (kandevBasePath, resolveAgentType,
 // resolveProjectSkillDir) are stored as function callbacks configured via setters.
 type SchedulerService struct {
+	completionHolds         CompletionHoldChecker
 	repo                    *sqlite.Repository
 	logger                  *logger.Logger
 	svc                     *service.Service

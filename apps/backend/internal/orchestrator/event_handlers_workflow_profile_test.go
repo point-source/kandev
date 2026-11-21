@@ -312,18 +312,25 @@ func TestAutoStartStepPrompt_OfficeWithoutRuntimeEnvFailsClosed(t *testing.T) {
 	)
 	prompt := spoofedReference + "\n\n" +
 		sysprompt.InjectOfficeContext("wrong-task", "wrong-session", "Do the work")
-	err = svc.autoStartStepPrompt(ctx, "task-office", session, step, prompt, false, false, nil)
-	if err == nil || !strings.Contains(err.Error(), "office tasks must be started through Office") {
-		t.Fatalf("autoStartStepPrompt error = %v, want Office scheduler guard", err)
+	// The composed first-turn prompt carries canonical Office context.
+	state, actionable, err := svc.prepareAutoStartStepPrompt(ctx, "task-office", session, step, prompt, false, false, nil, "")
+	if err != nil || !actionable {
+		t.Fatalf("prepare auto-start prompt: actionable=%v err=%v", actionable, err)
 	}
+	svc.requeueAutoStartStepMessage(state)
+	content := state.recordedPrompt
 
-	// recordAutoStartMessage persists the first-turn message before
-	// StartCreatedSession enforces the Office scheduler guard. Verify that the
-	// message still has canonical Office context even though launch is rejected.
-	if len(messages.userMessages) != 1 {
-		t.Fatalf("expected one recorded first-turn message, got %d", len(messages.userMessages))
+	// A CREATED Office session is launched by its Office run, so the step
+	// entry neither launches it nor records a message into it.
+	if err := svc.autoStartStepPrompt(ctx, "task-office", session, step, prompt, false, false, nil); err != nil {
+		t.Fatalf("autoStartStepPrompt error = %v, want the Office session left to its run", err)
 	}
-	content := messages.userMessages[0].content
+	if len(messages.userMessages) != 0 {
+		t.Fatalf("recorded %d messages into an Office-owned session", len(messages.userMessages))
+	}
+	if got := svc.messageQueue.GetStatus(ctx, "session-office").Count; got != 1 {
+		t.Fatalf("queued handoff count = %d, want it kept for the Office run", got)
+	}
 	if !strings.Contains(content, "KANDEV OFFICE MCP TOOLS") {
 		t.Fatalf("expected Office context, got %q", content)
 	}

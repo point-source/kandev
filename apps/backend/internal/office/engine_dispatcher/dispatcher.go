@@ -84,6 +84,8 @@ type RecordDecisionInput struct {
 	// started ("active") session. Non-agent decision paths can leave it empty
 	// and retain the task-scoped fallback.
 	SessionID string
+	// PRHeads is the task's linked PR heads revision at decision time.
+	PRHeads string
 }
 
 // RecordDecisionResult mirrors engine.RecordDecisionResult plus the
@@ -299,6 +301,7 @@ func (d *Dispatcher) RecordDecision(ctx context.Context, in RecordDecisionInput)
 		DeciderID:     in.DeciderID,
 		Role:          in.Role,
 		Comment:       in.Comment,
+		PRHeads:       in.PRHeads,
 	})
 	// AC-15: the engine returns a populated result alongside a non-nil err
 	// exactly when the write succeeded but the post-write re-evaluation
@@ -379,6 +382,27 @@ func (d *Dispatcher) ResolveParticipantRoleReadOnly(
 
 // resolveActiveSessionID returns AC-16's active-session id, or "" when no
 // such session is resolvable (AC-16a) — never an error for that case.
+type guardedTransitionRetrier interface {
+	ReevaluateGuardedTransitions(ctx context.Context, taskID, sessionID, stepID, operationID string, accept func(string) bool) (engine.HandleResult, error)
+}
+
+// RetryGuardedTransitions re-evaluates the guarded on_turn_complete
+// transitions of stepID whose target accept admits, once per operationID,
+// against the task's active session. It reports whether a transition was
+// applied.
+func (d *Dispatcher) RetryGuardedTransitions(ctx context.Context, taskID, stepID, operationID string, accept func(string) bool) (bool, error) {
+	retrier, ok := d.engine.(guardedTransitionRetrier)
+	if !ok {
+		return false, nil
+	}
+	sessionID, err := d.resolveActiveSessionID(ctx, taskID)
+	if err != nil {
+		return false, fmt.Errorf("resolve session: %w", err)
+	}
+	result, err := retrier.ReevaluateGuardedTransitions(ctx, taskID, sessionID, stepID, operationID, accept)
+	return result.Transitioned, err
+}
+
 func (d *Dispatcher) resolveActiveSessionID(ctx context.Context, taskID string) (string, error) {
 	session, err := d.sessions.GetActiveTaskSessionByTaskID(ctx, taskID)
 	if err != nil {

@@ -260,6 +260,9 @@ type WorkflowStep struct {
 	CancelTriggersTurnComplete bool `json:"cancel_triggers_turn_complete"`
 	// CompleteTaskOnEnter marks the final step as completing its task on entry.
 	CompleteTaskOnEnter bool `json:"complete_task_on_enter"`
+	// CompletionGateCaps are the default completion-gate caps for tasks whose
+	// completing step this is. Nil means no step default.
+	CompletionGateCaps *CompletionGateCaps `json:"completion_gate_caps,omitempty"`
 	// OrderRevision is bumped by ReorderStepTasks (AC-TASKS-KANBAN-TASK-
 	// REORDERING-001.25/.37) each time this step's task order changes. A
 	// consumer that records the value it last saw can reject a WS event
@@ -580,4 +583,11 @@ func remapActionStepID(config map[string]any, idMap map[string]string) map[strin
 	maps.Copy(cfg, config)
 	cfg["step_id"] = newID
 	return cfg
+}
+
+// CompletionGateCaps are step-level defaults for completion-gate caps. Zero
+// leaves a cap to the workspace default.
+type CompletionGateCaps struct {
+	MaxVerificationAttempts int `json:"max_verification_attempts,omitempty" yaml:"max_verification_attempts,omitempty"`
+	MaxReworkRounds         int `json:"max_rework_rounds,omitempty" yaml:"max_rework_rounds,omitempty"`
 }

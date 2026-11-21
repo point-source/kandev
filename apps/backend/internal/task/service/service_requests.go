@@ -106,6 +106,14 @@ type CreateTaskRequest struct {
 	TrustedHandoffMetadata bool `json:"-"`
 	// RequiredSubtaskCount is set only by the trusted routine materializer.
 	RequiredSubtaskCount int `json:"-"`
+	// CompletionCriteria are stored in the task's create transaction. Callers
+	// resolve them through their own policy; verification state is discarded.
+	CompletionCriteria []models.TaskCompletionCriterion `json:"-"`
+	// CompletionCriteriaRequest is the creator's requested criteria, resolved
+	// by the registered resolver; nil means none were named.
+	CompletionCriteriaRequest *[]models.TaskCompletionCriterionRequest `json:"-"`
+	// CompletionCriteriaCreator identifies the creator for resolution.
+	CompletionCriteriaCreator models.CompletionCriteriaCreator `json:"-"`
 	// AutomationStartOwned reserves the new task's initial start for the
 	// automation run that creates it (models.MetaKeyAutomationStartOwned). It is
 	// internal-only: the marker suppresses workflow auto-start, so it is never

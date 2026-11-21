@@ -64,5 +64,6 @@ func (r *runtimeDecisionRecorder) RecordAgentDecision(
 		DecidedAt:         result.DecidedAt,
 		TransitionApplied: result.TransitionApplied,
 		Guards:            guards,
+		Notice:            result.Notice,
 	}, nil
 }

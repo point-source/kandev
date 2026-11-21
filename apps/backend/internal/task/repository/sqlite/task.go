@@ -487,6 +487,9 @@ func (r *Repository) insertTaskTx(ctx context.Context, tx *sql.Tx, task *models.
 	if err := r.claimCreationAttachmentsTx(ctx, tx, task); err != nil {
 		return "", err
 	}
+	if err := r.insertInitialCompletionCriteriaTx(ctx, tx, task); err != nil {
+		return "", err
+	}
 	return entryID, nil
 }
 

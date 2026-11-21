@@ -17,6 +17,7 @@ import (
 	"github.com/kandev/kandev/internal/office/service"
 	"github.com/kandev/kandev/internal/office/shared"
 	runsservice "github.com/kandev/kandev/internal/runs/service"
+	taskmodels "github.com/kandev/kandev/internal/task/models"
 	taskservice "github.com/kandev/kandev/internal/task/service"
 )
 
@@ -1559,6 +1560,9 @@ type taskTemplate struct {
 	ProjectID            string   `json:"project_id,omitempty"`
 	BlockedBy            []string `json:"blocked_by,omitempty"`
 	RequiredSubtaskCount int      `json:"required_subtask_count,omitempty"`
+	// CompletionCriteria are requested for each materialized task; omitted
+	// applies the workspace default, which a routine cannot remove.
+	CompletionCriteria *[]taskmodels.TaskCompletionCriterionRequest `json:"completion_criteria,omitempty"`
 }
 
 func parseTaskTemplate(raw string) taskTemplate {

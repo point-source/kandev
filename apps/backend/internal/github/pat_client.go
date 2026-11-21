@@ -661,10 +661,16 @@ func (c *PATClient) GetPRStatus(ctx context.Context, owner, repo string, number 
 }
 
 func (c *PATClient) ListPRFiles(ctx context.Context, owner, repo string, number int) ([]PRFile, error) {
-	var raw []ghPRFile
 	endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number)
-	if err := c.get(ctx, endpoint, &raw); err != nil {
-		return nil, fmt.Errorf("list PR files: %w", err)
+	var raw []ghPRFile
+	for endpoint != "" {
+		var page []ghPRFile
+		next, err := c.getPaginated(ctx, endpoint, &page)
+		if err != nil {
+			return nil, fmt.Errorf("list PR files: %w", err)
+		}
+		raw = append(raw, page...)
+		endpoint = next
 	}
 	return convertRawPRFiles(raw), nil
 }

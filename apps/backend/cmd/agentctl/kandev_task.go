@@ -14,7 +14,7 @@ const (
 
 func runTaskCmd(args []string) int {
 	if len(args) == 0 {
-		cliError("usage: agentctl kandev task <get|update|create|decision|handoff> [flags]")
+		cliError("usage: agentctl kandev task <get|update|create|decision|handoff|gate> [flags]")
 		return 1
 	}
 	switch args[0] {
@@ -28,6 +28,8 @@ func runTaskCmd(args []string) int {
 		return taskDecision(args[1:])
 	case "handoff":
 		return taskHandoff(args[1:])
+	case "gate":
+		return taskGate(args[1:])
 	default:
 		cliError("unknown task subcommand: %s", args[0])
 		return 1
@@ -153,6 +155,7 @@ func taskCreate(args []string) int {
 	workspaceGroupID := fs.String("workspace-group-id", "", "Workspace group ID to join (required when --workspace-mode=shared_group)")
 	defaultChildWorkspace := fs.String("default-child-workspace", "", "Parent-only: default workspace mode for children (inherit_parent or new_workspace)")
 	defaultChildOrdering := fs.String("default-child-ordering", "", "Parent-only ordering policy for children. 'sequential' records dependency edges between siblings; 'parallel' records none. Note: recording an edge does NOT by itself defer when a child starts.")
+	criteria := registerCriteriaFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		cliError("parse flags: %v", err)
 		return 1
@@ -209,6 +212,14 @@ func taskCreate(args []string) int {
 	}
 	if mode := strings.TrimSpace(*workspaceMode); mode != "" {
 		payload["workspace_mode"] = mode
+	}
+	requested, err := criteria.build()
+	if err != nil {
+		cliError("%v", err)
+		return 1
+	}
+	if requested != nil {
+		payload["completion_criteria"] = requested
 	}
 
 	body, status, err := client.do(http.MethodPost, "/api/v1/office/runtime/tasks", payload)

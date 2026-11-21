@@ -251,15 +251,17 @@ func (a *taskCreatorAdapter) createOfficeTask(
 	carrierMetadata map[string]interface{}, relations officeshared.AgentTaskRelations,
 ) (string, error) {
 	result, err := a.taskSvc.CreateTask(ctx, &taskservice.CreateTaskRequest{ //nolint:exhaustruct
-		WorkspaceID:            workspaceID,
-		Title:                  title,
-		Description:            description,
-		ProjectID:              projectID,
-		AssigneeAgentProfileID: assigneeAgentID,
-		Origin:                 origin,
-		OfficeCarrierMetadata:  carrierMetadata,
-		BlockedBy:              relations.BlockedBy,
-		WorkspacePolicy:        agentWorkspacePolicy(relations),
+		WorkspaceID:               workspaceID,
+		Title:                     title,
+		Description:               description,
+		ProjectID:                 projectID,
+		AssigneeAgentProfileID:    assigneeAgentID,
+		Origin:                    origin,
+		OfficeCarrierMetadata:     carrierMetadata,
+		BlockedBy:                 relations.BlockedBy,
+		WorkspacePolicy:           agentWorkspacePolicy(relations),
+		CompletionCriteriaRequest: relations.CompletionCriteria,
+		CompletionCriteriaCreator: agentCriteriaCreator(relations),
 	})
 	if err != nil {
 		return "", err
@@ -330,17 +332,19 @@ func (a *taskCreatorAdapter) CreateOfficeTaskInWorkflowWithContext(
 		models.MetaKeyOfficeCarrierActorID:        "",
 	}
 	result, err := a.taskSvc.CreateTask(ctx, &taskservice.CreateTaskRequest{ //nolint:exhaustruct
-		WorkspaceID:            workspaceID,
-		WorkflowID:             workflowID,
-		Title:                  title,
-		Description:            description,
-		ProjectID:              options.ProjectID,
-		AssigneeAgentProfileID: assigneeAgentID,
-		Metadata:               metadata,
-		OfficeCarrierMetadata:  carrierMetadata,
-		RequiredSubtaskCount:   options.RequiredSubtaskCount,
-		BlockedBy:              append([]string(nil), options.BlockedBy...),
-		Origin:                 models.TaskOriginOnboarding,
+		WorkspaceID:               workspaceID,
+		WorkflowID:                workflowID,
+		Title:                     title,
+		Description:               description,
+		ProjectID:                 options.ProjectID,
+		AssigneeAgentProfileID:    assigneeAgentID,
+		Metadata:                  metadata,
+		OfficeCarrierMetadata:     carrierMetadata,
+		RequiredSubtaskCount:      options.RequiredSubtaskCount,
+		BlockedBy:                 append([]string(nil), options.BlockedBy...),
+		CompletionCriteriaRequest: options.CompletionCriteria,
+		CompletionCriteriaCreator: models.CompletionCriteriaCreator{Kind: models.CompletionCriteriaCreatorRoutine, ID: routineID},
+		Origin:                    models.TaskOriginOnboarding,
 	})
 	if err != nil {
 		return "", err
@@ -369,6 +373,8 @@ func (a *taskCreatorAdapter) CreateOfficeSubtask(
 		OfficeCarrierMetadata: carrierMetadata,
 		BlockedBy:             relations.BlockedBy,
 		WorkspaceMode:         relations.WorkspaceMode,
+		CompletionCriteria:    relations.CompletionCriteria,
+		CriteriaCreator:       agentCriteriaCreator(relations),
 	})
 	return taskID, mapAgentRelationError(err, relations)
 }
@@ -526,4 +532,9 @@ func (a *workspaceSettingsProviderAdapter) UpdateRecoveryLookbackHours(workspace
 		return fmt.Errorf("marshal settings: %w", err)
 	}
 	return a.writer.WriteRawSettings(workspaceName, data)
+}
+
+// agentCriteriaCreator attributes runtime-created criteria to the creating agent.
+func agentCriteriaCreator(relations officeshared.AgentTaskRelations) models.CompletionCriteriaCreator {
+	return models.CompletionCriteriaCreator{Kind: models.CompletionCriteriaCreatorAgent, ID: relations.CreatorAgentID}
 }

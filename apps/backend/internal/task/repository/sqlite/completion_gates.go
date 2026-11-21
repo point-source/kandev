@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,7 +35,8 @@ func (r *Repository) SetTaskCompletionCriteriaExact(ctx context.Context, change 
 
 //nolint:cyclop,funlen,gocognit // The transaction replaces the task-owned criteria set with its revision and audit record.
 func (r *Repository) setTaskCompletionCriteria(ctx context.Context, change models.TaskCompletionCriteriaChange, exact bool) (*models.TaskCompletionGateSnapshot, bool, error) {
-	if err := validateCompletionCriteria(change.Criteria); err != nil {
+	change.Criteria = normalizeCompletionCriteria(change.Criteria)
+	if err := validateCompletionCriteriaForTask(change.TaskID, change.Criteria); err != nil {
 		return nil, false, err
 	}
 	if exact && (!validCompletionGateOperation(change.OperationID, change.PayloadDigest, change.ExpectedTaskResourceVersion) ||
@@ -103,7 +105,8 @@ func (r *Repository) setTaskCompletionCriteria(ctx context.Context, change model
 	if _, err := tx.ExecContext(ctx, r.db.Rebind(`
 		INSERT INTO task_completion_sets (task_id, workspace_id, revision, updated_at)
 		VALUES (?, ?, ?, ?)
-		ON CONFLICT(task_id) DO UPDATE SET workspace_id = excluded.workspace_id, revision = excluded.revision, updated_at = excluded.updated_at
+		ON CONFLICT(task_id) DO UPDATE SET workspace_id = excluded.workspace_id, revision = excluded.revision,
+			updated_at = excluded.updated_at, state_revision = task_completion_sets.state_revision + 1
 	`), change.TaskID, change.WorkspaceID, nextRevision, now); err != nil {
 		return nil, false, err
 	}
@@ -111,34 +114,8 @@ func (r *Repository) setTaskCompletionCriteria(ctx context.Context, change model
 		return nil, false, err
 	}
 	for _, criterion := range change.Criteria {
-		criterion.ID = strings.TrimSpace(criterion.ID)
-		criterion.Description = strings.TrimSpace(criterion.Description)
-		criterion.EvidenceSubject.Kind = strings.TrimSpace(criterion.EvidenceSubject.Kind)
-		criterion.EvidenceSubject.ID = strings.TrimSpace(criterion.EvidenceSubject.ID)
-		criterionRevision := int64(1)
-		if previous, exists := oldByID[criterion.ID]; exists {
-			criterionRevision = previous.CriterionRevision
-			if !completionCriterionEquivalent(previous, criterion) {
-				criterionRevision++
-			} else {
-				criterion = previous
-			}
-		}
-		criterion.CriterionRevision = criterionRevision
-		if _, err := tx.ExecContext(ctx, r.db.Rebind(`
-			INSERT INTO task_completion_criteria (
-				task_id, criterion_id, description, criterion_revision, subject_kind, subject_id,
-				verified_revision, evidence_kind, evidence_id, evidence_revision, evidence_summary,
-				evidence_reference, verifier_kind, verifier_id, verified_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`), change.TaskID, criterion.ID, criterion.Description, criterionRevision,
-			criterion.EvidenceSubject.Kind, criterion.EvidenceSubject.ID, criterion.VerifiedRevision,
-			evidenceField(criterion.Evidence, func(e models.TaskCompletionEvidence) string { return e.Subject.Kind }),
-			evidenceField(criterion.Evidence, func(e models.TaskCompletionEvidence) string { return e.Subject.ID }),
-			evidenceField(criterion.Evidence, func(e models.TaskCompletionEvidence) string { return e.Subject.Revision }),
-			evidenceField(criterion.Evidence, func(e models.TaskCompletionEvidence) string { return e.Summary }),
-			evidenceField(criterion.Evidence, func(e models.TaskCompletionEvidence) string { return e.Reference }),
-			criterion.VerifierKind, criterion.VerifierID, criterion.VerifiedAt); err != nil {
+		criterion = nextStoredCriterion(oldByID, criterion, change.ActorKind, change.ActorID)
+		if err := insertCompletionCriterionTx(ctx, tx, r.db.Rebind, change.TaskID, criterion); err != nil {
 			return nil, false, err
 		}
 	}
@@ -225,6 +202,9 @@ func (r *Repository) verifyTaskCompletionCriterion(ctx context.Context, change m
 			break
 		}
 	}
+	if models.IsHostVerifiedCriterionKind(criterion.Kind) {
+		return nil, false, repoerrors.ErrTaskCompletionVerifierReserved
+	}
 	if criterion.ID == "" || criterion.EvidenceSubject.Kind != change.Evidence.Subject.Kind ||
 		criterion.EvidenceSubject.ID != change.Evidence.Subject.ID {
 		return nil, false, repoerrors.ErrTaskCompletionEvidenceChanged
@@ -245,6 +225,9 @@ func (r *Repository) verifyTaskCompletionCriterion(ctx context.Context, change m
 		change.Evidence.Subject.Revision, strings.TrimSpace(change.Evidence.Summary),
 		strings.TrimSpace(change.Evidence.Reference), change.ActorKind, change.ActorID,
 		verifiedAt, change.TaskID, change.CriterionID, criterion.CriterionRevision); err != nil {
+		return nil, false, err
+	}
+	if err := r.bumpCompletionStateTx(ctx, tx, change.TaskID); err != nil {
 		return nil, false, err
 	}
 	details, _ := json.Marshal(change.Evidence)
@@ -360,37 +343,21 @@ func (r *Repository) readTaskCompletionGateTx(ctx context.Context, tx *sql.Tx, t
 		}
 		return nil, err
 	}
-	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT revision FROM task_completion_sets WHERE task_id = ?`), taskID).Scan(&snapshot.Revision); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT revision, state_revision FROM task_completion_sets WHERE task_id = ?`), taskID).Scan(&snapshot.Revision, &snapshot.StateRevision); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, r.db.Rebind(`
-		SELECT criterion_id, description, criterion_revision, subject_kind, subject_id,
-			verified_revision, evidence_kind, evidence_id, evidence_revision, evidence_summary,
-			evidence_reference, verifier_kind, verifier_id, verified_at
+		SELECT `+completionCriterionColumns+`
 		FROM task_completion_criteria WHERE task_id = ? ORDER BY criterion_id
 	`), taskID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var item models.TaskCompletionCriterion
-		var evidenceKind, evidenceID, evidenceRevision, evidenceSummary, evidenceReference string
-		var verifiedAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.Description, &item.CriterionRevision,
-			&item.EvidenceSubject.Kind, &item.EvidenceSubject.ID, &item.VerifiedRevision,
-			&evidenceKind, &evidenceID, &evidenceRevision, &evidenceSummary, &evidenceReference,
-			&item.VerifierKind, &item.VerifierID, &verifiedAt); err != nil {
+		item, err := scanCompletionCriterion(rows)
+		if err != nil {
 			_ = rows.Close()
 			return nil, err
-		}
-		if evidenceKind != "" {
-			item.Evidence = &models.TaskCompletionEvidence{
-				Subject: models.TaskCompletionEvidenceSubject{Kind: evidenceKind, ID: evidenceID, Revision: evidenceRevision},
-				Summary: evidenceSummary, Reference: evidenceReference,
-			}
-		}
-		if verifiedAt.Valid {
-			item.VerifiedAt = &verifiedAt.Time
 		}
 		snapshot.Criteria = append(snapshot.Criteria, item)
 	}
@@ -401,21 +368,10 @@ func (r *Repository) readTaskCompletionGateTx(ctx context.Context, tx *sql.Tx, t
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	for _, criterion := range snapshot.Criteria {
-		blocked, err := r.completionCriterionBlockedTx(ctx, tx, taskID, criterion, lockEvidence)
-		if err != nil {
-			return nil, err
-		}
-		if blocked {
-			var reason string
-			if criterion.VerifiedRevision != criterion.CriterionRevision || criterion.Evidence == nil {
-				reason = "unverified"
-			} else {
-				reason = "evidence_stale"
-			}
-			snapshot.Blockers = append(snapshot.Blockers, models.TaskCompletionBlocker{CriterionID: criterion.ID, Reason: reason})
-		}
+	if err := r.appendCriterionBlockersTx(ctx, tx, taskID, snapshot, lockEvidence); err != nil {
+		return nil, err
 	}
+	snapshot.WeakestConfidence = models.WeakestTaskCompletionConfidence(snapshot.Criteria)
 	required, assigned, err := r.readRequiredSubtaskAssignmentsTx(ctx, tx, taskID)
 	if err != nil {
 		return nil, err
@@ -437,7 +393,72 @@ func (r *Repository) completionCriterionBlockedTx(ctx context.Context, tx *sql.T
 }
 
 func completionCriterionBlocked(criterion models.TaskCompletionCriterion, evidenceCurrent bool) bool {
-	return criterion.VerifiedRevision != criterion.CriterionRevision || criterion.Evidence == nil || !evidenceCurrent
+	return criterion.HeldReason != "" || criterion.VerifiedRevision != criterion.CriterionRevision ||
+		criterion.Evidence == nil || !evidenceCurrent
+}
+
+// appendCriterionBlockersTx classifies each unmet criterion and derives the
+// displayed result of attested criteria from their verification.
+func (r *Repository) appendCriterionBlockersTx(ctx context.Context, tx *sql.Tx, taskID string, snapshot *models.TaskCompletionGateSnapshot, lockEvidence bool) error {
+	var heads *taskPRHeads
+	for index, criterion := range snapshot.Criteria {
+		blocked, err := r.completionCriterionBlockedTx(ctx, tx, taskID, criterion, lockEvidence)
+		if err != nil {
+			return err
+		}
+		if criterion.Kind == models.TaskCompletionCriterionAttested {
+			snapshot.Criteria[index].Result = models.TaskCompletionResultPending
+			if !blocked {
+				snapshot.Criteria[index].Result = models.TaskCompletionResultPass
+			}
+		}
+		if !blocked {
+			continue
+		}
+		reason := models.TaskCompletionBlockerUnverified
+		if models.IsHostVerifiedCriterionKind(criterion.Kind) {
+			if heads == nil {
+				live, err := r.readTaskPRHeadsTx(ctx, tx, taskID, lockEvidence)
+				if err != nil {
+					return err
+				}
+				heads = &live
+			}
+			reason = hostCriterionBlocker(criterion, *heads)
+		} else if criterion.VerifiedRevision == criterion.CriterionRevision && criterion.Evidence != nil {
+			reason = models.TaskCompletionBlockerEvidenceStale
+		}
+		snapshot.Blockers = append(snapshot.Blockers, models.TaskCompletionBlocker{CriterionID: criterion.ID, Reason: reason})
+	}
+	return nil
+}
+
+// nextStoredCriterion keeps verification and runtime state for an unchanged
+// criterion, taking its new caps, and starts a fresh revision otherwise.
+func nextStoredCriterion(previousByID map[string]models.TaskCompletionCriterion, criterion models.TaskCompletionCriterion, actorKind, actorID string) models.TaskCompletionCriterion {
+	previous, exists := previousByID[criterion.ID]
+	if exists && completionCriterionEquivalent(previous, criterion) {
+		// A caps confirmation follows the caps it confirmed.
+		if previous.Config.MaxVerificationAttempts != criterion.Config.MaxVerificationAttempts ||
+			previous.Config.MaxReworkRounds != criterion.Config.MaxReworkRounds {
+			previous.Config.CapsConfirmedBy = criterion.Config.CapsConfirmedBy
+		}
+		previous.Config.MaxVerificationAttempts = criterion.Config.MaxVerificationAttempts
+		previous.Config.MaxReworkRounds = criterion.Config.MaxReworkRounds
+		return previous
+	}
+	fresh := models.TaskCompletionCriterion{
+		ID: criterion.ID, Description: criterion.Description, Kind: criterion.Kind,
+		EvidenceSubject: criterion.EvidenceSubject, Config: criterion.Config,
+		OwnerKind: criterion.OwnerKind, OwnerID: criterion.OwnerID, CriterionRevision: 1,
+	}
+	if fresh.OwnerKind == "" {
+		fresh.OwnerKind, fresh.OwnerID = actorKind, actorID
+	}
+	if exists {
+		fresh.CriterionRevision = previous.CriterionRevision + 1
+	}
+	return fresh
 }
 
 func completionEvidenceSubjectCurrent(
@@ -456,7 +477,7 @@ func completionEvidenceSubjectCurrent(
 		}
 		observed, err := time.Parse(time.RFC3339Nano, subject.Revision)
 		return err == nil && observed.Equal(*taskUpdatedAt)
-	case models.TaskCompletionEvidenceGitHubPRHead:
+	case models.TaskCompletionEvidenceGitHubPRHead, models.TaskCompletionEvidenceGitHubPRHeads:
 		return rowExists && liveRevision == subject.Revision
 	case models.TaskCompletionEvidenceExecution:
 		return rowExists && subject.Revision == subject.ID
@@ -491,6 +512,12 @@ func (r *Repository) evidenceSubjectCurrentTx(ctx context.Context, tx *sql.Tx, t
 			return false, err
 		}
 		return completionEvidenceSubjectCurrent(subject, nil, head, true), nil
+	case models.TaskCompletionEvidenceGitHubPRHeads:
+		heads, err := r.readTaskPRHeadsTx(ctx, tx, taskID, lock)
+		if err != nil {
+			return false, err
+		}
+		return subject.ID == taskID && completionEvidenceSubjectCurrent(subject, nil, heads.revision, heads.count > 0), nil
 	case models.TaskCompletionEvidenceExecution:
 		var exists int
 		err := tx.QueryRowContext(ctx, r.db.Rebind(`
@@ -686,7 +713,8 @@ func validEvidenceSubject(subject models.TaskCompletionEvidenceSubject) bool {
 	}
 	switch subject.Kind {
 	case models.TaskCompletionEvidenceTaskRevision, models.TaskCompletionEvidenceExecution,
-		models.TaskCompletionEvidenceArtifact, models.TaskCompletionEvidenceGitHubPRHead:
+		models.TaskCompletionEvidenceArtifact, models.TaskCompletionEvidenceGitHubPRHead,
+		models.TaskCompletionEvidenceGitHubPRHeads:
 		return true
 	default:
 		return false
@@ -696,7 +724,9 @@ func validEvidenceSubject(subject models.TaskCompletionEvidenceSubject) bool {
 func completionCriterionEquivalent(previous, next models.TaskCompletionCriterion) bool {
 	return previous.Description == strings.TrimSpace(next.Description) &&
 		previous.EvidenceSubject.Kind == strings.TrimSpace(next.EvidenceSubject.Kind) &&
-		previous.EvidenceSubject.ID == strings.TrimSpace(next.EvidenceSubject.ID)
+		previous.EvidenceSubject.ID == strings.TrimSpace(next.EvidenceSubject.ID) &&
+		models.NormalizeTaskCompletionCriterionKind(previous.Kind) == models.NormalizeTaskCompletionCriterionKind(next.Kind) &&
+		slices.Equal(normalizeProtectedPaths(previous.Config.ProtectedPaths), normalizeProtectedPaths(next.Config.ProtectedPaths))
 }
 
 func evidenceField(evidence *models.TaskCompletionEvidence, selectValue func(models.TaskCompletionEvidence) string) string {

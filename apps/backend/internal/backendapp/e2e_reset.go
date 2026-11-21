@@ -303,6 +303,7 @@ func handleE2EReset(
 			`DELETE FROM runs WHERE agent_profile_id IN (SELECT id FROM agent_profiles WHERE workspace_id = ?)`,
 			`DELETE FROM office_provider_health WHERE workspace_id = ?`,
 			`DELETE FROM office_workspace_routing WHERE workspace_id = ?`,
+			`DELETE FROM office_completion_gate_settings WHERE workspace_id = ?`,
 			// office_workspace_pauses has no FK/cascade (workspace deletion
 			// cleans it via workspace_deletion.go, but the reused E2E
 			// workspace never hits that path), so a spec that pauses and

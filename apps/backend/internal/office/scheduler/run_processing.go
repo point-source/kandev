@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/office/models"
+	"github.com/kandev/kandev/internal/office/service"
 )
 
 // ClaimNextRun atomically claims the next eligible run from the queue.
@@ -60,5 +61,23 @@ func (ss *SchedulerService) ProcessRunGuard(ctx context.Context, run *runsmodels
 			zap.String("agent_status", string(agent.Status)))
 		return false, nil
 	}
+	if ss.completionHolds != nil {
+		if taskID := service.ParseRunPayload(run.Payload)["task_id"]; ss.completionHolds.AssigneeRunHeld(ctx, taskID, run.AgentProfileID) {
+			ss.logger.Info("run skipped (completion_gate_held)",
+				zap.String("run_id", run.ID), zap.String("task_id", taskID))
+			return false, nil
+		}
+	}
 	return true, nil
+}
+
+// CompletionHoldChecker reports whether a run's agent is the assignee of a
+// task with a held completion criterion (REQ-OFFICE-COMPLETION-GATES-007).
+type CompletionHoldChecker interface {
+	AssigneeRunHeld(ctx context.Context, taskID, agentID string) bool
+}
+
+// SetCompletionHoldChecker installs the completion-gate run guard.
+func (ss *SchedulerService) SetCompletionHoldChecker(checker CompletionHoldChecker) {
+	ss.completionHolds = checker
 }

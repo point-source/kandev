@@ -53,6 +53,9 @@ func isPreAllocationCreateRejection(err error) bool {
 		errors.Is(err, service.ErrAssigneeCannotReachWorkspace):
 		return true
 	}
+	if _, ok := service.IsCompletionCriteriaRefusal(err); ok {
+		return true
+	}
 	var selectionErr *service.RepositorySelectionError
 	return errors.As(err, &selectionErr)
 }
@@ -75,6 +78,9 @@ func handleTaskCreateFailure(c *gin.Context, log *logger.Logger, err error) {
 		c.JSON(http.StatusNotFound, rejectedCreateMessage("task not created"))
 	case errors.Is(err, service.ErrAssigneeCannotReachWorkspace):
 		c.JSON(http.StatusBadRequest, rejectedCreateMessage(err.Error()))
+	case isCompletionCriteriaRefusal(err):
+		code, _ := service.IsCompletionCriteriaRefusal(err)
+		c.JSON(http.StatusBadRequest, rejectedCreateBody(gin.H{"error": code, "error_code": code}))
 	default:
 		if status, ok := repositorySelectionHTTPStatus(err); ok {
 			c.JSON(status, rejectedCreateBody(taskErrorBody(err)))
@@ -82,4 +88,9 @@ func handleTaskCreateFailure(c *gin.Context, log *logger.Logger, err error) {
 		}
 		c.JSON(http.StatusBadRequest, rejectedCreateBody(taskErrorBody(err)))
 	}
+}
+
+func isCompletionCriteriaRefusal(err error) bool {
+	_, ok := service.IsCompletionCriteriaRefusal(err)
+	return ok
 }

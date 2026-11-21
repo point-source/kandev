@@ -11,6 +11,7 @@ import (
 
 	"github.com/kandev/kandev/internal/agent/runtime/routingerr"
 	"github.com/kandev/kandev/internal/office/models"
+	taskmodels "github.com/kandev/kandev/internal/task/models"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 )
 
@@ -113,6 +114,15 @@ type PromptContext struct {
 	MissedTicks     int
 	MissedSince     string
 	MissedTruncated bool
+
+	// Completion-gate hold escalation fields (task_completion_gate_held).
+	CompletionGateCriterionID string
+	CompletionGateHeldReason  string
+	CompletionGateHistory     string
+
+	// CompletionGate lists the task's completion criteria; unmet ones are
+	// rendered so a woken worker knows why the task is not done.
+	CompletionGate *taskmodels.TaskCompletionGateSnapshot
 }
 
 // BuildPrompt generates a structured prompt for a run reason.
@@ -155,6 +165,8 @@ func BuildPrompt(pc *PromptContext) string {
 		prompt = buildAgentErrorPrompt(pc)
 	case RunReasonTaskBlockerFailed:
 		prompt = buildBlockerFailedPrompt(pc)
+	case RunReasonTaskCompletionGateHeld:
+		prompt = buildCompletionGateHeldPrompt(pc)
 	default:
 		prompt = fmt.Sprintf("You have been woken for reason: %s.", pc.Reason)
 	}
@@ -168,6 +180,7 @@ func BuildPrompt(pc *PromptContext) string {
 	}
 	prompt = appendMissedTicksSection(prompt, pc)
 	prompt = appendHandoffSection(prompt, pc.HandoffContext)
+	prompt = appendCompletionGateSection(prompt, pc.CompletionGate)
 	return appendRuntimeContext(prompt, pc)
 }
 

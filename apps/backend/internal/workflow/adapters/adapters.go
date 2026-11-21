@@ -164,6 +164,7 @@ func (a *DecisionAdapter) ListStepDecisions(
 			DeciderID:     d.DeciderID,
 			Role:          d.Role,
 			Comment:       d.Comment,
+			PRHeads:       d.PRHeads,
 			SupersededAt:  d.SupersededAt,
 		})
 	}
@@ -186,6 +187,7 @@ func (a *DecisionAdapter) RecordStepDecision(
 		DeciderID:     d.DeciderID,
 		Role:          d.Role,
 		Comment:       d.Comment,
+		PRHeads:       d.PRHeads,
 	}
 	return a.Repo.RecordStepDecision(ctx, row)
 }

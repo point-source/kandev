@@ -219,6 +219,8 @@ func (h *pluginHost) completeTaskCompletionGateError(ctx context.Context, store 
 		commandStatus, reason = pluginsdk.CommandConflict, "completion_evidence_changed"
 	case errors.Is(err, repoerrors.ErrTaskCompletionHumanConfirmationRequired):
 		commandStatus, reason = pluginsdk.CommandConflict, "human_confirmation_required"
+	case errors.Is(err, repoerrors.ErrTaskCompletionVerifierReserved):
+		commandStatus, reason = pluginsdk.CommandConflict, "task_completion_verifier_reserved"
 	default:
 		return &pluginsdk.CommandResult{Status: commandStatus, Reason: reason}
 	}

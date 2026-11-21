@@ -108,6 +108,14 @@ type CompletionGateSummary struct {
 	VerifiedCount int   `json:"verified_count"`
 	BlockerCount  int   `json:"blocker_count"`
 	Blocked       bool  `json:"blocked"`
+	HeldCount     int   `json:"held_count,omitempty"`
+	// FailedCount and CannotEvaluateCount count criteria by latest result.
+	FailedCount         int `json:"failed_count,omitempty"`
+	CannotEvaluateCount int `json:"cannot_evaluate_count,omitempty"`
+	// WeakestConfidence is the weakest criterion confidence level.
+	WeakestConfidence string `json:"weakest_confidence,omitempty"`
+	// StateRevision increases on every result, hold or control change.
+	StateRevision int64 `json:"state_revision,omitempty"`
 }
 
 type LaunchQueueSummary struct {
@@ -345,10 +353,18 @@ func CompletionGateSummaryFromSnapshot(snapshot *models.TaskCompletionGateSnapsh
 	if verified < 0 {
 		verified = 0
 	}
-	return &CompletionGateSummary{
+	summary := &CompletionGateSummary{
 		Revision: snapshot.Revision, CriteriaCount: criteria, VerifiedCount: verified,
 		BlockerCount: blockers, Blocked: blockers > 0,
+		WeakestConfidence: models.WeakestTaskCompletionConfidence(snapshot.Criteria),
+		StateRevision:     snapshot.StateRevision,
 	}
+	for _, criterion := range snapshot.Criteria {
+		summary.HeldCount += boolCount(criterion.HeldReason != "")
+		summary.FailedCount += boolCount(criterion.Result == models.TaskCompletionResultFail)
+		summary.CannotEvaluateCount += boolCount(criterion.Result == models.TaskCompletionResultCannotEvaluate)
+	}
+	return summary
 }
 
 func validatePrimarySession(session *PrimarySessionSummary) error {
@@ -546,4 +562,11 @@ func TurnErrorSummaryFromMetadata(metadata map[string]interface{}) *TurnErrorSum
 		OccurredAt: value.OccurredAt,
 		Preview:    truncateString(value.Message, MaxActiveErrorPreviewBytes),
 	}
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

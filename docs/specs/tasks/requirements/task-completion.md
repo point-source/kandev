@@ -2,7 +2,7 @@
 status: draft
 system: tasks
 created: 2026-09-09
-updated: 2026-11-11
+updated: 2026-11-20
 owners:
   - kandev
 ---
@@ -263,6 +263,10 @@ contract, not a special case inside the task system.
   as visible text on desktop and phone, and the board shall show the actual
   placement of every task.
 
+`REQ-TASKS-COMPLETION-006` (host-verified criteria and evaluation results) is
+specified in [host-verified completion criteria](task-completion-host-verified.md).
+It narrows `AC-TASKS-COMPLETION-004.1` for the Office task page only.
+
 ## Compatibility and exclusions
 
 This contract replaces name-based workflow completion and the permanent
@@ -287,6 +291,7 @@ executor, or change physical workspace ownership.
 - [Workspace restoration after completion](../../../plans/completed-workspace-restoration/plan.md)
 - [Remove native coordination controls](../../../plans/remove-native-coordination-ui/plan.md)
 - [Completion policy consolidation](../../../plans/completion-policy-consolidation/plan.md)
+- [Office completion gates](../../../plans/office-completion-gates/plan.md)
 
 ## Coordination controls
 

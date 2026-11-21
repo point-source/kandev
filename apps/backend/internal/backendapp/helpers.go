@@ -1365,6 +1365,7 @@ func registerRoutes(p routeParams) {
 	// available / Workspace sections.
 	if p.services.OrchScheduler != nil {
 		p.services.OrchScheduler.SetTaskContextProvider(handoffSvc)
+		p.services.OrchScheduler.SetCompletionGateReader(p.taskSvc)
 	}
 
 	p.gateway.SetupRoutes(p.router)

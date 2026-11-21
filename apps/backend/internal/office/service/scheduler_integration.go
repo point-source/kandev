@@ -80,6 +80,8 @@ type SchedulerIntegration struct {
 	taskContexts TaskContextProvider
 	// creationAttachments supplies the task's explicit creation set.
 	creationAttachments TaskCreationAttachmentReader
+	// completionGates feeds PromptContext.CompletionGate; nil omits it.
+	completionGates CompletionGateReader
 }
 
 // SetTaskContextProvider wires the office task-handoffs prompt
@@ -1430,6 +1432,7 @@ func (si *SchedulerIntegration) buildPromptContext(
 	if taskID := parsed["task_id"]; taskID != "" {
 		si.enrichTaskContext(ctx, pc, taskID)
 		si.enrichHandoffContext(ctx, pc, taskID)
+		si.enrichCompletionGate(ctx, pc, taskID)
 		if reason == RunReasonTaskChildrenCompleted || reason == legacyRunReasonChildrenCompleted {
 			si.enrichChildrenContext(ctx, pc, taskID)
 		}
@@ -1477,6 +1480,12 @@ func (si *SchedulerIntegration) buildPromptContext(
 		strings.Contains(payload, `"blocker_failure_alerts"`) ||
 		strings.Contains(contextSnapshot, `"blocker_failure_alerts"`) {
 		si.enrichBlockerFailedContext(ctx, pc, payload, contextSnapshot)
+	}
+
+	if reason == RunReasonTaskCompletionGateHeld {
+		pc.CompletionGateCriterionID = parsed["criterion_id"]
+		pc.CompletionGateHeldReason = parsed["held_reason"]
+		pc.CompletionGateHistory = parsed["history"]
 	}
 
 	if reason == RunReasonAgentError {

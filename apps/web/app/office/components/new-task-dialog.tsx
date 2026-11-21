@@ -22,6 +22,18 @@ import { NewTaskBottomBar } from "./new-task-bottom-bar";
 import { NewTaskAttachmentComposer } from "./new-task-attachment-composer";
 import { useTaskTitleSelectionRestore } from "@/hooks/use-task-title-selection-restore";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import {
+  completionCriteriaErrorKey,
+  criteriaFromSelection,
+} from "@/lib/completion-gates/criteria-selection";
+import { NewTaskCompletionCriteria } from "./new-task-completion-criteria";
+
+function createErrorMessage(err: unknown, t: TFunction): string {
+  if (!(err instanceof Error)) return t("office:failedToCreateIssue");
+  const key = completionCriteriaErrorKey(err.message);
+  return key ? t(key) : err.message;
+}
 
 function buildMetadata(draft: IssueDraft): Record<string, unknown> | undefined {
   const meta: Record<string, unknown> = {};
@@ -107,6 +119,9 @@ function useNewTaskSubmission({
         assignee_agent_profile_id: draft.assigneeId || undefined,
         attachments: toMessageAttachments(attachmentController.attachments),
         metadata: buildMetadata(draft),
+        ...(draft.completionCriteria
+          ? { completion_criteria: criteriaFromSelection(draft.completionCriteria) }
+          : {}),
       });
       attachmentController.clearAttachments({ deleteStaged: false });
       attachmentController.setAccepting(true);
@@ -115,7 +130,7 @@ function useNewTaskSubmission({
       toast.success(t("office:taskCreated"));
     } catch (err) {
       attachmentController.setAccepting(true);
-      toast.error(err instanceof Error ? err.message : t("office:failedToCreateIssue"));
+      toast.error(createErrorMessage(err, t));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -263,6 +278,7 @@ function NewIssueDialogBody({
             onDescriptionChange={(description) => updateDraft({ description })}
           />
         )}
+        <NewTaskCompletionCriteria workspaceId={workspaceId} draft={draft} onUpdate={updateDraft} />
         <NewTaskBottomBar draft={draft} onUpdate={updateDraft} />
       </div>
 

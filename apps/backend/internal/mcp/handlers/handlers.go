@@ -1094,6 +1094,8 @@ func (h *Handlers) handleCreateTask(ctx context.Context, msg *ws.Message) (*ws.M
 		Repositories:              repos,
 		BlockedBy:                 req.BlockedBy,
 		RelatedTaskIDs:            req.RelatedTaskIDs,
+		CompletionCriteriaRequest: req.CompletionCriteria,
+		CompletionCriteriaCreator: mcpCompletionCriteriaCreator(ctx),
 		StartWhenUnblocked:        req.StartWhenUnblocked,
 		AssigneeAgentProfileID:    req.AssigneeAgentProfileID,
 		Metadata:                  metadata,

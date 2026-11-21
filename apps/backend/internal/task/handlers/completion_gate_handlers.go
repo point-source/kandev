@@ -77,6 +77,10 @@ func (h *TaskHandlers) handleCompletionGateError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"code": "task_completion_evidence_changed"})
 	case errors.Is(err, repository.ErrTaskCompletionHumanConfirmationRequired):
 		c.JSON(http.StatusConflict, gin.H{"code": "task_completion_human_confirmation_required"})
+	case errors.Is(err, repository.ErrTaskCompletionVerifierReserved):
+		c.JSON(http.StatusConflict, gin.H{"code": "task_completion_verifier_reserved"})
+	case errors.Is(err, repository.ErrTaskCompletionSelfVerification):
+		c.JSON(http.StatusForbidden, gin.H{"code": "task_completion_self_verification"})
 	case errors.Is(err, repository.ErrTaskVersionConflict):
 		c.JSON(http.StatusConflict, gin.H{"code": "task_version_conflict"})
 	case errors.Is(err, repository.ErrTaskNotFound), service.IsForbidden(err):

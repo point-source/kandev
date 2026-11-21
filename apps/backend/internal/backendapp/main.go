@@ -1819,7 +1819,15 @@ func constructOfficeServices(
 		repos.Office, repos.Task, repos.AgentSettings, cfgLoader, cfgWriter, configBasePath,
 		agentRegistry, log, services, lifecycleMgr, cfg.Office.JWTSigningKey,
 	)
-	wireOfficeSvcsDependencies(services, repos, eventBus, orchestratorSvc, agentRegistry)
+	wireOfficeSvcsDependencies(services, repos, eventBus, orchestratorSvc, agentRegistry, log)
+	if completionGates := services.OfficeSvcs.CompletionGates; completionGates != nil {
+		startup.AfterReady(ctx, func() {
+			if err := completionGates.Start(ctx); err != nil {
+				log.Error("Office completion gate verifier failed to start", zap.Error(err))
+			}
+		})
+		addCleanup(func() error { completionGates.Stop(); return nil })
+	}
 
 	// System skill sync. Upserts every embedded SKILL.md (the ones written
 	// to disk by EnsureBundledSkills above) into office_skills as
@@ -1935,6 +1943,7 @@ func wireOfficeSvcsDependencies(
 	eventBus bus.EventBus,
 	orchestratorSvc *orchestrator.Service,
 	agentRegistry *registry.Registry,
+	log *logger.Logger,
 ) {
 	// Wire the workflow-domain decisions store so approve/request-changes
 	// route to workflow_step_decisions (ADR 0005 Wave E).
@@ -1951,6 +1960,13 @@ func wireOfficeSvcsDependencies(
 		panic("Office completion gate not configured")
 	}
 	services.OfficeSvcs.Dashboard.SetTaskHumanDoneCompleter(officeHumanDoneCompleterAdapter{tasks: services.Task})
+	services.OfficeSvcs.CompletionGates = buildCompletionGatesService(services.Task, services.GitHub, services.Office, repos, eventBus, log)
+	if gates := services.OfficeSvcs.CompletionGates; gates != nil {
+		services.OfficeSvcs.Dashboard.SetReviewHeadsHook(gates.Review)
+		services.OfficeSvcs.Dashboard.SetCompletionGateInbox(gates)
+		services.OfficeSvcs.Scheduler.SetCompletionHoldChecker(gates)
+		services.Task.SetCompletionCriteriaResolver(gates)
+	}
 	// Wire the event bus into the dashboard service for status-change events.
 	services.OfficeSvcs.Dashboard.SetEventBus(eventBus)
 	services.OfficeSvcs.Channels.SetEventBus(eventBus)
@@ -2260,6 +2276,13 @@ func startSchedulingRuntime(
 	)
 	if services.OfficeSvcs != nil {
 		services.OfficeSvcs.Dashboard.SetWorkflowEngineDispatcher(engineDispatcher)
+		if services.OfficeSvcs.CompletionGates != nil {
+			navigator := completionGateNavigator{tasks: services.Task, steps: repos.Workflow}
+			if engineDispatcher != nil {
+				navigator.dispatcher = engineDispatcher
+			}
+			services.OfficeSvcs.CompletionGates.SetNavigator(navigator)
+		}
 		// For payload parity with the engine-routed producers, the
 		// cascade producer resolves the parent's current step directly,
 		// since it never goes through the engine.

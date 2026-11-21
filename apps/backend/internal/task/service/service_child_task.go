@@ -35,6 +35,10 @@ type ChildTaskSpec struct {
 	// keeps inherit_parent; a parent's default_child_workspace is not
 	// consulted on this path.
 	WorkspaceMode string
+	// CompletionCriteria and CriteriaCreator are forwarded to
+	// CreateTaskRequest for completion-criteria resolution.
+	CompletionCriteria *[]models.TaskCompletionCriterionRequest
+	CriteriaCreator    models.CompletionCriteriaCreator
 }
 
 // CreateChildTask creates a new task whose parent_id is parent.ID. The
@@ -71,19 +75,21 @@ func (s *Service) CreateChildTask(
 	}
 
 	req := &CreateTaskRequest{ //nolint:exhaustruct
-		WorkspaceID:            parent.WorkspaceID,
-		WorkflowID:             workflowID,
-		WorkflowStepID:         spec.StepID,
-		Title:                  spec.Title,
-		Description:            spec.Description,
-		ParentID:               parent.ID,
-		AssigneeAgentProfileID: assignee,
-		Origin:                 models.TaskOriginAgentCreated,
-		ProjectID:              parent.ProjectID,
-		WorkspacePolicy:        &WorkspacePolicy{Mode: workspaceMode},
-		Metadata:               spec.Metadata,
-		OfficeCarrierMetadata:  spec.OfficeCarrierMetadata,
-		BlockedBy:              spec.BlockedBy,
+		WorkspaceID:               parent.WorkspaceID,
+		WorkflowID:                workflowID,
+		WorkflowStepID:            spec.StepID,
+		Title:                     spec.Title,
+		Description:               spec.Description,
+		ParentID:                  parent.ID,
+		AssigneeAgentProfileID:    assignee,
+		Origin:                    models.TaskOriginAgentCreated,
+		ProjectID:                 parent.ProjectID,
+		WorkspacePolicy:           &WorkspacePolicy{Mode: workspaceMode},
+		Metadata:                  spec.Metadata,
+		OfficeCarrierMetadata:     spec.OfficeCarrierMetadata,
+		BlockedBy:                 spec.BlockedBy,
+		CompletionCriteriaRequest: spec.CompletionCriteria,
+		CompletionCriteriaCreator: spec.CriteriaCreator,
 	}
 	result, err := s.CreateTask(ctx, req)
 	if err != nil {

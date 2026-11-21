@@ -97,6 +97,9 @@ func (r *Repository) initPhase2Schema() error {
 	if _, err := r.db.Exec(decisionsSchema); err != nil {
 		return fmt.Errorf("failed to create workflow_step_decisions table: %w", err)
 	}
+	_ = r.migrate.Apply("workflow_step_decisions.pr_heads", `
+		ALTER TABLE workflow_step_decisions ADD COLUMN pr_heads TEXT NOT NULL DEFAULT ''
+	`)
 
 	// Must run before participantsNaturalKeyIndexName is created below: a
 	// database that predates the unique index can already hold rows sharing
@@ -1207,10 +1210,10 @@ func (r *Repository) recordStepDecisionTx(ctx context.Context, d *models.Workflo
 	if _, err := tx.ExecContext(ctx, tx.Rebind(`
 		INSERT INTO workflow_step_decisions
 			(id, task_id, step_id, participant_id, decision, note, decided_at,
-			 superseded_at, decider_type, decider_id, role, comment)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+			 superseded_at, decider_type, decider_id, role, comment, pr_heads)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
 	`), d.ID, d.TaskID, d.StepID, d.ParticipantID, d.Decision, d.Note, d.DecidedAt,
-		d.DeciderType, d.DeciderID, d.Role, d.Comment); err != nil {
+		d.DeciderType, d.DeciderID, d.Role, d.Comment, d.PRHeads); err != nil {
 		if isDecisionActiveDeciderViolation(err) {
 			return err
 		}
@@ -1271,7 +1274,7 @@ func (r *Repository) ListStepDecisions(ctx context.Context, taskID, stepID strin
 	}
 	rows, err := r.ro.QueryContext(ctx, r.ro.Rebind(`
 		SELECT id, task_id, step_id, participant_id, decision, note, decided_at,
-		       superseded_at, decider_type, decider_id, role, comment
+		       superseded_at, decider_type, decider_id, role, comment, pr_heads
 		FROM workflow_step_decisions
 		WHERE task_id = ? AND step_id = ?
 		ORDER BY decided_at ASC, id ASC
@@ -1307,7 +1310,7 @@ func (r *Repository) ListActiveTaskDecisionsWithQuery(
 	}
 	rows, err := q.QueryContext(ctx, r.ro.Rebind(`
 		SELECT id, task_id, step_id, participant_id, decision, note, decided_at,
-		       superseded_at, decider_type, decider_id, role, comment
+		       superseded_at, decider_type, decider_id, role, comment, pr_heads
 		FROM workflow_step_decisions
 		WHERE task_id = ? AND superseded_at IS NULL
 		ORDER BY decided_at ASC, id ASC
@@ -1356,16 +1359,17 @@ func scanDecisionRows(rows interface {
 	var result []*models.WorkflowStepDecision
 	for rows.Next() {
 		d := &models.WorkflowStepDecision{}
-		var note, deciderType, deciderID, role, comment sql.NullString
+		var note, deciderType, deciderID, role, comment, prHeads sql.NullString
 		var supersededAt sql.NullTime
 		if err := rows.Scan(&d.ID, &d.TaskID, &d.StepID, &d.ParticipantID,
 			&d.Decision, &note, &d.DecidedAt,
-			&supersededAt, &deciderType, &deciderID, &role, &comment); err != nil {
+			&supersededAt, &deciderType, &deciderID, &role, &comment, &prHeads); err != nil {
 			return nil, fmt.Errorf("scan step decision: %w", err)
 		}
 		if note.Valid {
 			d.Note = note.String
 		}
+		d.PRHeads = prHeads.String
 		if supersededAt.Valid {
 			t := supersededAt.Time
 			d.SupersededAt = &t

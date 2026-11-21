@@ -239,6 +239,11 @@ func (m *MockClient) GetPR(_ context.Context, owner, repo string, number int) (*
 	if !ok {
 		return nil, fmt.Errorf("mock: PR %s/%s#%d not found", owner, repo, number)
 	}
+	if files := m.files[key]; len(files) > 0 && !pr.ChangedFilesObserved {
+		observed := *pr
+		observed.ChangedFiles, observed.ChangedFilesObserved = len(files), true
+		return &observed, nil
+	}
 	return pr, nil
 }
 

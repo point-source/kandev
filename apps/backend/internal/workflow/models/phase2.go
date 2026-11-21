@@ -137,4 +137,7 @@ type WorkflowStepDecision struct {
 	DeciderID   string `json:"decider_id,omitempty"`
 	Role        string `json:"role,omitempty"`
 	Comment     string `json:"comment,omitempty"`
+	// PRHeads is the task's linked PR heads revision when the decision was
+	// recorded, for completion criteria pinned to the head.
+	PRHeads string `json:"pr_heads,omitempty"`
 }

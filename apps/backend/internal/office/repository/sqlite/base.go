@@ -381,6 +381,19 @@ func (r *Repository) createCostTables() error {
 		limit_subcents INTEGER NOT NULL,
 		updated_at TIMESTAMP NOT NULL
 	);
+
+	-- Completion-gate defaults, caps and ceilings
+	-- (REQ-OFFICE-COMPLETION-GATES-001/007). An absent row means no default
+	-- criteria and the shipped cap defaults.
+	CREATE TABLE IF NOT EXISTS office_completion_gate_settings (
+		workspace_id TEXT PRIMARY KEY,
+		default_criteria_json TEXT NOT NULL DEFAULT '[]',
+		default_max_attempts INTEGER NOT NULL DEFAULT 0,
+		default_max_rework INTEGER NOT NULL DEFAULT 0,
+		ceiling_attempts INTEGER NOT NULL DEFAULT 0,
+		ceiling_rework INTEGER NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP NOT NULL
+	);
 	` + budgetClaimsDDL)
 	return err
 }

@@ -17,6 +17,10 @@ import { dismissInboxItem, retryProvider } from "@/lib/api/domains/office-extend
 import type { InboxItem } from "@/lib/state/slices/office/types";
 import { timeAgo } from "@/lib/utils/time";
 import { useTranslation } from "react-i18next";
+import {
+  COMPLETION_GATE_INBOX_TYPES,
+  InboxCompletionGateActions,
+} from "./inbox-completion-gate-actions";
 
 const ICON_MAP: Record<string, typeof IconShieldCheck> = {
   "shield-check": IconShieldCheck,
@@ -39,6 +43,11 @@ const FALLBACK_TYPE_CONFIG: Record<string, { icon: typeof IconShieldCheck; label
   task_review: { icon: IconEye, labelKey: "office:taskReview" },
   task_review_request: { icon: IconEye, labelKey: "office:reviewRequest" },
   provider_degraded: { icon: IconRoute, labelKey: "office:providerDegraded" },
+  completion_gate_protected_path: {
+    icon: IconShieldCheck,
+    labelKey: "office:completionGatesInboxProtected",
+  },
+  completion_gate_held: { icon: IconPlayerPause, labelKey: "office:completionGatesInboxHeld" },
 };
 
 // taskReviewHref returns the deep link for a `task_review_request`
@@ -144,6 +153,9 @@ export function InboxItemRow({ item, onApprove, onReject, onChanged }: Props) {
       )}
       {item.type === "provider_degraded" && (
         <ProviderDegradedActions item={item} onChanged={onChanged} />
+      )}
+      {COMPLETION_GATE_INBOX_TYPES.has(item.type) && (
+        <InboxCompletionGateActions item={item} onChanged={onChanged} />
       )}
     </div>
   );

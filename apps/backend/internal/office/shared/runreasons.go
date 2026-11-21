@@ -55,6 +55,7 @@ const (
 	RunReasonTaskBlockersResolved     = "task_blockers_resolved"
 	RunReasonTaskChildrenCompleted    = "task_children_completed"
 	RunReasonTaskBlockerFailed        = "task_blocker_failed"
+	RunReasonTaskCompletionGateHeld   = "task_completion_gate_held"
 	RunReasonApprovalResolved         = "approval_resolved"
 	RunReasonTaskReviewRequested      = "task_review_requested"
 	RunReasonTaskChangesRequested     = "task_changes_requested"

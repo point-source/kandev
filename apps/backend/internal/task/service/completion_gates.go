@@ -108,6 +108,9 @@ func (s *Service) SetTaskCompletionCriteria(ctx context.Context, taskID string, 
 	if err != nil {
 		return nil, err
 	}
+	if err := guardCompletionGateSelfChange(ctx, task); err != nil {
+		return nil, err
+	}
 	repo, ok := s.tasks.(repository.TaskCompletionGateRepository)
 	if !ok {
 		return nil, repoerrors.ErrTaskCompletionGateBlocked
@@ -115,7 +118,7 @@ func (s *Service) SetTaskCompletionCriteria(ctx context.Context, taskID string, 
 	actorKind, actorID, human := taskCompletionActor(ctx)
 	change := models.TaskCompletionCriteriaChange{
 		TaskID: task.ID, WorkspaceID: task.WorkspaceID, ExpectedRevision: request.ExpectedRevision,
-		Criteria: sanitizeCompletionCriteria(request.Criteria), ActorKind: actorKind, ActorID: actorID,
+		Criteria: publicCompletionCriteria(task.ID, request.Criteria, actorID, human), ActorKind: actorKind, ActorID: actorID,
 	}
 	if request.HumanConfirmation != nil {
 		if !human || strings.TrimSpace(request.HumanConfirmation.Reason) == "" {
@@ -147,7 +150,7 @@ func (s *Service) SetTaskCompletionCriteriaExact(ctx context.Context, taskID str
 		ExpectedTaskResourceVersion: request.ExpectedTaskResourceVersion,
 		ExpectedRevision:            request.ExpectedRevision, OperationID: request.OperationID,
 		PayloadDigest: request.PayloadDigest, ClaimFence: request.ClaimFence,
-		Criteria: sanitizeCompletionCriteria(request.Criteria), ActorKind: "plugin", ActorID: request.ActorID,
+		Criteria: publicCompletionCriteria(taskID, request.Criteria, request.ActorID, false), ActorKind: "plugin", ActorID: request.ActorID,
 	})
 	if err != nil {
 		return nil, err
@@ -156,19 +159,138 @@ func (s *Service) SetTaskCompletionCriteriaExact(ctx context.Context, taskID str
 	return &ExactTaskCompletionGateResult{Snapshot: snapshot, AlreadyApplied: alreadyApplied}, nil
 }
 
+// Default descriptions for host-verified criteria stored when the caller
+// supplies none. They are task data, not UI copy.
+var hostCriterionDescriptions = map[string]string{
+	models.TaskCompletionCriterionCIAtHead:     "CI passes at the PR head commit",       // i18n-exempt: stored task data
+	models.TaskCompletionCriterionReviewAtHead: "Review approved at the PR head commit", // i18n-exempt: stored task data
+}
+
 func sanitizeCompletionCriteria(criteria []models.TaskCompletionCriterion) []models.TaskCompletionCriterion {
+	return sanitizeCompletionCriteriaForTask("", criteria)
+}
+
+// sanitizeCompletionCriteriaForTask keeps only creator-owned fields. Host
+// criteria are bound to the task's PR heads subject when the task is known.
+func sanitizeCompletionCriteriaForTask(taskID string, criteria []models.TaskCompletionCriterion) []models.TaskCompletionCriterion {
 	clean := make([]models.TaskCompletionCriterion, len(criteria))
 	for index, criterion := range criteria {
-		criterion.CriterionRevision = 0
-		criterion.VerifiedRevision = 0
-		criterion.Evidence = nil
-		criterion.VerifierKind = ""
-		criterion.VerifierID = ""
-		criterion.VerifiedAt = nil
-		criterion.EvidenceSubject.Revision = ""
-		clean[index] = criterion
+		next := models.TaskCompletionCriterion{
+			ID: strings.TrimSpace(criterion.ID), Description: strings.TrimSpace(criterion.Description),
+			Kind:            models.NormalizeTaskCompletionCriterionKind(strings.TrimSpace(criterion.Kind)),
+			EvidenceSubject: models.TaskCompletionEvidenceSubject{Kind: criterion.EvidenceSubject.Kind, ID: criterion.EvidenceSubject.ID},
+			Config:          criterion.Config, OwnerKind: criterion.OwnerKind, OwnerID: criterion.OwnerID,
+		}
+		if models.IsHostVerifiedCriterionKind(next.Kind) {
+			if taskID != "" {
+				next.EvidenceSubject = models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceGitHubPRHeads, ID: taskID}
+			}
+			if next.Description == "" {
+				next.Description = hostCriterionDescriptions[next.Kind]
+			}
+			if next.ID == "" {
+				next.ID = next.Kind
+			}
+		}
+		clean[index] = next
 	}
 	return clean
+}
+
+// publicCompletionCriteria sanitizes criteria from a caller-facing set
+// command. Ownership always comes from the acting caller, and only a person
+// confirms caps above the workspace ceiling, as themselves.
+func publicCompletionCriteria(taskID string, criteria []models.TaskCompletionCriterion, actorID string, human bool) []models.TaskCompletionCriterion {
+	clean := sanitizeCompletionCriteriaForTask(taskID, criteria)
+	for index := range clean {
+		clean[index].OwnerKind, clean[index].OwnerID = "", ""
+		clean[index].Config.CapsConfirmedBy = ""
+		if human {
+			clean[index].Config.CapsConfirmedBy = actorID
+		}
+	}
+	return clean
+}
+
+// prepareCreateCompletionCriteria sanitizes criteria supplied with a new task
+// and records the creating actor as owner when the caller named none.
+func prepareCreateCompletionCriteria(ctx context.Context, taskID string, criteria []models.TaskCompletionCriterion) []models.TaskCompletionCriterion {
+	if len(criteria) == 0 {
+		return nil
+	}
+	clean := sanitizeCompletionCriteriaForTask(taskID, criteria)
+	actorKind, actorID, _ := taskCompletionActor(ctx)
+	for index := range clean {
+		if clean[index].OwnerKind == "" {
+			clean[index].OwnerKind, clean[index].OwnerID = actorKind, actorID
+		}
+	}
+	return clean
+}
+
+// guardCompletionGateSelfChange refuses gate changes from the task's own runs
+// and from its assignee agent, independent of authentication.
+func guardCompletionGateSelfChange(ctx context.Context, task *models.Task) error {
+	caller, ok := models.CompletionGateCallerFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if caller.TaskID == task.ID || (caller.AgentProfileID != "" && caller.AgentProfileID == task.AssigneeAgentProfileID) {
+		return repoerrors.ErrTaskCompletionSelfVerification
+	}
+	return nil
+}
+
+// RecordTaskCompletionEvaluation stores an in-process verifier result. It is
+// called only by host verifiers and has no HTTP route.
+func (s *Service) RecordTaskCompletionEvaluation(ctx context.Context, change models.TaskCompletionEvaluationChange) (*models.TaskCompletionEvaluationOutcome, error) {
+	repo, ok := s.tasks.(repository.HostTaskCompletionGateRepository)
+	if !ok {
+		return nil, repoerrors.ErrTaskCompletionGateBlocked
+	}
+	outcome, err := repo.RecordTaskCompletionEvaluation(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	if outcome.Changed {
+		s.publishCompletionGateTaskUpdate(ctx, change.TaskID)
+	}
+	return outcome, nil
+}
+
+// ListTaskIDsWithUnmetCompletionCriteria lists open tasks with an unmet,
+// unheld criterion of kind, for host verifier sweeps.
+func (s *Service) ListTaskIDsWithUnmetCompletionCriteria(ctx context.Context, query models.TaskCompletionSweepQuery) ([]string, error) {
+	repo, ok := s.tasks.(repository.HostTaskCompletionGateRepository)
+	if !ok {
+		return nil, nil
+	}
+	return repo.ListTaskIDsWithUnmetCompletionCriteria(ctx, query)
+}
+
+// ListHeldCompletionCriteria lists held criteria in a workspace for the
+// Office Inbox. Internal callers only; the caller authorizes the workspace.
+func (s *Service) ListHeldCompletionCriteria(ctx context.Context, workspaceID string) ([]models.HeldTaskCompletionCriterion, error) {
+	repo, ok := s.tasks.(repository.HostTaskCompletionGateRepository)
+	if !ok {
+		return nil, nil
+	}
+	return repo.ListHeldCompletionCriteria(ctx, workspaceID)
+}
+
+// ApplyTaskCompletionControl applies a recovery action whose authority the
+// caller has already established.
+func (s *Service) ApplyTaskCompletionControl(ctx context.Context, change models.TaskCompletionControlChange) (*models.TaskCompletionControlOutcome, error) {
+	repo, ok := s.tasks.(repository.HostTaskCompletionGateRepository)
+	if !ok {
+		return nil, repoerrors.ErrTaskCompletionGateBlocked
+	}
+	outcome, err := repo.ApplyTaskCompletionControl(ctx, change)
+	if err != nil {
+		return nil, err
+	}
+	s.publishCompletionGateTaskUpdate(ctx, change.TaskID)
+	return outcome, nil
 }
 
 // VerifyTaskCompletionCriterion records verifier identity and checks the

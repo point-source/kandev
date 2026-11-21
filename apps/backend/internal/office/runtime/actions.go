@@ -14,6 +14,7 @@ import (
 	"github.com/kandev/kandev/internal/office/models"
 	"github.com/kandev/kandev/internal/office/shared"
 	runsservice "github.com/kandev/kandev/internal/runs/service"
+	taskmodels "github.com/kandev/kandev/internal/task/models"
 )
 
 // CommentWriter is the comment mutation dependency used by runtime actions.
@@ -67,6 +68,9 @@ type CreateTaskInput struct {
 	WorkspaceGroupID      string   `json:"workspace_group_id"`
 	DefaultChildWorkspace string   `json:"default_child_workspace"`
 	DefaultChildOrdering  string   `json:"default_child_ordering"`
+	// CompletionCriteria names completion criteria; omitted applies the
+	// workspace default, which an agent cannot remove.
+	CompletionCriteria *[]taskmodels.TaskCompletionCriterionRequest `json:"completion_criteria"`
 }
 
 var errTaskTitleRequired = fmt.Errorf("task title is required")
@@ -116,6 +120,7 @@ func (a *Actions) CreateTask(ctx context.Context, runCtx RunContext, input Creat
 	if err != nil {
 		return "", err
 	}
+	relations.CompletionCriteria, relations.CreatorAgentID = input.CompletionCriteria, runCtx.AgentID
 	if a.deps.Tasks == nil {
 		return "", fmt.Errorf("%w: tasks", ErrRuntimeDependencyMissing)
 	}

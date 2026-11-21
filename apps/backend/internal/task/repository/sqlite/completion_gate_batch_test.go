@@ -324,7 +324,9 @@ func completionGateSummaryObservation(summary *statussummary.CompletionGateSumma
 	return &models.TaskCompletionGateSummaryObservation{
 		Revision: summary.Revision, CriteriaCount: summary.CriteriaCount,
 		VerifiedCount: summary.VerifiedCount, BlockerCount: summary.BlockerCount,
-		Blocked: summary.Blocked,
+		Blocked: summary.Blocked, HeldCount: summary.HeldCount,
+		FailedCount: summary.FailedCount, CannotEvaluateCount: summary.CannotEvaluateCount,
+		WeakestConfidence: summary.WeakestConfidence, StateRevision: summary.StateRevision,
 	}
 }
 

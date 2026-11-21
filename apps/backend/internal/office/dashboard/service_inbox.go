@@ -64,6 +64,12 @@ func (s *DashboardService) GetInboxItems(ctx context.Context, wsID string) ([]*m
 	permItems := s.inboxPermissionItems()
 	items = append(items, permItems...)
 
+	gateItems, err := s.inboxCompletionGateItems(ctx, wsID)
+	if err != nil {
+		return nil, fmt.Errorf("completion gate items: %w", err)
+	}
+	items = append(items, gateItems...)
+
 	if items == nil {
 		items = []*models.InboxItem{}
 	}
@@ -114,7 +120,11 @@ func (s *DashboardService) GetInboxCount(ctx context.Context, wsID string) (int,
 	if items, rerr := s.inboxTaskReviewRequests(ctx, wsID, ""); rerr == nil {
 		reviewCount = len(items)
 	}
-	return pending + len(alerts) + len(errors) + permCount + reviewCount, nil
+	gateCount := 0
+	if items, gerr := s.inboxCompletionGateItems(ctx, wsID); gerr == nil {
+		gateCount = len(items)
+	}
+	return pending + len(alerts) + len(errors) + permCount + reviewCount + gateCount, nil
 }
 
 func (s *DashboardService) inboxApprovalItems(ctx context.Context, wsID string) ([]*models.InboxItem, error) {

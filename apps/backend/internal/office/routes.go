@@ -6,6 +6,7 @@ import (
 	"github.com/kandev/kandev/internal/office/agents"
 	"github.com/kandev/kandev/internal/office/approvals"
 	"github.com/kandev/kandev/internal/office/channels"
+	"github.com/kandev/kandev/internal/office/completiongates"
 	"github.com/kandev/kandev/internal/office/config"
 	"github.com/kandev/kandev/internal/office/configsync"
 	"github.com/kandev/kandev/internal/office/costs"
@@ -117,4 +118,6 @@ func RegisterAllRoutes(
 	workspaces.RegisterRoutes(router, workspaces.NewHandler(svcs.Workspaces))
 
 	pause.RegisterRoutes(router, pause.NewHandler(svcs.Pause))
+
+	completiongates.RegisterRoutes(router, svcs.CompletionGates, log)
 }

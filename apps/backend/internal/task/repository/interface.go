@@ -28,6 +28,8 @@ var ErrTaskCompletionGateBlocked = repoerrors.ErrTaskCompletionGateBlocked
 var ErrTaskCompletionCriteriaConflict = repoerrors.ErrTaskCompletionCriteriaConflict
 var ErrTaskCompletionEvidenceChanged = repoerrors.ErrTaskCompletionEvidenceChanged
 var ErrTaskCompletionHumanConfirmationRequired = repoerrors.ErrTaskCompletionHumanConfirmationRequired
+var ErrTaskCompletionVerifierReserved = repoerrors.ErrTaskCompletionVerifierReserved
+var ErrTaskCompletionSelfVerification = repoerrors.ErrTaskCompletionSelfVerification
 var ErrNoPrimarySession = repoerrors.ErrNoPrimarySession
 var ErrTaskHierarchyConflict = repoerrors.ErrTaskHierarchyConflict
 var ErrTaskParentMismatch = repoerrors.ErrTaskParentMismatch
@@ -295,6 +297,15 @@ type TaskCompletionGateRepository interface {
 	VerifyTaskCompletionCriterion(ctx context.Context, change models.TaskCompletionEvidenceChange) (*models.TaskCompletionGateSnapshot, error)
 	GetTaskCompletionGate(ctx context.Context, taskID string) (*models.TaskCompletionGateSnapshot, error)
 	ListTaskCompletionGateHistory(ctx context.Context, taskID string) ([]*models.TaskCompletionGateHistory, error)
+}
+
+// HostTaskCompletionGateRepository records in-process verifier results and
+// recovery actions for host-verified criteria.
+type HostTaskCompletionGateRepository interface {
+	RecordTaskCompletionEvaluation(ctx context.Context, change models.TaskCompletionEvaluationChange) (*models.TaskCompletionEvaluationOutcome, error)
+	ApplyTaskCompletionControl(ctx context.Context, change models.TaskCompletionControlChange) (*models.TaskCompletionControlOutcome, error)
+	ListTaskIDsWithUnmetCompletionCriteria(ctx context.Context, query models.TaskCompletionSweepQuery) ([]string, error)
+	ListHeldCompletionCriteria(ctx context.Context, workspaceID string) ([]models.HeldTaskCompletionCriterion, error)
 }
 
 // TaskCompletionGateSummaryReader batches compact gate observations for

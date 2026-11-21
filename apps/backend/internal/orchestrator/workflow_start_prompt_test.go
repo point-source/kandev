@@ -546,7 +546,7 @@ func TestWorkflowAsyncStartFailure_SuccessAndSynchronousRejection(t *testing.T) 
 		}
 	})
 
-	t.Run("synchronous permanent rejection does not queue", func(t *testing.T) {
+	t.Run("created Office session is left to its run and does not queue", func(t *testing.T) {
 		ctx := context.Background()
 		const (
 			taskID    = "workflow-rejected-task"
@@ -584,12 +584,15 @@ func TestWorkflowAsyncStartFailure_SuccessAndSynchronousRejection(t *testing.T) 
 			t.Fatalf("set rejected session profile: %v", err)
 		}
 
-		err = svc.autoStartStepPrompt(ctx, taskID, session, step, "Do not retry this", false, true, nil)
-		if err == nil || !strings.Contains(err.Error(), "office tasks must be started through Office") {
-			t.Fatalf("rejection error = %v, want Office scheduler rejection", err)
+		if err := svc.autoStartStepPrompt(ctx, taskID, session, step, "Do not retry this", false, true, nil); err != nil {
+			t.Fatalf("auto-start error = %v, want the Office session left to its run", err)
 		}
 		if got := svc.messageQueue.GetStatus(ctx, sessionID).Count; got != 0 {
-			t.Fatalf("synchronous rejection created %d recovery entries", got)
+			t.Fatalf("Office session created %d recovery entries", got)
+		}
+		reloaded, err := repo.GetTaskSession(ctx, sessionID)
+		if err != nil || reloaded.State != models.TaskSessionStateCreated {
+			t.Fatalf("Office session changed: %+v, %v", reloaded, err)
 		}
 	})
 }

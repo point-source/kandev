@@ -390,6 +390,7 @@ func stepMatchesDefinition(existing, desired *models.WorkflowStep) bool {
 		existing.DisableUnclassifiedFallback == desired.DisableUnclassifiedFallback &&
 		models.EqualWorkflowSessionTarget(existing.SessionTarget, desired.SessionTarget) &&
 		existing.WIPLimit == desired.WIPLimit &&
+		equalCompletionGateCaps(existing.CompletionGateCaps, desired.CompletionGateCaps) &&
 		existing.PullFromStepID == desired.PullFromStepID &&
 		existing.StageType == desired.StageType &&
 		existing.AutoAdvanceRequiresSignal == desired.AutoAdvanceRequiresSignal &&
@@ -524,4 +525,11 @@ func (s *Service) deleteVanishedWorkflows(ctx context.Context, synced map[string
 		}
 		result.Deleted = append(result.Deleted, wf.Name)
 	}
+}
+
+func equalCompletionGateCaps(left, right *models.CompletionGateCaps) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }

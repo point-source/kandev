@@ -672,7 +672,24 @@ func (e *Engine) RecordParticipantDecision(
 func (e *Engine) reevaluateGuardedTransitions(
 	ctx context.Context, taskID, sessionID, stepID, decisionID string,
 ) (HandleResult, error) {
-	opID := fmt.Sprintf("decision:%s:%s:%s", taskID, stepID, decisionID)
+	return e.reevaluateGuardedTransitionsOnce(ctx, taskID, sessionID, stepID,
+		fmt.Sprintf("decision:%s:%s:%s", taskID, stepID, decisionID), nil)
+}
+
+// ReevaluateGuardedTransitions applies the first satisfied guarded
+// on_turn_complete transition of stepID whose target accept admits, at most
+// once per operationID. It is for callers whose state change can satisfy a
+// completion that an earlier guarded transition attempted, such as a
+// completion criterion passing. A nil accept admits every target.
+func (e *Engine) ReevaluateGuardedTransitions(
+	ctx context.Context, taskID, sessionID, stepID, operationID string, accept func(targetStepID string) bool,
+) (HandleResult, error) {
+	return e.reevaluateGuardedTransitionsOnce(ctx, taskID, sessionID, stepID, operationID, accept)
+}
+
+func (e *Engine) reevaluateGuardedTransitionsOnce(
+	ctx context.Context, taskID, sessionID, stepID, opID string, accept func(string) bool,
+) (HandleResult, error) {
 	applied, err := e.store.IsOperationApplied(ctx, opID)
 	if err != nil {
 		return HandleResult{}, err
@@ -691,7 +708,7 @@ func (e *Engine) reevaluateGuardedTransitions(
 		return HandleResult{}, err
 	}
 
-	result, err := e.applyFirstSatisfiedGuardedTransition(ctx, taskID, sessionID, state, step)
+	result, err := e.applyFirstSatisfiedGuardedTransition(ctx, taskID, sessionID, state, step, accept)
 	if err != nil {
 		return HandleResult{}, err
 	}
@@ -709,7 +726,7 @@ func (e *Engine) reevaluateGuardedTransitions(
 //
 //nolint:cyclop // ordered guard evaluation keeps first-transition semantics explicit.
 func (e *Engine) applyFirstSatisfiedGuardedTransition(
-	ctx context.Context, taskID, sessionID string, state MachineState, step StepSpec,
+	ctx context.Context, taskID, sessionID string, state MachineState, step StepSpec, accept func(string) bool,
 ) (HandleResult, error) {
 	guards := make([]QuorumGuardState, 0)
 	var selectedTarget string
@@ -737,7 +754,7 @@ func (e *Engine) applyFirstSatisfiedGuardedTransition(
 			e.recordGuardNotFired(state, action, GuardOutcome{Reason: entry.Reason, Err: entry.Error, RequiredCount: entry.RequiredCount, ReceivedCount: entry.ReceivedCount})
 			continue
 		}
-		if targetStepID == "" || targetStepID == state.CurrentStepID {
+		if targetStepID == "" || targetStepID == state.CurrentStepID || (accept != nil && !accept(targetStepID)) {
 			continue
 		}
 		if selectedTarget == "" {

@@ -104,13 +104,13 @@ func (r *Repository) insertCloneStep(ctx context.Context, tx *sqlx.Tx, step *mod
 		return err
 	}
 	_, err = tx.ExecContext(ctx, tx.Rebind(`
-		INSERT INTO workflow_steps (id, workflow_id, name, position, color, prompt, events, allow_manual_move, is_start_step, show_in_command_panel, auto_archive_after_hours, agent_profile_id, profile_session_start_policy, profile_session_end_policy, disable_unclassified_fallback, stage_type, auto_advance_requires_signal, cancel_triggers_turn_complete, complete_task_on_enter, wip_limit, pull_from_step_id, session_target, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		INSERT INTO workflow_steps (id, workflow_id, name, position, color, prompt, events, allow_manual_move, is_start_step, show_in_command_panel, auto_archive_after_hours, agent_profile_id, profile_session_start_policy, profile_session_end_policy, disable_unclassified_fallback, stage_type, auto_advance_requires_signal, cancel_triggers_turn_complete, complete_task_on_enter, wip_limit, pull_from_step_id, session_target, completion_gate_caps, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		step.ID, step.WorkflowID, step.Name, step.Position, step.Color, step.Prompt, string(events),
 		dialect.BoolToInt(step.AllowManualMove), dialect.BoolToInt(step.IsStartStep), dialect.BoolToInt(step.ShowInCommandPanel),
 		step.AutoArchiveAfterHours, step.AgentProfileID, step.ProfileSessionStartPolicy, step.ProfileSessionEndPolicy,
 		dialect.BoolToInt(step.DisableUnclassifiedFallback), normalizeStageType(step.StageType),
 		dialect.BoolToInt(step.AutoAdvanceRequiresSignal), dialect.BoolToInt(step.CancelTriggersTurnComplete),
-		dialect.BoolToInt(step.CompleteTaskOnEnter), step.WIPLimit, step.PullFromStepID, target, step.CreatedAt, step.UpdatedAt)
+		dialect.BoolToInt(step.CompleteTaskOnEnter), step.WIPLimit, step.PullFromStepID, target, encodeCompletionGateCaps(step.CompletionGateCaps), step.CreatedAt, step.UpdatedAt)
 	return err
 }

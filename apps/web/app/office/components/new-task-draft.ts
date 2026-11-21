@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { clampTaskTitleInput } from "@/lib/task-title";
 import type { TaskPriority } from "@/lib/types/http";
 import type { StoredFileAttachment } from "@/lib/stored-chat-draft-attachments";
+import type { CriteriaSelection } from "@/lib/completion-gates/criteria-selection";
 
 export type IssueDraft = {
   title: string;
@@ -14,6 +15,8 @@ export type IssueDraft = {
   priority: TaskPriority;
   /** Ready staged descriptors only; file bytes never enter browser storage. */
   attachments?: StoredFileAttachment[];
+  /** Completion criteria chosen by the person; absent keeps the workspace default. */
+  completionCriteria?: CriteriaSelection;
 };
 
 const EMPTY_DRAFT: IssueDraft = {

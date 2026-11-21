@@ -6592,6 +6592,9 @@ func (s *Service) injectAutoStartRuntimeContext(
 }
 
 func (s *Service) dispatchAutoStartStepPrompt(state *autoStartStepPromptState) error {
+	if state.session.State == models.TaskSessionStateCreated && s.leaveCreatedSessionToOffice(state) {
+		return nil
+	}
 	if state.shouldQueueIfBusy {
 		queued, err := s.queueAutoStartPromptIfRunning(
 			state.queueCtx, state.taskID, state.session, state.prompt, state.planMode,
@@ -6620,6 +6623,24 @@ func (s *Service) dispatchAutoStartStepPrompt(state *autoStartStepPromptState) e
 		return s.launchCreatedAutoStartStepPrompt(state)
 	}
 	return s.retryAutoStartStepPrompt(state)
+}
+
+// leaveCreatedSessionToOffice reports whether a CREATED session belongs to an
+// Office task. Office launches its own sessions through scheduled runs and
+// refuses an orchestrator launch, so a step entry that finds one (for example
+// a reviewer run still starting when the task moves on) leaves it to the run
+// that created it and puts any taken handoff message back.
+func (s *Service) leaveCreatedSessionToOffice(state *autoStartStepPromptState) bool {
+	office, err := s.lookupOfficeTask(state.ctx, state.taskID)
+	if err != nil || !office {
+		return false
+	}
+	s.requeueAutoStartStepMessage(state)
+	s.logger.Info("auto-start: leaving created Office session to its run",
+		zap.String("task_id", state.taskID),
+		zap.String("session_id", state.sessionID),
+		zap.String("step_name", state.stepName))
+	return true
 }
 
 func (s *Service) launchCreatedAutoStartStepPrompt(state *autoStartStepPromptState) error {

@@ -16,29 +16,32 @@ import (
 )
 
 type mcpCreateTaskRequest struct {
-	ParentID               string               `json:"parent_id"`
-	ParentIsSelf           bool                 `json:"parent_is_self"`
-	SourceTaskID           string               `json:"source_task_id"`
-	SourceSessionID        string               `json:"source_session_id"`
-	WorkspaceID            string               `json:"workspace_id"`
-	WorkflowID             string               `json:"workflow_id"`
-	WorkflowStepID         string               `json:"workflow_step_id"`
-	WorkspaceMode          string               `json:"workspace_mode"`
-	Title                  string               `json:"title"`
-	Description            string               `json:"description"`
-	Priority               string               `json:"priority"`
-	Autopilot              bool                 `json:"autopilot"`
-	AgentProfileID         string               `json:"agent_profile_id"`
-	ExecutorProfileID      string               `json:"executor_profile_id"`
-	StartAgent             *bool                `json:"start_agent"`
-	Repositories           []mcpRepositoryInput `json:"repositories"`
-	BaseBranch             string               `json:"base_branch"`
-	BlockedBy              []string             `json:"blocked_by"`
-	RelatedTaskIDs         []string             `json:"related_task_ids"`
-	StartWhenUnblocked     *bool                `json:"start_when_unblocked"`
-	AssigneeAgentProfileID string               `json:"assignee_agent_profile_id"`
-	ExternalID             string               `json:"external_id"`
-	MCPServerIDs           []string             `json:"mcp_server_ids"`
+	ParentID          string               `json:"parent_id"`
+	ParentIsSelf      bool                 `json:"parent_is_self"`
+	SourceTaskID      string               `json:"source_task_id"`
+	SourceSessionID   string               `json:"source_session_id"`
+	WorkspaceID       string               `json:"workspace_id"`
+	WorkflowID        string               `json:"workflow_id"`
+	WorkflowStepID    string               `json:"workflow_step_id"`
+	WorkspaceMode     string               `json:"workspace_mode"`
+	Title             string               `json:"title"`
+	Description       string               `json:"description"`
+	Priority          string               `json:"priority"`
+	Autopilot         bool                 `json:"autopilot"`
+	AgentProfileID    string               `json:"agent_profile_id"`
+	ExecutorProfileID string               `json:"executor_profile_id"`
+	StartAgent        *bool                `json:"start_agent"`
+	Repositories      []mcpRepositoryInput `json:"repositories"`
+	BaseBranch        string               `json:"base_branch"`
+	BlockedBy         []string             `json:"blocked_by"`
+	RelatedTaskIDs    []string             `json:"related_task_ids"`
+	// CompletionCriteria names Office completion criteria (ci_at_head,
+	// review_at_head); omitted means the workspace default applies.
+	CompletionCriteria     *[]models.TaskCompletionCriterionRequest `json:"completion_criteria"`
+	StartWhenUnblocked     *bool                                    `json:"start_when_unblocked"`
+	AssigneeAgentProfileID string                                   `json:"assignee_agent_profile_id"`
+	ExternalID             string                                   `json:"external_id"`
+	MCPServerIDs           []string                                 `json:"mcp_server_ids"`
 }
 
 type mcpCreateTaskAdmission struct {
@@ -414,4 +417,14 @@ func (h *Handlers) logMCPCreateAdmissionRejection(ctx context.Context, code, mes
 		fields = append(fields, zap.String("origin", "external"))
 	}
 	h.logger.Warn("MCP task creation admission rejected", fields...)
+}
+
+// mcpCompletionCriteriaCreator attributes criteria created from an agent's
+// own session to an agent, even though the dispatch carries the task owner's
+// identity, so the agent cannot remove workspace default criteria.
+func mcpCompletionCriteriaCreator(ctx context.Context) models.CompletionCriteriaCreator {
+	if _, ok := mcpscope.PrincipalFromContext(ctx); ok {
+		return models.CompletionCriteriaCreator{Kind: models.CompletionCriteriaCreatorAgent}
+	}
+	return models.CompletionCriteriaCreator{}
 }

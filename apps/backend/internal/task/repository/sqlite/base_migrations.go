@@ -692,6 +692,27 @@ func (r *Repository) runMigrations(ctx context.Context) error {
 			PRIMARY KEY (task_id, criterion_id),
 			FOREIGN KEY (task_id) REFERENCES task_completion_sets(task_id) ON DELETE CASCADE
 		)`)
+	// Host-verified criteria (REQ-TASKS-COMPLETION-006) add kind, owner,
+	// evaluation result, counters, and hold state to each criterion.
+	_ = r.migrate.Apply("task_completion_criteria.kind", "ALTER TABLE task_completion_criteria ADD COLUMN kind TEXT NOT NULL DEFAULT 'attested'")
+	_ = r.migrate.Apply("task_completion_criteria.config_json", "ALTER TABLE task_completion_criteria ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
+	_ = r.migrate.Apply("task_completion_criteria.owner_kind", "ALTER TABLE task_completion_criteria ADD COLUMN owner_kind TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.owner_id", "ALTER TABLE task_completion_criteria ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.result", "ALTER TABLE task_completion_criteria ADD COLUMN result TEXT NOT NULL DEFAULT 'pending'")
+	_ = r.migrate.Apply("task_completion_criteria.result_reason", "ALTER TABLE task_completion_criteria ADD COLUMN result_reason TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.result_detail_json", "ALTER TABLE task_completion_criteria ADD COLUMN result_detail_json TEXT NOT NULL DEFAULT '[]'")
+	_ = r.migrate.Apply("task_completion_criteria.result_subject_revision", "ALTER TABLE task_completion_criteria ADD COLUMN result_subject_revision TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.result_first_seen_at", "ALTER TABLE task_completion_criteria ADD COLUMN result_first_seen_at TIMESTAMP")
+	_ = r.migrate.Apply("task_completion_criteria.result_at", "ALTER TABLE task_completion_criteria ADD COLUMN result_at TIMESTAMP")
+	_ = r.migrate.Apply("task_completion_criteria.attempt_count", "ALTER TABLE task_completion_criteria ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+	_ = r.migrate.Apply("task_completion_criteria.rework_count", "ALTER TABLE task_completion_criteria ADD COLUMN rework_count INTEGER NOT NULL DEFAULT 0")
+	_ = r.migrate.Apply("task_completion_criteria.held_reason", "ALTER TABLE task_completion_criteria ADD COLUMN held_reason TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.held_at", "ALTER TABLE task_completion_criteria ADD COLUMN held_at TIMESTAMP")
+	_ = r.migrate.Apply("task_completion_criteria.protected_allowed_revision", "ALTER TABLE task_completion_criteria ADD COLUMN protected_allowed_revision TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.protected_allowed_by", "ALTER TABLE task_completion_criteria ADD COLUMN protected_allowed_by TEXT NOT NULL DEFAULT ''")
+	_ = r.migrate.Apply("task_completion_criteria.rework_keys_json", "ALTER TABLE task_completion_criteria ADD COLUMN rework_keys_json TEXT NOT NULL DEFAULT '[]'")
+	_ = r.migrate.Apply("task_completion_criteria.escalated_at", "ALTER TABLE task_completion_criteria ADD COLUMN escalated_at TIMESTAMP")
+	_ = r.migrate.Apply("task_completion_sets.state_revision", "ALTER TABLE task_completion_sets ADD COLUMN state_revision BIGINT NOT NULL DEFAULT 0")
 	_ = r.migrate.Apply("task_completion_gate_history.table", `
 		CREATE TABLE IF NOT EXISTS task_completion_gate_history (
 			id TEXT PRIMARY KEY,

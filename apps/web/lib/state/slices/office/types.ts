@@ -294,7 +294,9 @@ export type InboxItemType =
   | "agent_paused_after_failures"
   | "task_review"
   | "task_review_request"
-  | "provider_degraded";
+  | "provider_degraded"
+  | "completion_gate_protected_path"
+  | "completion_gate_held";
 
 export type InboxItem = {
   id: string;

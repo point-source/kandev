@@ -1779,6 +1779,16 @@ func (s *Server) registerCreateTaskTool() {
 				mcp.Items(map[string]any{"type": "string"}),
 			),
 			mcp.WithArray("related_task_ids", mcp.Description("Task IDs to associate with this task without blocking or ordering them."), mcp.Items(map[string]any{"type": "string"})),
+			mcp.WithArray("completion_criteria", mcp.Description("Office tasks only: completion criteria Kandev verifies itself. Each item has kind (ci_at_head or review_at_head), optional protected_paths (glob list, ci_at_head only), max_verification_attempts and max_rework_rounds. Omit to apply the workspace default; an agent cannot remove a default."), mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"kind":                      map[string]any{"type": "string", "enum": []string{"ci_at_head", "review_at_head"}},
+					"protected_paths":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"max_verification_attempts": map[string]any{"type": "integer"},
+					"max_rework_rounds":         map[string]any{"type": "integer"},
+				},
+				"required": []string{"kind"},
+			})),
 			mcp.WithBoolean("start_when_unblocked", mcp.Description(startWhenUnblockedParamDesc)),
 		),
 		s.wrapHandler("create_task_kandev", s.createTaskHandler()),

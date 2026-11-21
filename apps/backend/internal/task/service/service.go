@@ -477,6 +477,7 @@ type Repos struct {
 
 // Service provides task business logic
 type Service struct {
+	completionCriteriaResolver      CompletionCriteriaResolver
 	workspaceCollaboration          WorkspaceCollaborationBoundary
 	workspaceCollaborationStore     WorkspaceCollaborationStore
 	executorIdentityResolver        func(context.Context, string) (authn.Identity, bool)

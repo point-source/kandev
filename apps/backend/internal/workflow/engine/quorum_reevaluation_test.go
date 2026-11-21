@@ -689,3 +689,31 @@ func TestEvaluateStepQuorum_InsensitiveToWhichLiveSessionIsNewest(t *testing.T) 
 		t.Fatalf("expected the quorum guard to be satisfied, got %#v", fromRunner.Guards[0])
 	}
 }
+
+func TestReevaluateGuardedTransitions_SkipsTargetsTheFilterRefuses(t *testing.T) {
+	store := &reevalFakeStore{
+		state: MachineState{TaskID: "task-1", SessionID: "sess-1", WorkflowID: "wf", CurrentStepID: "approval"},
+		step: StepSpec{
+			ID: "approval", WorkflowID: "wf", Position: 2,
+			Events: map[Trigger][]Action{
+				TriggerOnTurnComplete: {
+					{Kind: ActionMoveToStep, Guard: approvedGuard("approver"), MoveToStep: &MoveToStepAction{StepID: "work"}},
+				},
+			},
+		},
+		applied: map[string]bool{},
+	}
+	decisions := newFakeDecisionStore()
+	parts := fakeParticipants{list: []ParticipantInfo{{ID: "p1", Role: "approver", DecisionRequired: true, AgentProfileID: "a"}}}
+	if err := decisions.RecordStepDecision(context.Background(), DecisionInfo{
+		TaskID: "task-1", StepID: "approval", ParticipantID: "p1", Decision: DecisionApproved,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eng := New(store, MapRegistry{}, WithDecisionStore(decisions), WithParticipantStore(parts))
+	result, err := eng.ReevaluateGuardedTransitions(context.Background(), "task-1", "sess-1", "approval", "op-1",
+		func(target string) bool { return target == "done" })
+	if err != nil || result.Transitioned || store.casCalls != 0 {
+		t.Fatalf("refused target applied: result=%+v err=%v cas=%d", result, err, store.casCalls)
+	}
+}

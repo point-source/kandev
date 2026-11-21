@@ -19,6 +19,7 @@ import { Label } from "@kandev/ui/label";
 import { Switch } from "@kandev/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@kandev/ui/tooltip";
 import { TaskProperties } from "./task-properties";
+import { CompletionCriteriaSection } from "./completion-criteria-section";
 import { ChatActivityTabs } from "./chat-activity-tabs";
 import { ExecutionIndicator } from "@/app/office/components/execution-indicator";
 import { useOfficeTopbar } from "@/app/office/components/office-topbar-context";
@@ -527,6 +528,7 @@ export function OfficeSimplePane({
             onTreeChanged={refreshTreePreview}
             onNewSubIssue={() => setSubIssueOpen(true)}
           />
+          <CompletionCriteriaSection task={chatTask} />
           <TaskDocuments taskId={task.id} />
           <TaskContextSection taskId={task.id} revisionKey={task.updatedAt} />
           <ChatActivityTabs
