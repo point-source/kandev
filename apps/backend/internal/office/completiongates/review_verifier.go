@@ -139,15 +139,22 @@ func (v *ReviewVerifier) evaluate(ctx context.Context, taskID, stepID string) er
 	return v.record(ctx, criterion, change)
 }
 
-// requiredSeats returns the step's decision-required reviewer seats.
+// requiredSeats returns the step's decision-required reviewer seats, except
+// seats held by the task's assignee: its decisions never count, so its seat
+// can neither pass nor block the review.
 func (v *ReviewVerifier) requiredSeats(ctx context.Context, taskID, stepID string) (map[string]bool, error) {
 	participants, err := v.reviews.ListStepParticipantsForTask(ctx, stepID, taskID)
 	if err != nil {
 		return nil, err
 	}
+	assignee := ""
+	if task, err := v.tasks.GetTask(ctx, taskID); err == nil {
+		assignee = task.AssigneeAgentProfileID
+	}
 	seats := map[string]bool{}
 	for _, seat := range participants {
-		if seat.Role == workflowmodels.ParticipantRoleReviewer && seat.DecisionRequired {
+		if seat.Role == workflowmodels.ParticipantRoleReviewer && seat.DecisionRequired &&
+			(assignee == "" || seat.AgentProfileID != assignee) {
 			seats[seat.ID] = true
 		}
 	}

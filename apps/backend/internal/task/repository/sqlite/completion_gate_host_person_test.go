@@ -144,3 +144,22 @@ func historyHasVerdict(t *testing.T, repo *Repository, action, source string) bo
 	}
 	return false
 }
+
+// @covers AC-OFFICE-COMPLETION-GATES-009.4
+func TestSweepSelectsReviewsHeldWithAHoldKind(t *testing.T) {
+	repo, writer := newHostGateRepo(t)
+	createHostGateTask(t, repo, reviewHostCriterion())
+	linkPR(t, writer, "pr-1", "head-1")
+	query := models.TaskCompletionSweepQuery{Kind: models.TaskCompletionCriterionReview, HoldKind: "no_reviewer_available", Limit: 10}
+	if ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), query); err != nil || len(ids) != 0 {
+		t.Fatalf("unheld ids = %v, %v", ids, err)
+	}
+	holdReview(t, repo, "no_reviewer_available", "assignee_only")
+	if ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), query); err != nil || len(ids) != 1 || ids[0] != hostGateTaskID {
+		t.Fatalf("held ids = %v, %v", ids, err)
+	}
+	query.HoldKind = "review_wait_limit_reached"
+	if ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), query); err != nil || len(ids) != 0 {
+		t.Fatalf("other hold kind ids = %v, %v", ids, err)
+	}
+}

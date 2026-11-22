@@ -91,4 +91,29 @@ test.describe("Office completion gate: review at the PR head", () => {
       "Accepted by a person: Read the diff myself·abab777",
     );
   });
+
+  test("clears a no-reviewer hold once a reviewer agent can approve", async ({
+    apiClient,
+    officeApi,
+    officeSeed,
+  }) => {
+    test.setTimeout(180_000);
+    const taskId = await seedGatedTask(apiClient, officeSeed, "Gate review reseat", [], ["review"]);
+    await linkPullRequestHead(apiClient, officeSeed, taskId, {
+      head: "efef999",
+      checks: [completedCheck("unit", "success")],
+    });
+    await officeApi.assignTask(taskId, officeSeed.agentId);
+    await moveToReviewStep(apiClient, officeSeed, taskId);
+    await expect
+      .poll(() => criterionState(apiClient, taskId, "review"))
+      .toBe("held:no_reviewer_available");
+
+    await officeApi.createAgent(officeSeed.workspaceId, { name: "Reviewer", role: "specialist" });
+    // The reviewer sweep runs once a minute; it seats the new agent and
+    // starts its review, which releases the hold without a person.
+    await expect
+      .poll(() => criterionState(apiClient, taskId, "review"), { timeout: 150_000 })
+      .not.toBe("held:no_reviewer_available");
+  });
 });

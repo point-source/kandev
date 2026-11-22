@@ -102,9 +102,14 @@ waiting forever.
   handles it. It shall hold with `review_wait_limit_reached` only when a review
   wait limit is set and the park outlasts it.
 - **AC-OFFICE-COMPLETION-GATES-009.4:** When a reviewer seat becomes fillable
-  before a person acts (a non-assignee reviewer seat is cast, or a parked seat
-  run launches), a `no_reviewer_available` or `review_wait_limit_reached` hold
-  and a reviewer wait shall clear by themselves.
+  before a person acts, a `no_reviewer_available` or
+  `review_wait_limit_reached` hold and a reviewer wait shall clear by
+  themselves. A seat becomes fillable when a non-assignee reviewer seat is
+  cast, when a parked seat run launches, or when an agent able to review is
+  added or activated in the workspace: within a minute Kandev shall seat that
+  agent on each review held with `assignee_only` or `no_reviewer_role` while
+  the task is at the review stage, start its review, and release the hold. The
+  assignee's own seat shall neither pass nor block the review.
 
 ## Exclusions
 

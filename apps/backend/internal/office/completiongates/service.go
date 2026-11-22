@@ -38,6 +38,7 @@ type Service struct {
 	agents   AgentDirectory
 	held     HeldLister
 	stages   ReviewStageReader
+	seater   ReviewerSeater
 	bus      bus.EventBus
 	CI       *CIVerifier
 	Review   *ReviewVerifier
@@ -67,6 +68,7 @@ type Dependencies struct {
 	History  HistoryReader
 	Held     HeldLister
 	Stages   ReviewStageReader
+	Seater   ReviewerSeater
 	Ledger   TransitionReader
 	Bus      bus.EventBus
 	Logger   *logger.Logger
@@ -89,10 +91,14 @@ func NewService(deps Dependencies) *Service {
 	review.SetPolicy(router)
 	return &Service{
 		gates: deps.Gates, prs: deps.PRs, tasks: deps.Tasks, runs: deps.Runs, settings: deps.Settings, limits: limits, agents: deps.Agents,
-		held: deps.Held, stages: deps.Stages, bus: deps.Bus, CI: ci, Review: review, Router: router,
+		held: deps.Held, stages: deps.Stages, seater: deps.Seater, bus: deps.Bus, CI: ci, Review: review, Router: router,
 		escalator: escalator, ledger: deps.Ledger, transitions: newTransitionTracker(), logger: deps.Logger,
 	}
 }
+
+// SetReviewerSeater installs the seater the reviewer sweep uses to clear a
+// no-reviewer hold once a reviewer agent can approve.
+func (s *Service) SetReviewerSeater(seater ReviewerSeater) { s.seater = seater }
 
 // SetNavigator activates routing with the workflow navigator.
 func (s *Service) SetNavigator(navigator Navigator) { s.Router.SetNavigator(navigator) }
@@ -158,6 +164,7 @@ func (s *Service) escalationLoop(ctx context.Context) {
 			s.logger.Warn("completion gate escalation sweep failed", zap.Error(err))
 		}
 		s.sweepReviewWaits(ctx, time.Now())
+		s.sweepReviewerSeats(ctx)
 		select {
 		case <-ctx.Done():
 			return

@@ -111,8 +111,8 @@ python3 scripts/list-docs.py validate && python3 scripts/lint-spec-files.py --al
 
 - Seat-cast timing: the hold is raised from the caster, the one synchronous
   point that knows the seat, so it never races the seat write.
-- A cast-time hold (`assignee_only`, `no_reviewer_role`) clears only on a later
-  non-assignee cast or a seat-run launch; otherwise a person acts.
+- A reviewer added later is seated by a one-minute sweep, so the hold can take
+  up to a minute to clear.
 
 ## Results
 
@@ -122,3 +122,10 @@ entry: a task assigned to the workspace's only agent holds its review as
 accepts it from the Inbox. One defect was found and fixed during E2E: a hold
 raised before any review result had no heads, so Accept from the Inbox had
 nothing to pin; holds now record the live heads.
+
+Follow-up decided with the operator: a reviewer agent added or activated
+after the hold now clears it. A one-minute sweep re-casts the reviewer role
+for reviews held as `assignee_only` or `no_reviewer_role`, registers the new
+reviewer (claiming the fallback seat), queues its review run and releases the
+hold; the review verifier ignores the assignee's seat. Covered by unit tests
+and an E2E that adds a specialist agent to a held task.

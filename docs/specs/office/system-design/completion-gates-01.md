@@ -47,6 +47,17 @@ escalates once through the normal path.
 - **Seat run launched:** `Service.ReviewSeatLaunched` releases a
   `no_reviewer_available` or `review_wait_limit_reached` hold and clears a
   reviewer wait.
+- **Reviewer added later:** Office publishes no agent-created event, so the
+  escalation loop's one-minute tick runs `sweepReviewerSeats`. For each review
+  held with `no_reviewer_available` (`assignee_only` or `no_reviewer_role`,
+  selected by the sweep query's `HoldKind`), a `ReviewerSeater`
+  (`backendapp.completionGateReviewerSeater`) casts the reviewer role again
+  while the task is at the review stage. When the cast picks an agent other
+  than the assignee, it registers it through `DashboardService.AddTaskReviewer`
+  (claiming the undecided automatic fallback seat in place, else adding a
+  seat), queues its `task_assigned` run at the review step, and the service
+  releases the hold. The review verifier ignores seats held by the assignee,
+  so a fallback seat that could not be claimed never blocks the new reviewer.
 - **Review wait limit:** the escalation loop's one-minute tick runs
   `sweepReviewWaits`, which holds a review with `review_wait_limit_reached`
   once a reviewer wait has lasted its resolved review wait limit. Without a

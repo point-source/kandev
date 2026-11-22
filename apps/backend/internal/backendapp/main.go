@@ -1966,6 +1966,11 @@ func wireOfficeSvcsDependencies(
 		services.OfficeSvcs.Dashboard.SetCompletionGateInbox(gates)
 		services.OfficeSvcs.Scheduler.SetCompletionHoldChecker(gates)
 		services.OfficeSvcs.Scheduler.SetReviewSeatObserver(gates)
+		gates.SetReviewerSeater(completionGateReviewerSeater{
+			tasks: services.Task, steps: repos.Workflow,
+			caster:    officeengineadapters.NewSeatCasterAdapter(repos.Office, repos.Workflow),
+			reviewers: services.OfficeSvcs.Dashboard, runs: completionGateRuns{office: services.Office},
+		})
 		services.Task.SetCompletionCriteriaResolver(gates)
 	}
 	// Wire the event bus into the dashboard service for status-change events.

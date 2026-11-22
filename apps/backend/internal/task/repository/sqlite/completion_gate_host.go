@@ -746,6 +746,8 @@ func (r *Repository) ListTaskIDsWithUnmetCompletionCriteria(ctx context.Context,
 		where, args = append(where, "c.kind IN (?, ?)"), append(args, models.TaskCompletionCriterionCheck, models.TaskCompletionCriterionReview)
 	}
 	switch {
+	case query.HoldKind != "":
+		where, args = append(where, "c.hold_kind = ?"), append(args, query.HoldKind)
 	case query.HeldUnescalated:
 		where = append(where, "c.hold_kind <> ''", "c.hold_kind <> ?", "c.escalated_at IS NULL")
 		args = append(args, holdProtectedFilesChanged)

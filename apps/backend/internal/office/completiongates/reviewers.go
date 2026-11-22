@@ -107,6 +107,54 @@ func (s *Service) sweepReviewWaits(ctx context.Context, now time.Time) {
 	}
 }
 
+// ReviewerSeater seats a reviewer that can approve a task's review, in place
+// of the assignee's fallback seat or the missing seat, and starts its review.
+// It reports false when the only candidate is still the assignee or none.
+type ReviewerSeater interface {
+	SeatReviewer(ctx context.Context, taskID string) (bool, error)
+}
+
+// sweepReviewerSeats retries seating for reviews held because no seat could
+// approve (assignee only, or no reviewer role), so a reviewer agent added or
+// activated later clears the hold without a person.
+func (s *Service) sweepReviewerSeats(ctx context.Context) {
+	if s.seater == nil {
+		return
+	}
+	after := ""
+	for {
+		ids, err := s.gates.ListTaskIDsWithUnmetCompletionCriteria(ctx, models.TaskCompletionSweepQuery{
+			Kind: models.TaskCompletionCriterionReview, HoldKind: HoldNoReviewerAvailable, AfterTaskID: after, Limit: sweepBatchSize,
+		})
+		if err != nil || len(ids) == 0 {
+			return
+		}
+		for _, taskID := range ids {
+			s.reseatReviewer(ctx, taskID)
+		}
+		if len(ids) < sweepBatchSize {
+			return
+		}
+		after = ids[len(ids)-1]
+	}
+}
+
+func (s *Service) reseatReviewer(ctx context.Context, taskID string) {
+	review, ok := s.reviewOf(ctx, taskID)
+	if !ok || review.HoldKind != HoldNoReviewerAvailable || len(review.ResultDetail) == 0 ||
+		(review.ResultDetail[0] != CauseAssigneeOnly && review.ResultDetail[0] != CauseNoReviewerRole) {
+		return
+	}
+	seated, err := s.seater.SeatReviewer(ctx, taskID)
+	if err != nil {
+		s.logger.Warn("completion gate reviewer reseat failed", zap.String("task_id", taskID), zap.Error(err))
+		return
+	}
+	if seated {
+		s.releaseReviewerHolds(ctx, taskID, review)
+	}
+}
+
 func (s *Service) holdExpiredReviewWait(ctx context.Context, taskID string, now time.Time) {
 	review, ok := s.reviewOf(ctx, taskID)
 	if !ok || review.HoldKind != "" || review.ResultReason != ReasonWaitingForReviewer || len(review.ResultDetail) < 3 {

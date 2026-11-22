@@ -334,7 +334,9 @@ type TaskCompletionSweepQuery struct {
 	// HeldUnescalated selects held criteria not yet escalated instead of
 	// unmet, unheld ones. Protected-path holds are excluded.
 	HeldUnescalated bool
-	Limit           int
+	// HoldKind selects criteria held with this hold kind, escalated or not.
+	HoldKind string
+	Limit    int
 }
 
 // TaskCompletionControlOutcome reports a control result. Claimed is true when

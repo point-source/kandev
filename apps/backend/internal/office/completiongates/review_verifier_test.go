@@ -121,3 +121,16 @@ func TestRejectionRecordsFail(t *testing.T) {
 		t.Fatalf("records = %+v", records)
 	}
 }
+
+// @covers AC-OFFICE-COMPLETION-GATES-005.2, AC-OFFICE-COMPLETION-GATES-009.4
+func TestTheAssigneesSeatNeitherBlocksNorPassesTheReview(t *testing.T) {
+	verifier, gates, reviews := setupReview(t)
+	reviews.seats = []*workflowmodels.WorkflowStepParticipant{reviewerSeat("seat-self", "worker"), reviewerSeat("seat-qa", "qa")}
+	self := rejection("seat-self", "d-self", 1)
+	reviews.decisions = []*workflowmodels.WorkflowStepDecision{self, approval("seat-qa", "agent", "qa", "pr-1@h1")}
+	verifier.DecisionRecorded(context.Background(), "task-1", "review", "approved")
+	records := gates.records()
+	if len(records) != 1 || records[0].Result != models.TaskCompletionResultPass || records[0].VerifierID != "qa" {
+		t.Fatalf("records = %+v", records)
+	}
+}
