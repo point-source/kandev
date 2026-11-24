@@ -196,8 +196,8 @@ func (r *Repository) EnsureOfficeWorkflow(ctx context.Context, workspaceID strin
 }
 
 // stampWorkspaceOfficeWorkflow sets workspaces.office_workflow_id to
-// workflowID when the column is empty. Existing non-empty values are
-// preserved so manual overrides aren't clobbered.
+// workflowID when the column is empty. A non-empty value is the workspace's
+// selected Office workflow and is preserved.
 func (r *Repository) stampWorkspaceOfficeWorkflow(ctx context.Context, workspaceID, workflowID string) error {
 	var existing string
 	if err := r.db.QueryRowContext(ctx, r.db.Rebind(
@@ -438,9 +438,9 @@ func (r *Repository) createWorkflowFromTemplate(
 	workflowID := uuid.New().String()
 
 	if _, err := r.db.ExecContext(ctx, r.db.Rebind(`
-		INSERT INTO workflows (id, workspace_id, name, description, workflow_template_id, is_system, sort_order, hidden, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 1, 999, ?, ?, ?)
-	`), workflowID, workspaceID, name, description, tmpl.ID, dialect.BoolToInt(tmpl.Hidden), now, now); err != nil {
+		INSERT INTO workflows (id, workspace_id, name, description, workflow_template_id, is_system, sort_order, hidden, is_office, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 1, 999, ?, ?, ?, ?)
+	`), workflowID, workspaceID, name, description, tmpl.ID, dialect.BoolToInt(tmpl.Hidden), dialect.BoolToInt(tmpl.Office), now, now); err != nil {
 		return "", fmt.Errorf("insert builtin workflow %s: %w", tmpl.ID, err)
 	}
 

@@ -57,6 +57,7 @@ func RegisterRoutes(router *gin.Engine, dispatcher *ws.Dispatcher, ctrl *control
 
 func (h *Handlers) registerHTTP(router *gin.Engine) {
 	api := router.Group("/api/v1")
+	h.registerOfficeWorkflowHTTP(api)
 
 	// Template routes
 	api.GET("/workflow/templates", h.httpListTemplates)
@@ -227,6 +228,10 @@ func writeNotVisible(c *gin.Context, err error, message string) bool {
 }
 
 func (h *Handlers) writeStepMutationError(c *gin.Context, err error) {
+	if refusal, ok := service.AsOfficeWorkflowRefusal(err); ok {
+		c.JSON(http.StatusConflict, gin.H{"error": refusal.Error(), "code": officeWorkflowRefusedCode, "problems": refusal.Problems})
+		return
+	}
 	if errors.Is(err, service.ErrWorkflowReadOnly) || errors.Is(err, service.ErrWorkflowWorkspaceReadOnly) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
@@ -499,6 +504,10 @@ func importMediaType(c *gin.Context) string {
 
 func (h *Handlers) writeImportError(c *gin.Context, err error) {
 	if writeNotVisible(c, err, "Workspace not found") {
+		return
+	}
+	if refusal, ok := service.AsOfficeWorkflowRefusal(err); ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": refusal.Error(), "code": officeWorkflowRefusedCode, "problems": refusal.Problems})
 		return
 	}
 	var resolutionErr *service.ImportProfileResolutionError

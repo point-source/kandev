@@ -115,7 +115,9 @@ async function loadWorkspaceWorkflowsRoute(
 ): Promise<WorkspaceWorkflowsRouteState> {
   const [workspace, workflowResponse, templateResponse] = await Promise.all([
     fetchJson<Workspace>(`/api/v1/workspaces/${workspaceId}`, { cache: "no-store" }),
-    listWorkflows(workspaceId, { cache: "no-store" }),
+    // Hidden and Office workflows are included: the Workflows tab lists
+    // Office workflows in their own section.
+    listWorkflows(workspaceId, { cache: "no-store", includeHidden: true, excludeOffice: false }),
     listWorkflowTemplates({ cache: "no-store" }),
   ]);
 

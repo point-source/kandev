@@ -2,9 +2,6 @@ import { test, expect } from "../../fixtures/office-fixture";
 import { balancedExecutionProfileRouting } from "../../helpers/office-routing";
 
 type RunRow = { id: string; task_id?: string; agent_profile_id: string; status: string };
-type StepEvents = NonNullable<
-  Parameters<import("../../helpers/api-client").ApiClient["updateWorkflowStep"]>[1]["events"]
->;
 
 /**
  * REQ-OFFICE-REVIEW-AUTHOR-EXCL-002/004: with exclude_author_provider on the
@@ -44,15 +41,17 @@ test.describe("Office reviewer author-provider exclusion", () => {
     const { steps } = await apiClient.listWorkflowSteps(officeSeed.workflowId);
     const reviewStep = steps.find((s) => s.stage_type === "review");
     expect(reviewStep).toBeTruthy();
-    const originalEvents = (reviewStep!.events ?? {}) as StepEvents;
-    const guardedOnEnter = (originalEvents.on_enter ?? []).map((action) =>
-      action.type === "ensure_participant_seat"
-        ? { ...action, config: { ...action.config, exclude_author_provider: true } }
-        : action,
-    );
-    await apiClient.updateWorkflowStep(reviewStep!.id, {
-      events: { ...originalEvents, on_enter: guardedOnEnter },
-    });
+    // The selected Office workflow refuses single-step edits; the Office >
+    // Routing control is the supported path for this seat flag.
+    const setExclusion = async (enabled: boolean) => {
+      const res = await officeApi.rawRequest(
+        "PUT",
+        `/workspaces/${officeSeed.workspaceId}/routing/author-exclusion`,
+        { changes: [{ step_id: reviewStep!.id, role: "reviewer", enabled }] },
+      );
+      expect(res.ok, await res.clone().text()).toBe(true);
+    };
+    await setExclusion(true);
 
     try {
       const ceo = (await officeApi.getAgent(officeSeed.agentId)) as {
@@ -130,7 +129,7 @@ test.describe("Office reviewer author-provider exclusion", () => {
       await expect(events).toContainText("routing.author_exclusion", { timeout: 15_000 });
       await expect(events).toContainText(`"author_provider_id":"${author}"`);
     } finally {
-      await apiClient.updateWorkflowStep(reviewStep!.id, { events: originalEvents });
+      await setExclusion(false);
     }
   });
 });

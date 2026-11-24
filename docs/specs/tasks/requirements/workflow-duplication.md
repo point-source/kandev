@@ -81,7 +81,9 @@ The user must be able to create workflows in the source workspace. A sync-manage
 - Copying tasks, task sessions, execution history, or workflow history.
 - Bulk duplication.
 - Keeping a duplicate synchronized with its source or workflow-sync repository.
-- Duplicating Office-style workflows from the Kanban workflow settings page.
+- Duplicating Office workflows from the Kanban workflow list. Office workflow
+  duplication is owned by
+  [Office workflow selection](../../office/requirements/office-workflow-selection.md).
 
 ## Implementation Plan
 

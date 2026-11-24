@@ -139,15 +139,23 @@ func taskScanColumnSQL(alias string, useExpressions bool) string {
 
 // isFromOfficeProjection returns a SQL boolean expression that is true
 // when the task is owned by office: either it has a non-empty project_id
-// (explicit office task), its workflow matches the canonical office_workflow_id,
-// or it belongs to that Office workspace's system-owned builtin Routine workflow.
-// Ordinary Kanban and user-owned routine-template workflows remain distinct.
+// (explicit office task), its workflow is an Office workflow of the task's
+// workspace (marked workflows.is_office, or the workspace's selected
+// office_workflow_id, which selection always marks), or it belongs to that
+// Office workspace's system-owned builtin Routine workflow. Ordinary Kanban
+// and user-owned routine-template workflows remain distinct.
 func isFromOfficeProjection(alias string) string {
 	if alias == "" {
 		alias = defaultTaskAlias
 	}
 	return `(
 		COALESCE(` + alias + `.project_id, '') != ''
+		OR EXISTS (
+			SELECT 1 FROM workflows owf
+			WHERE owf.id = ` + alias + `.workflow_id
+			  AND owf.workspace_id = ` + alias + `.workspace_id
+			  AND owf.is_office = 1
+		)
 		OR EXISTS (
 			SELECT 1 FROM workspaces w
 			WHERE w.id = ` + alias + `.workspace_id

@@ -49,6 +49,9 @@ type Service struct {
 	// per-user visibility rule into this package (see access.go).
 	workflowAccessChecker  func(context.Context, string) error
 	workspaceAccessChecker func(context.Context, string) error
+	workspaceManageChecker func(context.Context, string) error
+	officeWorkflowChanged  func(context.Context, string, string)
+	officeStepWritePolicy  func(context.Context, string) (string, error)
 	taskAccessChecker      func(context.Context, string) error
 	historyQueue           chan historyWrite
 	historyStop            chan struct{}
@@ -385,6 +388,9 @@ func (s *Service) CreateStepsFromTemplate(ctx context.Context, workflowID, templ
 		if err := s.executorMutationChecker(ctx, workflowID); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureOfficeStepWriteAllowed(ctx, workflowID); err != nil {
+		return err
 	}
 	template, err := s.repo.GetTemplate(ctx, templateID)
 	if err != nil {
@@ -884,10 +890,13 @@ func (s *Service) ImportWorkflows(ctx context.Context, workspaceID string, expor
 	}
 
 	selection := selectWorkflowImports(export, existingNames)
+	if err := s.ensureOfficeImportAllowed(ctx, workspaceID, selectedWorkflows(export, selection.indexes)); err != nil {
+		return nil, err
+	}
 	result := &ImportResult{Skipped: selection.skipped}
 	for _, index := range selection.indexes {
 		pw := export.Workflows[index]
-		if _, err := s.importSingleWorkflow(ctx, workspaceID, pw); err != nil {
+		if err := s.importOneWorkflow(ctx, workspaceID, pw); err != nil {
 			return nil, fmt.Errorf("failed to import workflow %q: %w", pw.Name, err)
 		}
 		result.Created = append(result.Created, pw.Name)
@@ -899,6 +908,20 @@ func (s *Service) ImportWorkflows(ctx context.Context, workspaceID string, expor
 		zap.Int("created", len(result.Created)),
 		zap.Int("skipped", len(result.Skipped)))
 	return result, nil
+}
+
+// importOneWorkflow imports an Office workflow as an Office copy and any
+// other workflow as an ordinary one.
+func (s *Service) importOneWorkflow(ctx context.Context, workspaceID string, pw models.WorkflowPortable) error {
+	if !pw.Office {
+		_, err := s.importSingleWorkflow(ctx, workspaceID, pw)
+		return err
+	}
+	prepared, err := s.prepareImportedWorkflow(ctx, pw, nil)
+	if err != nil {
+		return err
+	}
+	return s.persistOfficeImport(ctx, workspaceID, prepared)
 }
 
 func (s *Service) importSingleWorkflow(ctx context.Context, workspaceID string, pw models.WorkflowPortable) (*taskmodels.Workflow, error) {
@@ -1107,7 +1130,21 @@ func (s *Service) stepFromPortableWithMatcherOptions(
 func (s *Service) SetExecutorMutationChecker(check func(context.Context, string) error) {
 	s.executorMutationChecker = check
 }
+
+// authorizeExecutorMutation gates single-step writes: the workflow must be
+// mutable, the caller allowed, and the workflow not one Office guards
+// against step-by-step edits.
 func (s *Service) authorizeExecutorMutation(ctx context.Context, workflowID string) error {
+	if err := s.authorizeWorkflowWrite(ctx, workflowID); err != nil {
+		return err
+	}
+	return s.ensureOfficeStepWriteAllowed(ctx, workflowID)
+}
+
+// authorizeWorkflowWrite checks mutability and the caller's executor
+// permission without the Office single-step guard. Whole-definition saves
+// and the seat routing control use it directly.
+func (s *Service) authorizeWorkflowWrite(ctx context.Context, workflowID string) error {
 	if err := s.EnsureWorkflowMutable(ctx, workflowID); err != nil {
 		return err
 	}

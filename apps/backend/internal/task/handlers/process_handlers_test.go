@@ -297,6 +297,12 @@ func (m *mockRepository) ListWorkflows(ctx context.Context, workspaceID string, 
 func (m *mockRepository) ReorderWorkflows(ctx context.Context, workspaceID string, workflowIDs []string) error {
 	return nil
 }
+func (m *mockRepository) ListOfficeWorkflowIDs(context.Context) (map[string]struct{}, error) {
+	return map[string]struct{}{}, nil
+}
+func (m *mockRepository) IsOfficeWorkflowInWorkspace(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockRepository) CreateMessage(ctx context.Context, message *models.Message) error {
 	return nil
 }

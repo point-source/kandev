@@ -30,6 +30,8 @@ import { WorkflowDialogs } from "@/app/settings/workspace/workspace-workflows-di
 import { useWorkflowCreation } from "@/app/settings/workspace/use-workflow-creation";
 import { useWorkflowImport } from "@/app/settings/workspace/use-workflow-import";
 import { WorkspaceNotFoundCard } from "@/app/settings/workspace/workspace-not-found-card";
+import { OfficeWorkflowsSection } from "@/app/settings/workspace/office-workflows-section";
+import { hasScope, SCOPE } from "@/lib/types/team-access";
 
 type WorkspaceWorkflowsClientProps = {
   workspace: Workspace | null;
@@ -62,9 +64,8 @@ function useWorkflowImportExport(
   const handleExportAll = async () => {
     if (!workspace) return;
     try {
-      // Export only the workflows shown in this settings view (kanban-only —
-      // office workflows are filtered out upstream).
-      // Workflow import/export is kanban-only by design (ADR-0004).
+      // Export the Kanban workflows shown in this list. Office workflows are
+      // exported from their own cards.
       const exportIds = workflowItems.map((wf) => wf.id);
       const yamlText = await exportAllWorkflowsAction(workspace.id, exportIds);
       setExportYaml(yamlText);
@@ -231,6 +232,13 @@ export function WorkspaceWorkflowsClient({
 
   return (
     <div className="space-y-8">
+      {workspace.office_workflow_id && !isImproveWorkspace && (
+        <OfficeWorkflowsSection
+          workspace={workspace}
+          officeWorkflows={page.officeWorkflows}
+          canManage={hasScope(workspace.scopes, SCOPE.workspaceManage)}
+        />
+      )}
       {/* No section header — see the Repositories tab: the section below is
           already named, marked and described. */}
       <SettingsSection
@@ -360,13 +368,13 @@ function useWorkspaceWorkflowsPage(
 ) {
   const router = useRouter();
   const { toast } = useToast();
-  // Workflow settings is kanban-only by design (ADR-0004): office-style
-  // workflows are managed from the Office surface and are not importable /
-  // exportable here, so we keep them out of this view entirely.
+  // Office workflows have their own section; hidden system workflows and
+  // Office-styled workflows are never listed as Kanban workflows.
   const kanbanWorkflows = useMemo(
-    () => workflows.filter((wf) => wf.style !== "office"),
+    () => workflows.filter((wf) => !wf.is_office && wf.style !== "office" && !wf.hidden),
     [workflows],
   );
+  const officeWorkflows = useMemo(() => workflows.filter((wf) => wf.is_office), [workflows]);
   const {
     workflowItems,
     setWorkflowItems,
@@ -409,6 +417,7 @@ function useWorkspaceWorkflowsPage(
 
   return {
     router,
+    officeWorkflows,
     workflowItems,
     savedWorkflowItems,
     workflowOrderDirtyIds,

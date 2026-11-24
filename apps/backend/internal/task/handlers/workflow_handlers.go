@@ -12,6 +12,7 @@ import (
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/task/dto"
 	"github.com/kandev/kandev/internal/task/models"
+	"github.com/kandev/kandev/internal/task/repository"
 	"github.com/kandev/kandev/internal/task/service"
 	workflowmodels "github.com/kandev/kandev/internal/workflow/models"
 	ws "github.com/kandev/kandev/pkg/websocket"
@@ -308,6 +309,14 @@ func (h *WorkflowHandlers) httpDeleteWorkflow(c *gin.Context) {
 		return
 	}
 	if err := h.service.DeleteWorkflow(c.Request.Context(), id); err != nil {
+		var refusal *service.OfficeWorkflowDeleteRefusal
+		if errors.As(err, &refusal) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": refusal.Error(), "code": "office_workflow_refused",
+				"problems": []gin.H{{"code": refusal.Code}},
+			})
+			return
+		}
 		handleNotFound(c, h.logger, err, "workflow not found")
 		return
 	}
@@ -548,23 +557,41 @@ func (h *WorkflowHandlers) wsUpdateWorkflow(ctx context.Context, msg *ws.Message
 }
 
 func (h *WorkflowHandlers) wsDeleteWorkflow(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
-	// Check read-only before the generic ID-request helper so the client gets
-	// a CONFLICT with the actual reason instead of a generic internal error.
-	var req struct {
-		ID string `json:"id"`
+	var req wsIDOnlyRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
 	}
-	if err := msg.ParsePayload(&req); err == nil && req.ID != "" {
-		if reason, readOnly := h.readOnlyWorkflowMessage(ctx, req.ID); readOnly {
-			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, reason, nil)
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+	// Check read-only first so the client gets a CONFLICT with the actual
+	// reason instead of a generic internal error.
+	if reason, readOnly := h.readOnlyWorkflowMessage(ctx, req.ID); readOnly {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, reason, nil)
+	}
+	if err := h.service.DeleteWorkflow(ctx, req.ID); err != nil {
+		if reply, ok := officeDeleteRefusalMessage(msg, err); ok {
+			return reply, nil
 		}
+		h.logger.Error("failed to delete workflow", zap.Error(err))
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, "Task not found", nil)
+		}
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "failed to delete workflow", nil)
 	}
-	return wsHandleIDRequest(ctx, msg, h.logger, "failed to delete workflow",
-		func(ctx context.Context, id string) (any, error) {
-			if err := h.service.DeleteWorkflow(ctx, id); err != nil {
-				return nil, err
-			}
-			return dto.SuccessResponse{Success: true}, nil
-		})
+	return ws.NewResponse(msg.ID, msg.Action, dto.SuccessResponse{Success: true})
+}
+
+// officeDeleteRefusalMessage answers a refused Office workflow delete over
+// WebSocket with a conflict that carries the problem code.
+func officeDeleteRefusalMessage(msg *ws.Message, err error) (*ws.Message, bool) {
+	var refusal *service.OfficeWorkflowDeleteRefusal
+	if !errors.As(err, &refusal) {
+		return nil, false
+	}
+	reply, _ := ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, refusal.Error(),
+		map[string]any{"code": "office_workflow_refused", "problems": []map[string]string{{"code": refusal.Code}}})
+	return reply, true
 }
 
 type httpReorderWorkflowsRequest struct {

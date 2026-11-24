@@ -294,6 +294,13 @@ export type Workflow = {
    */
   style?: "kanban" | "office" | "custom";
   /**
+   * Backend-authoritative Office membership. Office workflows never appear in
+   * Kanban listings; their tasks are Office tasks.
+   */
+  is_office?: boolean;
+  /** Built-in, Kandev-maintained workflow (read-only to users). */
+  is_system?: boolean;
+  /**
    * Workflow provenance. `"github"` marks workflows synced from a configured
    * GitHub repo (see workflow sync); omitted/`"manual"` for user-created
    * workflows. `source_path` is the repo-relative file the workflow was

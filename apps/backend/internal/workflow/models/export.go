@@ -127,7 +127,10 @@ type WorkflowPortable struct {
 	Description  string                `json:"description,omitempty" yaml:"description,omitempty"`
 	Prompt       string                `json:"prompt,omitempty" yaml:"prompt,omitempty"`
 	AgentProfile *AgentProfilePortable `json:"agent_profile,omitempty" yaml:"agent_profile,omitempty"`
-	Steps        []StepPortable        `json:"steps" yaml:"steps"`
+	// Office marks an Office workflow. Importing it creates an Office copy,
+	// which only an Office workspace accepts.
+	Office bool           `json:"office,omitempty" yaml:"office,omitempty"`
+	Steps  []StepPortable `json:"steps" yaml:"steps"`
 }
 
 // StepPortable is a workflow step without instance-specific fields.
@@ -341,6 +344,7 @@ func buildWorkflowPortable(wf *taskmodels.Workflow, steps []*WorkflowStep, resol
 		Name:        wf.Name,
 		Description: wf.Description,
 		Prompt:      wf.Prompt,
+		Office:      wf.IsOffice,
 		Steps:       portableSteps,
 	}
 	if resolveProfile != nil && wf.AgentProfileID != "" {

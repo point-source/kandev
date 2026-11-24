@@ -418,6 +418,12 @@ func (r *Repository) runMigrations(ctx context.Context) error {
 	r.migrate.Apply("workflows.source", `ALTER TABLE workflows ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`)
 	r.migrate.Apply("workflows.source_path", `ALTER TABLE workflows ADD COLUMN source_path TEXT NOT NULL DEFAULT ''`)
 	r.migrate.Apply("workflows.prompt", `ALTER TABLE workflows ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`)
+	// Office membership marker (ADR 2026-11-24-office-workflow-marker). Backend
+	// code reads this, never workflows.style. backfillOfficeWorkflowMarker
+	// marks the workflows that are Office workflows today.
+	if err := r.migrate.Apply("workflows.is_office", `ALTER TABLE workflows ADD COLUMN is_office INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	if err := r.ensureImproveKandevWorkflowTemplateUniqueness(); err != nil {
 		return err
 	}

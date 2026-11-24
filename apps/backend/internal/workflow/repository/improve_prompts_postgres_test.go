@@ -19,7 +19,7 @@ func TestImprovePromptPostgres(t *testing.T) {
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL DEFAULT '',
 			workflow_template_id TEXT NOT NULL DEFAULT '',
-			is_system INTEGER NOT NULL DEFAULT 0,
+			is_system INTEGER NOT NULL DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMP NOT NULL,

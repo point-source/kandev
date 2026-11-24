@@ -184,7 +184,10 @@ type WorkflowTemplate struct {
 	// Hidden marks templates that produce hidden workflow instances
 	// (excluded from management UI and pickers). Used by system-only flows.
 	// Not persisted to DB; sourced from the embedded YAML at load time.
-	Hidden    bool             `json:"hidden,omitempty"`
+	Hidden bool `json:"hidden,omitempty"`
+	// Office marks templates whose workflow instances are Office workflows
+	// (workflows.is_office). Sourced from the embedded YAML at load time.
+	Office    bool             `json:"office,omitempty"`
 	Steps     []StepDefinition `json:"steps"` // JSON stored
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`

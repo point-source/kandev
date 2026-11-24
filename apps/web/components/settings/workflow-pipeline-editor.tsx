@@ -47,6 +47,8 @@ type WorkflowPipelineEditorProps = {
   onReorderSteps: (steps: WorkflowStep[]) => void;
   readOnly?: boolean;
   onSessionConfigResolutionPendingChange?: (pending: boolean) => void;
+  /** Office workflows expose stage-type and Office events controls. */
+  officeMode?: boolean;
 };
 
 // --- Helpers ---
@@ -365,6 +367,7 @@ export function WorkflowPipelineEditor({
   onReorderSteps,
   readOnly = false,
   onSessionConfigResolutionPendingChange,
+  officeMode = false,
 }: WorkflowPipelineEditorProps) {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [prevStepCount, setPrevStepCount] = useState(steps.length);
@@ -449,6 +452,7 @@ export function WorkflowPipelineEditor({
           onRemove={() => handleRemoveStep(selectedStep.id)}
           readOnly={readOnly}
           onSessionConfigResolutionPendingChange={onSessionConfigResolutionPendingChange}
+          officeMode={officeMode}
         />
       )}
     </div>

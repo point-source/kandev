@@ -37,7 +37,7 @@ func TestCompletionPolicyMigration(t *testing.T) {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT,
-			is_system INTEGER DEFAULT 0,
+			is_system INTEGER DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0,
 			steps TEXT NOT NULL,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
@@ -324,7 +324,7 @@ func TestHoldStageTypeBackfillScopesToDefaultNature(t *testing.T) {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			description TEXT,
-			is_system INTEGER DEFAULT 0,
+			is_system INTEGER DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0,
 			steps TEXT NOT NULL,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL

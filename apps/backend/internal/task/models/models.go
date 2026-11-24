@@ -1984,7 +1984,15 @@ type Workflow struct {
 	// values fall back to "kanban" via the schema default. Backend code
 	// MUST NOT branch on this field — it is a presentation hint, not a
 	// behavioural invariant.
-	Style     string    `json:"style,omitempty"`
+	Style string `json:"style,omitempty"`
+	// IsOffice is the backend-authoritative Office membership marker
+	// (ADR 2026-11-24-office-workflow-marker). Tasks on an Office workflow
+	// are Office tasks and the workflow never appears on the Kanban board.
+	// It is never cleared once set.
+	IsOffice bool `json:"is_office,omitempty"`
+	// IsSystem marks a workflow materialized and maintained by Kandev from an
+	// embedded template. System workflows are read-only to users.
+	IsSystem  bool      `json:"is_system,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

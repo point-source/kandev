@@ -384,3 +384,29 @@ describe("workflow step snapshot handlers", () => {
     });
   });
 });
+
+describe("Office workflows stay off the Kanban store", () => {
+  it("drops a workflow that becomes an Office workflow and moves the active selection", () => {
+    const store = makeStore(
+      [
+        { id: "wf-1", workspaceId: "ws-1", name: "Lean office" },
+        { id: "wf-2", workspaceId: "ws-1", name: "Kanban" },
+      ],
+      "wf-1",
+    );
+    const handlers = registerWorkflowsHandlers(store);
+    handlers["workflow.updated"]?.(
+      updatedMessage({ id: "wf-1", workspace_id: "ws-1", name: "Lean office", is_office: true }),
+    );
+    expect(store.getState().workflows.items.map((item) => item.id)).toEqual(["wf-2"]);
+    expect(store.getState().workflows.activeId).toBe("wf-2");
+  });
+
+  it("never adds a created Office workflow", () => {
+    const store = makeStore([], null);
+    registerWorkflowsHandlers(store)["workflow.created"]?.(
+      createdMessage({ id: "wf-9", workspace_id: "ws-1", name: "Office copy", is_office: true }),
+    );
+    expect(store.getState().workflows.items).toEqual([]);
+  });
+});

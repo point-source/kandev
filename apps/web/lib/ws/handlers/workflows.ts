@@ -72,6 +72,7 @@ function applyWorkflowStepChange(
 
 function applyWorkflowCreated(state: AppState, payload: WorkflowPayload): AppState {
   if (state.workspaces.activeId !== payload.workspace_id) return state;
+  if (payload.is_office) return state;
   if (state.workflows.items.some((item) => item.id === payload.id)) return state;
   const isHidden = Boolean(payload.hidden);
   // Never use `??` here: null is a valid "All Workflows" selection, not a missing value.
@@ -95,7 +96,19 @@ function applyWorkflowCreated(state: AppState, payload: WorkflowPayload): AppSta
   };
 }
 
+// An Office workflow leaves the Kanban store: Kanban listings never show it.
+function removeOfficeWorkflow(state: AppState, workflowId: string): AppState {
+  if (!state.workflows.items.some((item) => item.id === workflowId)) return state;
+  const items = state.workflows.items.filter((item) => item.id !== workflowId);
+  const activeId =
+    state.workflows.activeId === workflowId
+      ? (items.find((item) => !item.hidden)?.id ?? null)
+      : state.workflows.activeId;
+  return { ...state, workflows: { ...state.workflows, items, activeId } };
+}
+
 function applyWorkflowUpdated(state: AppState, payload: WorkflowPayload): AppState {
+  if (payload.is_office) return removeOfficeWorkflow(state, payload.id);
   const items = state.workflows.items.map((item) =>
     item.id === payload.id
       ? {

@@ -24,14 +24,17 @@ import type {
 // Workflow operations
 export async function listWorkflows(
   workspaceId: string,
-  options?: ApiRequestOptions & { includeHidden?: boolean },
+  options?: ApiRequestOptions & { includeHidden?: boolean; excludeOffice?: boolean },
 ) {
-  const { includeHidden, ...requestOptions } = options ?? {};
+  const { includeHidden, excludeOffice, ...requestOptions } = options ?? {};
   const baseUrl = requestOptions.baseUrl ?? getBackendConfig().apiBaseUrl;
   const url = new URL(`${baseUrl}/api/v1/workflows`);
   url.searchParams.set("workspace_id", workspaceId);
   if (includeHidden) {
     url.searchParams.set("include_hidden", "true");
+  }
+  if (excludeOffice === false) {
+    url.searchParams.set("exclude_office", "false");
   }
   return fetchJson<ListWorkflowsResponse>(url.toString(), requestOptions);
 }

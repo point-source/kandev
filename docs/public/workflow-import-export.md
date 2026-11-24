@@ -20,7 +20,8 @@ Use this for snapshots and one-time copies. Use [Workflow Sync](workflow-sync.md
 
 Open **Settings → Workspaces → select a workspace → Workflows**.
 
-- **Export All** opens a YAML dialog for the saved Kanban workflows visible on that settings page. Unsaved drafts and Office-style workflows are excluded. Choose **Copy** to put the text on the clipboard or **Download** to save `workflows.yaml`.
+- **Export All** opens a YAML dialog for the saved Kanban workflows visible on that settings page. Unsaved drafts and Office workflows are excluded. Choose **Copy** to put the text on the clipboard or **Download** to save `workflows.yaml`.
+- In an Office workspace, each card in the **Office workflows** section has its own **Export** button. See [Change the Office workflow](office.md#change-the-office-workflow).
 - A workflow's **Export** button exports only that workflow. In the **Compact** view, select the workflow's row first to open its editor.
 - **Import** accepts a `.yml` or `.yaml` file, or pasted YAML. It previews the workflows that will be created and skipped. Exact direct step-profile matches are selected automatically; each unmatched direct step has a profile picker.
 - The browser import does not create workflows until every affected step has a valid profile selection. If no eligible profile exists, use **Retry** after creating or enabling a profile in **Settings > Agents**. Canceling the picker leaves the workspace unchanged.
@@ -130,6 +131,7 @@ Unknown YAML fields are ignored by the current decoder. Do not use that as an ex
 | `name` | Always emitted. | Exact empty string is rejected. Existing target-workspace names and later occurrences of the same exact name in one document are skipped. |
 | `description` | Omitted when empty. | Stored as supplied. |
 | `agent_profile` | Omitted when no workflow profile resolves. | Exact value match; see [Profile matching](#profile-matching). |
+| `office` | `true` for an Office workflow; omitted otherwise. | Creates an Office copy that stays off the Kanban board and can be selected as the workspace's Office workflow. A workspace without Office refuses the whole import with `requires_office_workspace`. |
 | `steps` | Always emitted, possibly empty. | Empty lists are currently accepted, although an empty workflow is not useful. |
 
 IDs, workspace ID, ordering among workflows, source/sync ownership, style, visibility, and timestamps do not round-trip.
@@ -203,7 +205,7 @@ If a source step is missing, later than its target, or invalid after a sync
 edit, import and sync report a validation error. Kandev does not silently pick
 another conversation.
 
-`stage_type`, Office participants, recorded decisions, task data, and step history are not portable. Imported steps receive new UUIDs and the default internal stage type.
+`stage_type` (`work`, `review`, `approval`, `custom`, or `hold`) round-trips with each step. Office participants, recorded decisions, task data, and step history are not portable. Imported steps receive new UUIDs.
 
 ## Portable events
 
@@ -238,7 +240,7 @@ Portable validation is deliberately narrow. Beyond `set_session_mode` and positi
 
 The seven Office/Phase-2 triggers and the two PR triggers listed in the table above round-trip through export and import: their actions, including `move_to_step`, are carried the same way as the four Kanban-era triggers. A Phase-2 `move_to_step` uses `config.step_position` and is validated against the workflow's step positions identically to `on_turn_start`/`on_turn_complete`. `queue_run_for_each_participant`'s `config.skip_decided` (boolean) excludes any seat that already recorded a decision at the step from that fan-out: the shipped office-default template sets it on `review`/`approval`'s `on_comment` so a gate comment only wakes undecided reviewers/approvers.
 
-What still doesn't round-trip is Office step *metadata* that has no portable representation: `stage_type`, step participants (reviewers/approvers), recorded decisions, task data, and step history (see [Step fields](#step-fields)). The Workflows settings UI filters Office-style workflows from its list and Export All selection because of that metadata gap, not because their trigger events are dropped. Manage participant and decision state through the Office product surface; portable Kanban import/export only carries step behavior, not Office workflow state.
+Step `stage_type` and the workflow-level `office` marker round-trip too, so an exported Office workflow imports as an Office copy. What doesn't round-trip is runtime state: step participants (reviewers/approvers), recorded decisions, task data, and step history (see [Step fields](#step-fields)). Manage participant and decision state through the Office product surface.
 
 </details>
 
@@ -392,7 +394,8 @@ After import, assign a workflow default or affected step agent profile if the de
 - **Pull reference error:** ensure the target position exists, is not the same step, and does not participate in a cycle.
 - **Workflow skipped:** rename either the destination workflow or the imported workflow; import is create-or-skip, not update.
 - **Profile missing after import:** match display name, model, and mode exactly, or select a profile in settings afterward.
-- **Event vanished:** all eleven triggers round-trip; only Office step metadata (`stage_type`, participants, decisions, task data, step history) does not.
+- **Event vanished:** all eleven triggers and `stage_type` round-trip; only Office runtime state (participants, decisions, task data, step history) does not.
+- **`requires_office_workspace`:** the file contains a workflow with `office: true`. Import it into a workspace that uses Office, or remove the marker to import it as a Kanban workflow.
 - **Large import reports strange YAML:** keep the request below 1 MiB; the route truncates at that boundary.
 - **Import failed after creating something:** creation is not an all-or-nothing transaction; remove partial results and retry a corrected file.
 

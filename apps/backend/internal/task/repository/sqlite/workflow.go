@@ -151,16 +151,16 @@ func (r *Repository) CreateWorkflowIfWorkspaceUnchanged(ctx context.Context, wor
 	result, err := r.db.ExecContext(ctx, r.db.Rebind(`
 		INSERT INTO workflows (
 			created_by_user_id, id, workspace_id, name, description, prompt, agent_profile_id, workflow_template_id,
-			sort_order, hidden, style, source, source_path, created_at, updated_at
+			sort_order, hidden, style, source, source_path, is_office, created_at, updated_at
 		)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(sort_order), -1) + 1 FROM workflows WHERE workspace_id = ?),
-			?, ?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?, ?
 		WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND updated_at = ?)
 	`), workflow.CreatedByUserID, workflow.ID, workflow.WorkspaceID, workflow.Name, workflow.Description, workflow.Prompt,
 		workflow.AgentProfileID, workflow.WorkflowTemplateID, workflow.WorkspaceID,
 		dialect.BoolToInt(workflow.Hidden), normalizeWorkflowStyle(workflow.Style), normalizeWorkflowSource(workflow.Source),
-		workflow.SourcePath, workflow.CreatedAt, workflow.UpdatedAt, workflow.WorkspaceID, expected)
+		workflow.SourcePath, dialect.BoolToInt(workflow.IsOffice), workflow.CreatedAt, workflow.UpdatedAt, workflow.WorkspaceID, expected)
 	if err != nil {
 		return err
 	}
@@ -197,9 +197,9 @@ func (r *Repository) insertWorkflow(ctx context.Context, exec sqlx.ExtContext, w
 	workflow.SortOrder = maxOrder + 1
 
 	_, err = exec.ExecContext(ctx, r.db.Rebind(`
-		INSERT INTO workflows (created_by_user_id, id, workspace_id, name, description, prompt, agent_profile_id, workflow_template_id, sort_order, hidden, style, source, source_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), workflow.CreatedByUserID, workflow.ID, workflow.WorkspaceID, workflow.Name, workflow.Description, workflow.Prompt, workflow.AgentProfileID, workflow.WorkflowTemplateID, workflow.SortOrder, dialect.BoolToInt(workflow.Hidden), normalizeWorkflowStyle(workflow.Style), normalizeWorkflowSource(workflow.Source), workflow.SourcePath, workflow.CreatedAt, workflow.UpdatedAt)
+		INSERT INTO workflows (created_by_user_id, id, workspace_id, name, description, prompt, agent_profile_id, workflow_template_id, sort_order, hidden, style, source, source_path, is_office, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), workflow.CreatedByUserID, workflow.ID, workflow.WorkspaceID, workflow.Name, workflow.Description, workflow.Prompt, workflow.AgentProfileID, workflow.WorkflowTemplateID, workflow.SortOrder, dialect.BoolToInt(workflow.Hidden), normalizeWorkflowStyle(workflow.Style), normalizeWorkflowSource(workflow.Source), workflow.SourcePath, dialect.BoolToInt(workflow.IsOffice), workflow.CreatedAt, workflow.UpdatedAt)
 
 	return err
 }
@@ -228,7 +228,7 @@ func normalizeWorkflowStyle(style string) string {
 const workflowSelectColumns = `
 	created_by_user_id, id, workspace_id, name, description, prompt, agent_profile_id,
 	workflow_template_id, sort_order, hidden, style, source, source_path,
-	created_at, updated_at
+	COALESCE(is_office, 0), COALESCE(is_system, 0), created_at, updated_at
 `
 
 type workflowScanner interface {
@@ -238,7 +238,7 @@ type workflowScanner interface {
 func scanWorkflowRow(scanner workflowScanner) (*models.Workflow, error) {
 	workflow := &models.Workflow{}
 	var workflowTemplateID, agentProfileID, style, source, sourcePath sql.NullString
-	var hidden int
+	var hidden, isOffice, isSystem int
 	if err := scanner.Scan(
 		&workflow.CreatedByUserID,
 		&workflow.ID,
@@ -253,12 +253,16 @@ func scanWorkflowRow(scanner workflowScanner) (*models.Workflow, error) {
 		&style,
 		&source,
 		&sourcePath,
+		&isOffice,
+		&isSystem,
 		&workflow.CreatedAt,
 		&workflow.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	workflow.Hidden = hidden != 0
+	workflow.IsOffice = isOffice != 0
+	workflow.IsSystem = isSystem != 0
 	if agentProfileID.Valid {
 		workflow.AgentProfileID = agentProfileID.String
 	}

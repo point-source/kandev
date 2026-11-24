@@ -7,7 +7,7 @@ import { Badge } from "@kandev/ui/badge";
 import { cn } from "@/lib/utils";
 import type { Workflow, WorkflowStep } from "@/lib/types/http";
 
-export type WorkflowReadOnlyReason = "synced" | "improve" | null;
+export type WorkflowReadOnlyReason = "synced" | "improve" | "builtIn" | null;
 
 type WorkflowCompactRowProps = {
   workflow: Workflow;
@@ -38,6 +38,11 @@ function WorkflowCompactMarkers({
       {readOnlyReason === "improve" && (
         <Badge variant="outline" className="shrink-0 text-xs">
           {t("workflows:compactReadOnly")}
+        </Badge>
+      )}
+      {readOnlyReason === "builtIn" && (
+        <Badge variant="outline" className="shrink-0 text-xs">
+          {t("workflows:officeBuiltInBadge")}
         </Badge>
       )}
       {isDirty && (

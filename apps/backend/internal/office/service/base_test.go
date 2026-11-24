@@ -92,7 +92,7 @@ func newTestService(t *testing.T, overrides ...service.ServiceOptions) *service.
 		hidden INTEGER NOT NULL DEFAULT 0,
 		style TEXT NOT NULL DEFAULT 'kanban',
 		source TEXT NOT NULL DEFAULT 'manual',
-		is_system INTEGER NOT NULL DEFAULT 0,
+		is_system INTEGER NOT NULL DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`); err != nil {

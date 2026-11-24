@@ -803,6 +803,8 @@ func mapWorkflowItemState(workflow taskdto.WorkflowDTO) map[string]any {
 		"agent_profile_id": nullString(workflow.AgentProfileID),
 		"hidden":           workflow.Hidden,
 		"style":            workflow.Style,
+		"is_office":        workflow.IsOffice,
+		"is_system":        workflow.IsSystem,
 	}
 }
 

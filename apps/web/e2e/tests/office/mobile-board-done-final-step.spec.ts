@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../../fixtures/office-fixture";
 import type { ApiClient } from "../../helpers/api-client";
+import { createOfficeWorkflowCopy } from "../../helpers/office-workflow-copy";
 import { waitForHttp } from "../../helpers/causal-waits";
 import { touchDragBetween } from "../../helpers/touch-drag";
 
@@ -210,54 +211,58 @@ test("a queued Done on a phone waits for room without promising completion", asy
   apiClient,
   officeSeed,
 }) => {
-  const { first, final } = await firstAndFinalSteps(apiClient, officeSeed.workflowId);
-  try {
-    await apiClient.updateWorkflowStep(final.id, { wip_limit: 1, complete_task_on_enter: false });
-    const holder = await apiClient.createTask(officeSeed.workspaceId, "Phone capacity holder", {
-      workflow_id: officeSeed.workflowId,
-      workflow_step_id: final.id,
-    });
-    expect((await apiClient.getTask(holder.id)).wip_admitted).toBe(true);
-    const task = await apiClient.createTask(officeSeed.workspaceId, "Phone queued Done", {
-      workflow_id: officeSeed.workflowId,
-      workflow_step_id: first.id,
-    });
-    const before = await apiClient.getTask(task.id);
-    expect(before.state).toBe("CREATED");
-    expect(before.workflow_step_id).toBe(first.id);
-    await testPage.goto(`/office/tasks/${task.id}`);
-    const trigger = testPage.getByTestId("status-picker-trigger");
-    const initialLabel = (await trigger.textContent()) ?? "";
-    await trigger.tap();
-    const changed = waitForHttp(testPage, "PATCH", new RegExp(`/api/v1/office/tasks/${task.id}$`));
-    await testPage.getByTestId("status-picker-option-done").tap();
-    const response = await changed;
-    expect(response.status()).toBe(200);
-    expect(response.request().postDataJSON()).toEqual({ status: "done" });
-    expect(await response.json()).toMatchObject({
-      status: "CREATED",
-      queued: true,
-      workflow_step: { id: final.id, name: final.name },
-    });
-    await expect(
-      testPage.getByText(`Queued for "${final.name}". Waiting for room.`, { exact: true }).first(),
-    ).toBeVisible();
-    await expect(trigger).toHaveText(initialLabel);
-    await expect
-      .poll(async () => {
-        const persisted = await apiClient.getTask(task.id);
-        return {
-          state: persisted.state,
-          stepId: persisted.workflow_step_id,
-          queuedFor: persisted.queued_for_step_id,
-          admitted: persisted.wip_admitted,
-        };
-      })
-      .toEqual({ state: before.state, stepId: final.id, queuedFor: final.id, admitted: false });
-  } finally {
-    await apiClient.updateWorkflowStep(final.id, {
-      wip_limit: final.wip_limit ?? 0,
-      complete_task_on_enter: final.complete_task_on_enter ?? false,
-    });
-  }
+  // The selected Office workflow refuses single-step edits, so the
+  // scenario runs on an Office copy with a capacity-limited final step.
+  const copy = await createOfficeWorkflowCopy(
+    apiClient,
+    officeSeed.workspaceId,
+    officeSeed.workflowId,
+    (steps) => {
+      const last = steps[steps.length - 1]!;
+      last.wip_limit = 1;
+      last.complete_task_on_enter = false;
+    },
+  );
+  const { first, final } = await firstAndFinalSteps(apiClient, copy.workflowId);
+  const holder = await apiClient.createTask(officeSeed.workspaceId, "Phone capacity holder", {
+    workflow_id: copy.workflowId,
+    workflow_step_id: final.id,
+  });
+  expect((await apiClient.getTask(holder.id)).wip_admitted).toBe(true);
+  const task = await apiClient.createTask(officeSeed.workspaceId, "Phone queued Done", {
+    workflow_id: copy.workflowId,
+    workflow_step_id: first.id,
+  });
+  const before = await apiClient.getTask(task.id);
+  expect(before.state).toBe("CREATED");
+  expect(before.workflow_step_id).toBe(first.id);
+  await testPage.goto(`/office/tasks/${task.id}`);
+  const trigger = testPage.getByTestId("status-picker-trigger");
+  const initialLabel = (await trigger.textContent()) ?? "";
+  await trigger.tap();
+  const changed = waitForHttp(testPage, "PATCH", new RegExp(`/api/v1/office/tasks/${task.id}$`));
+  await testPage.getByTestId("status-picker-option-done").tap();
+  const response = await changed;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON()).toEqual({ status: "done" });
+  expect(await response.json()).toMatchObject({
+    status: "CREATED",
+    queued: true,
+    workflow_step: { id: final.id, name: final.name },
+  });
+  await expect(
+    testPage.getByText(`Queued for "${final.name}". Waiting for room.`, { exact: true }).first(),
+  ).toBeVisible();
+  await expect(trigger).toHaveText(initialLabel);
+  await expect
+    .poll(async () => {
+      const persisted = await apiClient.getTask(task.id);
+      return {
+        state: persisted.state,
+        stepId: persisted.workflow_step_id,
+        queuedFor: persisted.queued_for_step_id,
+        admitted: persisted.wip_admitted,
+      };
+    })
+    .toEqual({ state: before.state, stepId: final.id, queuedFor: final.id, admitted: false });
 });

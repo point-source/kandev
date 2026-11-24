@@ -422,6 +422,12 @@ type WorkflowRepository interface {
 	DeleteWorkflow(ctx context.Context, id string) error
 	ListWorkflows(ctx context.Context, workspaceID string, includeHidden bool) ([]*models.Workflow, error)
 	ReorderWorkflows(ctx context.Context, workspaceID string, workflowIDs []string) error
+	// ListOfficeWorkflowIDs returns every workflow marked as an Office
+	// workflow (workflows.is_office), across all workspaces.
+	ListOfficeWorkflowIDs(ctx context.Context) (map[string]struct{}, error)
+	// IsOfficeWorkflowInWorkspace reports whether workflowID is an Office
+	// workflow owned by workspaceID.
+	IsOfficeWorkflowInWorkspace(ctx context.Context, workspaceID, workflowID string) (bool, error)
 }
 
 // MessageRepository handles message persistence and lookups.

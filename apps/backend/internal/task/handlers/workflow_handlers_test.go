@@ -146,6 +146,26 @@ func (r *workflowRepo) ReorderWorkflows(_ context.Context, workspaceID string, i
 	return nil
 }
 
+func (r *workflowRepo) ListOfficeWorkflowIDs(context.Context) (map[string]struct{}, error) {
+	ids := map[string]struct{}{}
+	for id, wf := range r.workflows {
+		if wf.IsOffice {
+			ids[id] = struct{}{}
+		}
+	}
+	for _, ws := range r.workspaces {
+		if ws.OfficeWorkflowID != "" {
+			ids[ws.OfficeWorkflowID] = struct{}{}
+		}
+	}
+	return ids, nil
+}
+
+func (r *workflowRepo) IsOfficeWorkflowInWorkspace(_ context.Context, workspaceID, workflowID string) (bool, error) {
+	wf, ok := r.workflows[workflowID]
+	return ok && wf.IsOffice && wf.WorkspaceID == workspaceID, nil
+}
+
 func (r *workflowRepo) ListTasks(context.Context, string) ([]*models.Task, error) {
 	return r.snapshotTasks, nil
 }
@@ -493,6 +513,21 @@ func TestHTTPDeleteWorkflowDeletesEditableWorkflow(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"success":true}`, rec.Body.String())
 	require.Equal(t, []string{"wf-1"}, repo.deleted)
+}
+
+// @covers AC-OFFICE-WORKFLOW-SELECT-002.5
+func TestHTTPDeleteWorkflowRefusesSelectedOfficeWorkflow(t *testing.T) {
+	repo := workflowFixture()
+	h := newWorkflowHandlers(t, repo, &stubStepLister{})
+	c, rec := newWorkflowRequest(t, http.MethodDelete, "/api/v1/workflows/wf-office", "")
+	c.Params = gin.Params{{Key: "id", Value: "wf-office"}}
+
+	h.httpDeleteWorkflow(c)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.JSONEq(t, `{"error":"office workflow cannot be deleted: selected_delete",`+
+		`"code":"office_workflow_refused","problems":[{"code":"selected_delete"}]}`, rec.Body.String())
+	require.Empty(t, repo.deleted)
 }
 
 func TestHTTPDeleteWorkflowReturnsNotFoundForUnknownWorkflow(t *testing.T) {

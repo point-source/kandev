@@ -79,6 +79,7 @@ Each entry under `workflows:`:
 | `description` | string | no | Omitted from export when empty. |
 | `prompt` | string | no | Optional workflow-level agent instructions prepended at every step entry before the step prompt. Omitted from export when empty. Supports `{task_id}` interpolation. |
 | `agent_profile` | object | no | Workflow-level default agent profile. See [Agent profiles](#agent-profiles). Omitted when the workflow has no profile. |
+| `office` | bool | no | `true` marks an Office workflow. Importing it creates an Office copy that stays off the Kanban board and can be selected as the workspace's Office workflow. Only a workspace with Office enabled accepts it; any other workspace refuses the whole import with `requires_office_workspace`. Omitted for ordinary workflows. |
 | `steps` | list | — | The workflow's steps. See [`StepPortable`](#stepportable). |
 
 Instance-specific fields (IDs, timestamps, workspace association) are **not**
@@ -124,15 +125,17 @@ Each entry under `steps:`:
 | `agent_profile` | object | no | omitted when none | Step-level agent profile, overriding the workflow default. See [Agent profiles](#agent-profiles). |
 | `profile_session_start_policy` | enum | no | `reuse` | When this destination step changes the effective agent profile, reuse the newest eligible nonterminal session for that profile, or use `new` to always start a fresh conversation. |
 | `profile_session_end_policy` | enum | no | `complete` | When this source step is left for a different profile, complete its session, or use `park` to stop the agent while keeping the conversation available. |
+| `stage_type` | enum | no | omitted when unset (`custom`) | The step's nature: `work`, `review`, `approval`, `custom`, or `hold`. Office routing, seats and stall detection key off it. |
 
 > **Note:** `position`, `color`, `events`, and the three booleans carry no
 > `omitempty`, so they always appear in exported files (even when `false` or
 > empty). The `prompt`, `auto_archive_after_hours`, and `agent_profile` fields
 > are omitted when unset. Session policies use their defaults when omitted.
 
-> **Not in the portable format:** office/Phase-2 step metadata — `stage_type`,
-> step participants (reviewers/approvers), and recorded decisions — is **not**
-> exported or imported. Only the fields listed above round-trip.
+> **Office stage types round-trip.** `stage_type` (`work`, `review`,
+> `approval`, `custom`, `hold`) is exported and imported with each step.
+> Runtime Office state, which is step participants (reviewers/approvers) and
+> recorded decisions, is **not** exported or imported.
 
 ---
 
@@ -265,9 +268,9 @@ events:
 These nine triggers round-trip through export and import (fixed by
 [#1109](https://github.com/kdlbs/kandev/issues/1109); the portable conversion
 in `export.go` now carries all thirteen `StepEvents` fields, not just
-`on_enter`/`on_turn_start`/`on_turn_complete`/`on_exit`). What still does not
-round-trip is Office step *metadata* with no portable representation:
-`stage_type`, step participants (reviewers/approvers), recorded decisions,
+`on_enter`/`on_turn_start`/`on_turn_complete`/`on_exit`). Step `stage_type` and the
+workflow-level `office` marker round-trip too. What does not round-trip is
+runtime state: step participants (reviewers/approvers), recorded decisions,
 task data, and step history
 (see the note under [`StepPortable`](#stepportable)).
 

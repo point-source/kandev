@@ -127,6 +127,18 @@ describe("getWorkflowCopyName", () => {
 });
 
 describe("createWorkflowDuplication", () => {
+  // @covers AC-OFFICE-WORKFLOW-SELECT-002.2
+  it("makes a copy of an Office workflow an Office copy without system identity", () => {
+    const builtIn = { ...sourceWorkflow("Office Default"), is_office: true, is_system: true };
+    const { workflow } = createWorkflowDuplication(builtIn, [builtIn], sourceSteps());
+    expect(workflow.is_office).toBe(true);
+    expect(workflow.style).toBe("office");
+    expect(workflow.is_system).toBeUndefined();
+
+    const kanban = createWorkflowDuplication(sourceWorkflow(), [], sourceSteps()).workflow;
+    expect(kanban.is_office).toBeUndefined();
+  });
+
   it("copies editable metadata and remaps every internal step reference", () => {
     const source = sourceWorkflow();
     const steps = sourceSteps();

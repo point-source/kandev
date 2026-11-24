@@ -181,12 +181,14 @@ func (s *Service) validateAssigneeTaskIsOffice(ctx context.Context, req *CreateT
 	if req.AssigneeAgentProfileID == "" || isOfficeRequest(req) {
 		return nil
 	}
-	_, officeWorkflowID, err := s.tasks.GetWorkspaceTaskPrefix(ctx, req.WorkspaceID)
-	if err != nil {
-		return fmt.Errorf("get office workflow for assignee task: %w", err)
-	}
-	if officeWorkflowID != "" && req.WorkflowID == officeWorkflowID {
-		return nil
+	if req.WorkflowID != "" {
+		isOffice, err := s.workflows.IsOfficeWorkflowInWorkspace(ctx, req.WorkspaceID, req.WorkflowID)
+		if err != nil {
+			return fmt.Errorf("get office workflow for assignee task: %w", err)
+		}
+		if isOffice {
+			return nil
+		}
 	}
 	return fmt.Errorf("%w: Office agent assignees require an Office task", ErrInvalidAssigneeAgentProfile)
 }

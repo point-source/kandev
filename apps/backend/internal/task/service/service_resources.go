@@ -965,6 +965,9 @@ func (s *Service) DeleteWorkflow(ctx context.Context, id string) error {
 	if workflow == nil {
 		return fmt.Errorf("workflow not found: %s", id)
 	}
+	if err := s.checkOfficeWorkflowDeletable(ctx, workflow); err != nil {
+		return err
+	}
 
 	tasks, err := s.listWorkflowTasksForDelete(ctx, workflow)
 	if err != nil {
@@ -1048,18 +1051,14 @@ func (s *Service) ListWorkflows(ctx context.Context, workspaceID string, include
 	return s.workflows.ListWorkflows(ctx, workspaceID, includeHidden)
 }
 
-// GetOfficeWorkflowIDs returns the set of workflow IDs that are office workflows
-// (referenced by any workspace's office_workflow_id column).
+// GetOfficeWorkflowIDs returns the set of Office workflow IDs (workflows
+// marked is_office) across every workspace. It returns nil when the lookup
+// fails so callers keep their unfiltered listing.
 func (s *Service) GetOfficeWorkflowIDs(ctx context.Context) map[string]struct{} {
-	workspaces, err := s.workspaces.ListWorkspaces(ctx)
+	ids, err := s.workflows.ListOfficeWorkflowIDs(ctx)
 	if err != nil {
+		s.logger.Warn("list office workflows failed", zap.Error(err))
 		return nil
-	}
-	ids := make(map[string]struct{})
-	for _, ws := range workspaces {
-		if ws.OfficeWorkflowID != "" {
-			ids[ws.OfficeWorkflowID] = struct{}{}
-		}
 	}
 	return ids
 }

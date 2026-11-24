@@ -1022,9 +1022,10 @@ func (s *Service) publishWorkspaceEvent(ctx context.Context, eventType string, w
 		// Placement is reach: moving a workspace between units is what grants
 		// and withdraws access now, so an access-changed event that omitted it
 		// would tell clients something changed without telling them what.
-		"unit_id":    workspace.UnitID,
-		"created_at": workspace.CreatedAt.Format(time.RFC3339),
-		"updated_at": workspace.UpdatedAt.Format(time.RFC3339),
+		"unit_id":            workspace.UnitID,
+		"office_workflow_id": workspace.OfficeWorkflowID,
+		"created_at":         workspace.CreatedAt.Format(time.RFC3339),
+		"updated_at":         workspace.UpdatedAt.Format(time.RFC3339),
 	}
 
 	s.publishEventToBus(ctx, eventType, "workspace", workspace.ID, data)
@@ -1052,6 +1053,9 @@ func (s *Service) publishWorkflowEvent(ctx context.Context, eventType string, wo
 		"prompt":           workflow.Prompt,
 		"agent_profile_id": workflow.AgentProfileID,
 		"hidden":           workflow.Hidden,
+		"style":            workflow.Style,
+		"is_office":        workflow.IsOffice,
+		"is_system":        workflow.IsSystem,
 		"source":           workflow.Source,
 		"source_path":      workflow.SourcePath,
 		"created_at":       workflow.CreatedAt.Format(time.RFC3339),

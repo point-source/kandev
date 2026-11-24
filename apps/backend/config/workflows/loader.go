@@ -19,6 +19,7 @@ type templateYAML struct {
 	Name        string        `yaml:"name"`
 	Description string        `yaml:"description"`
 	Hidden      bool          `yaml:"hidden,omitempty"`
+	Office      bool          `yaml:"office,omitempty"`
 	Steps       []stepDefYAML `yaml:"steps"`
 }
 
@@ -156,6 +157,7 @@ func LoadTemplateYAML(data []byte) (*models.WorkflowTemplate, error) {
 		Description: raw.Description,
 		IsSystem:    true,
 		Hidden:      raw.Hidden,
+		Office:      raw.Office,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

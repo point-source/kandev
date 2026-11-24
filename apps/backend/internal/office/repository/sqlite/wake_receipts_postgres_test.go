@@ -41,7 +41,7 @@ func newPostgresSearchTestRepo(t *testing.T, db *sqlx.DB) *sqlite.Repository {
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL DEFAULT '',
 			workflow_template_id TEXT DEFAULT '',
-			is_system INTEGER NOT NULL DEFAULT 0
+			is_system INTEGER NOT NULL DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		t.Fatalf("create workflows table: %v", err)

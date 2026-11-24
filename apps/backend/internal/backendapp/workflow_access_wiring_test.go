@@ -32,6 +32,7 @@ func TestWorkflowAccessCheckersAreWired(t *testing.T) {
 		"SetWorkspaceAccessChecker":  "AuthorizeWorkspaceAccess",
 		"SetTaskAccessChecker":       "AuthorizeTaskAccess",
 		"SetSessionAccessChecker":    "AuthorizeSessionAccess",
+		"SetWorkspaceManageChecker":  "AuthorizeWorkspaceManage",
 	}
 
 	wireFn := findFuncDecl(t, "services.go", "wireTaskWorkflowCrossReferences")

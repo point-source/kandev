@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../../fixtures/office-fixture";
 import type { ApiClient } from "../../helpers/api-client";
+import { createOfficeWorkflowCopy } from "../../helpers/office-workflow-copy";
 import { waitForHttp } from "../../helpers/causal-waits";
 
 /**
@@ -114,63 +115,61 @@ test.describe("Office board Done before the final workflow step", () => {
     apiClient,
     officeSeed,
   }) => {
-    const { first, final } = await workflowSteps(apiClient, officeSeed.workflowId);
-    try {
-      await apiClient.updateWorkflowStep(final.id, { wip_limit: 1, complete_task_on_enter: false });
-      const holder = await apiClient.createTask(officeSeed.workspaceId, "Board capacity holder", {
-        workflow_id: officeSeed.workflowId,
-        workflow_step_id: final.id,
-      });
-      expect((await apiClient.getTask(holder.id)).wip_admitted).toBe(true);
-      const task = await apiClient.createTask(officeSeed.workspaceId, "Board queued Done", {
-        workflow_id: officeSeed.workflowId,
-        workflow_step_id: first.id,
-      });
-      const before = await persistedTask(apiClient, task.id);
-      expect(before.state).toBe("CREATED");
-      expect(before.stepId).toBe(first.id);
-      await openBoard(testPage);
-      const changed = waitForHttp(
-        testPage,
-        "PATCH",
-        new RegExp(`/api/v1/office/tasks/${task.id}$`),
-      );
-      await dragCardToColumn(testPage, task.id, "done");
-      const response = await changed;
-      expect(response.status()).toBe(200);
-      expect(response.request().postDataJSON()).toEqual({ status: "done" });
-      expect(await response.json()).toMatchObject({
-        status: "CREATED",
-        queued: true,
-        workflow_step: { id: final.id, name: final.name },
-      });
-      await expect(
-        testPage
-          .getByText(`Queued for "${final.name}". Waiting for room.`, { exact: true })
-          .first(),
-      ).toBeVisible();
-      await expect(
-        testPage.getByTestId("board-column-todo").getByTestId(`board-card-${task.id}`),
-      ).toBeVisible();
-      await expect(
-        testPage.getByTestId("board-column-done").getByTestId(`board-card-${task.id}`),
-      ).toHaveCount(0);
-      await expect
-        .poll(async () => {
-          const persisted = await apiClient.getTask(task.id);
-          return {
-            state: persisted.state,
-            stepId: persisted.workflow_step_id,
-            queuedFor: persisted.queued_for_step_id,
-            admitted: persisted.wip_admitted,
-          };
-        })
-        .toEqual({ state: before.state, stepId: final.id, queuedFor: final.id, admitted: false });
-    } finally {
-      await apiClient.updateWorkflowStep(final.id, {
-        wip_limit: final.wip_limit ?? 0,
-        complete_task_on_enter: final.complete_task_on_enter ?? false,
-      });
-    }
+    // The selected Office workflow refuses single-step edits, so the
+    // scenario runs on an Office copy with a capacity-limited final step.
+    const copy = await createOfficeWorkflowCopy(
+      apiClient,
+      officeSeed.workspaceId,
+      officeSeed.workflowId,
+      (steps) => {
+        const last = steps[steps.length - 1]!;
+        last.wip_limit = 1;
+        last.complete_task_on_enter = false;
+      },
+    );
+    const { first, final } = await workflowSteps(apiClient, copy.workflowId);
+    const holder = await apiClient.createTask(officeSeed.workspaceId, "Board capacity holder", {
+      workflow_id: copy.workflowId,
+      workflow_step_id: final.id,
+    });
+    expect((await apiClient.getTask(holder.id)).wip_admitted).toBe(true);
+    const task = await apiClient.createTask(officeSeed.workspaceId, "Board queued Done", {
+      workflow_id: copy.workflowId,
+      workflow_step_id: first.id,
+    });
+    const before = await persistedTask(apiClient, task.id);
+    expect(before.state).toBe("CREATED");
+    expect(before.stepId).toBe(first.id);
+    await openBoard(testPage);
+    const changed = waitForHttp(testPage, "PATCH", new RegExp(`/api/v1/office/tasks/${task.id}$`));
+    await dragCardToColumn(testPage, task.id, "done");
+    const response = await changed;
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON()).toEqual({ status: "done" });
+    expect(await response.json()).toMatchObject({
+      status: "CREATED",
+      queued: true,
+      workflow_step: { id: final.id, name: final.name },
+    });
+    await expect(
+      testPage.getByText(`Queued for "${final.name}". Waiting for room.`, { exact: true }).first(),
+    ).toBeVisible();
+    await expect(
+      testPage.getByTestId("board-column-todo").getByTestId(`board-card-${task.id}`),
+    ).toBeVisible();
+    await expect(
+      testPage.getByTestId("board-column-done").getByTestId(`board-card-${task.id}`),
+    ).toHaveCount(0);
+    await expect
+      .poll(async () => {
+        const persisted = await apiClient.getTask(task.id);
+        return {
+          state: persisted.state,
+          stepId: persisted.workflow_step_id,
+          queuedFor: persisted.queued_for_step_id,
+          admitted: persisted.wip_admitted,
+        };
+      })
+      .toEqual({ state: before.state, stepId: final.id, queuedFor: final.id, admitted: false });
   });
 });

@@ -9,6 +9,7 @@ import {
 } from "@/lib/types/http";
 import { generateUUID } from "@/lib/utils";
 import { t } from "@/lib/i18n";
+import { persistOfficeWorkflowDraft } from "./office-workflow-persistence";
 import { useToast } from "@/components/toast-provider";
 import { useSerializedMutationQueue } from "./use-serialized-mutation-queue";
 import type { WorkflowMutationGuardController } from "./workflow-mutation-guard";
@@ -141,7 +142,9 @@ function createRemoveWorkflowStepHandler(
     const proposedSteps = workflowSteps
       .filter((step) => step.id !== stepId)
       .map((step, position) => ({ ...step, position }));
-    if (isNewWorkflow) {
+    // Office workflows remove steps in the draft; the whole-definition save
+    // refuses removing a step that still holds tasks.
+    if (isNewWorkflow || workflow.is_office) {
       setWorkflowSteps(proposedSteps);
       return;
     }
@@ -262,6 +265,7 @@ export async function persistWorkflowDraft({
   savedSteps,
   progress,
 }: PersistWorkflowDraftParams): Promise<{ workflow: Workflow; steps: WorkflowStep[] }> {
+  if (workflow.is_office) return persistOfficeWorkflowDraft({ workflow, draftSteps, progress });
   const isNewWorkflow = workflow.id.startsWith(TEMP_WORKFLOW_PREFIX);
   const persistedWorkflow = await ensurePersistedWorkflow(workflow, progress);
   const updatedWorkflow = await updateWorkflowAction(persistedWorkflow.id, {

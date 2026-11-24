@@ -136,7 +136,7 @@ func TestOfficeCEOTransfersAnotherTaskAndDestinationReplay(t *testing.T) {
 		}
 	}
 	for _, workflow := range []*models.Workflow{
-		{ID: "ceo-wf-source", WorkspaceID: "ceo-transfer-source", Name: "Source"},
+		{ID: "ceo-wf-source", WorkspaceID: "ceo-transfer-source", Name: "Source", IsOffice: true},
 		{ID: "ceo-wf-destination", WorkspaceID: "ceo-transfer-destination", Name: "Destination"},
 	} {
 		if err := taskRepo.CreateWorkflow(ctx, workflow); err != nil {

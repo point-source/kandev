@@ -10,6 +10,7 @@ description: >-
   reviewers, and multi-agent approvers. Tasks flow Backlog -> Work -> Review
   -> Approval -> Done with quorum-gated transitions.
 hidden: true
+office: true
 
 steps:
   - id: backlog

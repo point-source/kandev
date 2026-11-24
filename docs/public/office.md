@@ -45,10 +45,32 @@ The default Office workflow has five stages:
 
 Review and Approval can create an automatic participant seat when one is needed. A task can therefore be waiting for a reviewer or approver to be selected, or for a recorded decision, even while no agent is running. See [reviews and approvals](office-tasks.md#work-through-review-and-approval).
 
+## Change the Office workflow
+
+Each Office workspace has one **selected Office workflow**. New Office tasks start on it; tasks already created stay on their own workflow with their seats, decisions, and runs.
+
+1. Open **Settings → Workspaces → select the workspace → Workflows**. The **Office workflows** section lists the built-in Office Default workflow (read-only) and your Office copies.
+2. Choose **Duplicate** on the built-in workflow, edit the copy, and choose **Save changes**. A copy doesn't receive future updates to the built-in workflow.
+3. In each step, set **Stage type** (Work, Review, Approval, Custom, or Hold). Office routing, seats, and stall detection follow the stage type, not the step name.
+4. Open **Office events (advanced)** to edit the step's triggers and actions as YAML, for example a `run_code_review` action with an `agent_profile_id` that reviews on a different provider. Refer to other steps by name in `step_id`.
+5. Choose the copy in the **Office workflow** picker. Only workspace managers can change it.
+
+Kandev refuses a workflow Office can't drive and names every problem. A selectable workflow needs:
+
+- exactly one start step;
+- a Work step with **Requires completion signal** turned on;
+- a final step with **Complete task when entering this step**, reachable from the start step;
+- on each Review or Approval step, `ensure_participant_seat` and `queue_run_for_each_participant` actions for the step's role;
+- agent profiles that exist in this installation.
+
+The selected Office workflow changes only through **Save changes**, so it never runs half-edited; a save that would break it, or remove a step that still holds tasks, is refused. You can't delete the built-in workflow or the selected one. Workflows managed by workflow sync, and Kanban workflows that already hold tasks, can't be selected. Office workflows never appear on the Kanban board.
+
+Export an Office workflow from its card and import it into another Office workspace; see [Workflow import/export](workflow-import-export.md).
+
 ## Start with a small team
 
 Begin with one coordinator, one bounded task, and a project you can inspect. Review the coordinator's proposed plan before expanding the team or enabling recurring work. Office provides approval controls, permissions, budgets, and a workspace pause, but those controls do not replace reviewing instructions and executor access.
 
-Office routines and teams are separate from regular Kanban [workspace automations](automation-and-mcp.md). Workflow YAML import/export covers regular Kanban workflows and excludes Office workflows. See [Feature status](feature-status.md) for the supported regular-Kanban boundary.
+Office routines and teams are separate from regular Kanban [workspace automations](automation-and-mcp.md). Workflow YAML import/export covers Kanban workflows and Office workflows; an Office workflow imports only into an Office workspace. See [Feature status](feature-status.md).
 
 The workspace **Coordinators**, **Needs you**, and **Queue** surfaces have their own [coordinator autonomy settings](coordinator.md). Configure an Office CEO under **Agents**, and use Office routines, budgets, and workspace pause to control this team's work.

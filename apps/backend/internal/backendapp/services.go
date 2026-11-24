@@ -569,6 +569,10 @@ func wireTaskWorkflowCrossReferences(
 	// A step's queue_run action names the task it starts work on, so the
 	// step-write API accepts task IDs as well.
 	workflowSvc.SetTaskAccessChecker(taskSvc.AuthorizeTaskAccess)
+	// Selecting a workspace's Office workflow is a workspace-settings change.
+	workflowSvc.SetWorkspaceManageChecker(taskSvc.AuthorizeWorkspaceManage)
+	workflowSvc.SetOfficeWorkflowChangePublisher(taskSvc.PublishOfficeWorkflowChanged)
+	workflowSvc.SetOfficeStepWritePolicy(taskSvc.OfficeStepWriteRefusal)
 
 	// Wire the ADR 0015 audit-trail writer for manual step transitions.
 	// workflowSvc.CreateStepTransition already matches

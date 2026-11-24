@@ -335,3 +335,22 @@ func TestValidateHandoffWorkflow_DeliveryWorkflowDistinctFromOfficeWorkflowIsAll
 		t.Fatalf("validateHandoffWorkflow() error = %v, want nil", err)
 	}
 }
+
+// TestValidateHandoffWorkflow_RefusesAnyTargetWorkspaceOfficeWorkflow covers
+// a previously selected Office workflow: it is still an Office workflow
+// (AC-OFFICE-WORKFLOW-SELECT-001.1), so it is never a delivery workflow.
+func TestValidateHandoffWorkflow_RefusesAnyTargetWorkspaceOfficeWorkflow(t *testing.T) {
+	actions := NewActions(ActionDependencies{Handoff: HandoffDependencies{
+		Tasks: &fakeHandoffTasks{
+			workflow: &taskmodels.Workflow{ID: "wf-previous-office", WorkspaceID: "ws-target", IsOffice: true},
+		},
+	}})
+	workspace := &taskmodels.Workspace{ID: "ws-target", OfficeWorkflowID: "wf-office"}
+
+	err := actions.validateHandoffWorkflow(context.Background(), "wf-previous-office", workspace)
+
+	var validation *HandoffValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %v (%T), want *HandoffValidationError", err, err)
+	}
+}

@@ -130,7 +130,7 @@ func TestCommittedTaskCompletionDoesNotResolveFailedOrCancelledBlockers(t *testi
 			if _, err := repo.ExecRaw(ctx, `CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, office_workflow_id TEXT DEFAULT '')`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repo.ExecRaw(ctx, `CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT DEFAULT '', is_system INTEGER DEFAULT 0, workflow_template_id TEXT DEFAULT '')`); err != nil {
+			if _, err := repo.ExecRaw(ctx, `CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, workspace_id TEXT DEFAULT '', is_system INTEGER DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0, workflow_template_id TEXT DEFAULT '')`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := repo.ExecRaw(ctx, `INSERT INTO workspaces (id, office_workflow_id) VALUES ('ws-1', 'wf-office')`); err != nil {

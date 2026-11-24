@@ -52,6 +52,9 @@ function cloneWorkflow(source: Workflow, workflows: readonly Workflow[], id: str
     description: source.description,
     prompt: source.prompt,
     agent_profile_id: source.agent_profile_id,
+    // A copy of an Office workflow is an Office copy; it never carries the
+    // built-in's system identity.
+    ...(source.is_office ? { is_office: true, style: "office" as const } : {}),
     created_at: "",
     updated_at: "",
   };

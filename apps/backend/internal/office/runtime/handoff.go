@@ -376,8 +376,8 @@ func (a *Actions) validateHandoffWorkflow(ctx context.Context, workflowID string
 	if workflow.WorkspaceID != workspace.ID {
 		return newHandoffValidationError(notAMemberMessage)
 	}
-	if workspace.OfficeWorkflowID != "" && workflowID == workspace.OfficeWorkflowID {
-		return newHandoffValidationError("workflow_id must be a delivery workflow, not the target workspace's office workflow")
+	if workflow.IsOffice || (workspace.OfficeWorkflowID != "" && workflowID == workspace.OfficeWorkflowID) {
+		return newHandoffValidationError("workflow_id must be a delivery workflow, not one of the target workspace's office workflows")
 	}
 	return nil
 }

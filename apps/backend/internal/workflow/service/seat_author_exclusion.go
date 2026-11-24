@@ -126,7 +126,7 @@ func (s *Service) seatStepForChange(
 	if err != nil || wf == nil || wf.WorkspaceID != workspaceID {
 		return nil, fmt.Errorf("%w: step %s", ErrSeatStepNotInWorkspace, stepID)
 	}
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	if err := s.authorizeWorkflowWrite(ctx, step.WorkflowID); err != nil {
 		return nil, err
 	}
 	return step, nil

@@ -57,6 +57,10 @@ type WorkflowListProps = {
   onWorkflowSaved: (params: WorkflowSavedParams) => void;
   onDiscard: (id: string) => void;
   onReorder: (items: Workflow[]) => void;
+  /** False hides drag handles; the list order is not editable. */
+  sortable?: boolean;
+  /** Optional notice rendered above a workflow's card. */
+  renderNotice?: (workflow: Workflow) => React.ReactNode;
 };
 
 function SortableWorkflowItem({
@@ -142,6 +146,8 @@ export function WorkflowList({
   onWorkflowSaved,
   onDiscard,
   onReorder,
+  sortable = true,
+  renderNotice,
 }: WorkflowListProps) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const { view, setView } = useWorkflowListView();
@@ -182,9 +188,10 @@ export function WorkflowList({
                 key={workflow.id}
                 workflow={workflow}
                 isDirty={orderDirtyIds.has(workflow.id)}
-                readOnly={isImproveWorkspace}
+                readOnly={isImproveWorkspace || !sortable}
                 compact={compact}
               >
+                {renderNotice?.(workflow)}
                 <WorkflowCard
                   workflow={workflow}
                   savedWorkflow={savedWorkflowsById.get(workflow.id)}

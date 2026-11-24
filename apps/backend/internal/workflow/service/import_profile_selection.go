@@ -380,6 +380,11 @@ func (s *Service) PreviewImportWorkflows(
 	if err := s.AuthorizeWorkspace(ctx, workspaceID); err != nil {
 		return nil, err
 	}
+	if export != nil {
+		if err := s.ensureOfficeImportAllowed(ctx, workspaceID, export.Workflows); err != nil {
+			return nil, err
+		}
+	}
 	return s.importProfilePreviewData(ctx, export, workspaceID)
 }
 
@@ -524,7 +529,13 @@ func (s *Service) persistImportedWorkflows(
 	prepared []preparedImportedWorkflow,
 ) error {
 	for _, item := range prepared {
-		if _, err := s.persistImportedWorkflow(ctx, workspaceID, item); err != nil {
+		var err error
+		if item.portable.Office {
+			err = s.persistOfficeImport(ctx, workspaceID, item)
+		} else {
+			_, err = s.persistImportedWorkflow(ctx, workspaceID, item)
+		}
+		if err != nil {
 			return fmt.Errorf("failed to import workflow %q: %w", item.portable.Name, err)
 		}
 	}
@@ -557,6 +568,9 @@ func (s *Service) ImportWorkflowsWithBindings(
 		return nil, err
 	}
 	selection := selectWorkflowImports(export, existingNames)
+	if err := s.ensureOfficeImportAllowed(ctx, workspaceID, selectedWorkflows(export, selection.indexes)); err != nil {
+		return nil, err
+	}
 	directProfileIDs, conflicts, err := s.resolveImportProfileBindings(ctx, export, selection.indexes, byKey)
 	if err != nil {
 		return nil, err

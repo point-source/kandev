@@ -41,3 +41,7 @@ func NewWIPLimitError(stepID string, limit, occupied int) error {
 // ErrWorkflowStepChanged reports that a step changed after the caller read it,
 // so a version-guarded write applied nothing.
 var ErrWorkflowStepChanged = errors.New("workflow step changed since it was read")
+
+// ErrWorkspaceManageDenied reports that the caller can see a workspace but
+// may not manage its settings.
+var ErrWorkspaceManageDenied = errors.New("workspace management is not permitted")

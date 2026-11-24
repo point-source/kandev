@@ -200,6 +200,16 @@ type WorkflowCardBodyProps = {
   onSessionConfigResolutionPendingChange: (pending: boolean) => void;
 };
 
+function readOnlyLabel(
+  t: (key: string) => string,
+  workflow: Workflow,
+  isImproveWorkspace?: boolean,
+): string {
+  if (isImproveWorkspace) return t("workflows:readOnlyManagedByImproveKandev");
+  if (workflow.is_system) return t("workflows:readOnlyBuiltInOffice");
+  return t("workflows:readOnlyManagedBySync");
+}
+
 function WorkflowNameField({
   workflow,
   savedWorkflow,
@@ -220,9 +230,7 @@ function WorkflowNameField({
         )}
         {readOnly && (
           <span className="text-xs text-muted-foreground">
-            {isImproveWorkspace
-              ? t("workflows:readOnlyManagedByImproveKandev")
-              : t("workflows:readOnlyManagedBySync")}
+            {readOnlyLabel(t, workflow, isImproveWorkspace)}
           </span>
         )}
       </Label>
@@ -341,6 +349,7 @@ function WorkflowCardBody({
             onReorderSteps={stepActions.handleReorderWorkflowSteps}
             readOnly={mutationPending || readOnly}
             onSessionConfigResolutionPendingChange={onSessionConfigResolutionPendingChange}
+            officeMode={workflow.is_office === true}
           />
         )}
       </div>
@@ -359,7 +368,10 @@ function useWorkflowCardState(props: WorkflowCardProps) {
   // Workflows synced from a configured GitHub repo are read-only: the
   // backend rejects definition mutations with a 409, so the UI disables the
   // matching affordances (name/agent-profile/steps/delete) up front.
-  const readOnly = workflow.source === "github" || props.isImproveWorkspace === true;
+  const readOnly =
+    workflow.source === "github" ||
+    props.isImproveWorkspace === true ||
+    workflow.is_system === true;
   const deleteWorkflowRequest = useRequest(onDeleteWorkflow);
   const {
     workflowSteps,
@@ -447,6 +459,7 @@ function readOnlyReasonFor(
 ): WorkflowReadOnlyReason {
   if (isImproveWorkspace) return "improve";
   if (workflow.source === "github") return "synced";
+  if (workflow.is_system) return "builtIn";
   return null;
 }
 

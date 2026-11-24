@@ -72,7 +72,7 @@ func newRunCausationFromTaskTestService(t *testing.T) (*Service, *officesqlite.R
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL DEFAULT '',
 			workflow_template_id TEXT DEFAULT '',
-			is_system INTEGER NOT NULL DEFAULT 0
+			is_system INTEGER NOT NULL DEFAULT 0, is_office INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS workflow_steps (
 			id TEXT PRIMARY KEY,

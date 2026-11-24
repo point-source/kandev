@@ -58,6 +58,7 @@ func (r *Repository) initSchemaContext(ctx context.Context) error {
 		func() error { return r.runMigrations(ctx) },
 		r.initWorkspaceCollaborationSchema,
 		r.hideBuiltinWorkflows,
+		r.backfillOfficeWorkflowMarker,
 		r.healBuiltinWorkflowStepFlags,
 		r.healBuiltinWorkflowStepParticipantSeats,
 		r.healBuiltinWorkflowStepOnAgentError,

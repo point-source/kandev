@@ -137,7 +137,10 @@ export function useWorkflowSettings(initialWorkflows: Workflow[], workspaceId?: 
   };
 }
 
-function workflowIsDirty(workflow: Workflow, savedWorkflows: Map<string, Workflow>): boolean {
+export function workflowIsDirty(
+  workflow: Workflow,
+  savedWorkflows: Map<string, Workflow>,
+): boolean {
   const saved = savedWorkflows.get(workflow.id);
   if (!saved) return true;
   return (

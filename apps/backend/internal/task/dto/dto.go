@@ -28,6 +28,10 @@ type WorkflowDTO struct {
 	// Style is a Phase 2 (ADR-0004) UX hint read by the frontend ONLY.
 	// Allowed values: "kanban" | "office" | "custom".
 	Style string `json:"style,omitempty"`
+	// IsOffice marks an Office workflow (backend-authoritative membership).
+	IsOffice bool `json:"is_office,omitempty"`
+	// IsSystem marks a built-in, Kandev-maintained workflow.
+	IsSystem bool `json:"is_system,omitempty"`
 	// Source records where the workflow definition came from ("manual" |
 	// "github"); SourcePath is the repo-relative file for synced workflows.
 	Source     string    `json:"source,omitempty"`
@@ -922,6 +926,8 @@ func FromWorkflow(workflow *models.Workflow) WorkflowDTO {
 		SortOrder:      workflow.SortOrder,
 		Hidden:         workflow.Hidden,
 		Style:          workflow.Style,
+		IsOffice:       workflow.IsOffice,
+		IsSystem:       workflow.IsSystem,
 		Source:         workflow.Source,
 		SourcePath:     workflow.SourcePath,
 		CreatedAt:      workflow.CreatedAt,

@@ -721,3 +721,21 @@ func (c *Controller) ImportWorkflows(ctx context.Context, req ImportWorkflowsReq
 func (c *Controller) PreviewImportWorkflows(ctx context.Context, workspaceID string, data *models.WorkflowExport) (*service.ImportProfilePreview, error) {
 	return c.svc.PreviewImportWorkflows(ctx, workspaceID, data)
 }
+
+// OfficeWorkflowState returns the workspace's Office workflow selection and
+// candidates.
+func (c *Controller) OfficeWorkflowState(ctx context.Context, workspaceID string) (*service.OfficeWorkflowState, error) {
+	return c.svc.OfficeWorkflowState(ctx, workspaceID)
+}
+
+// SelectOfficeWorkflow selects the workspace's Office workflow.
+func (c *Controller) SelectOfficeWorkflow(ctx context.Context, workspaceID, workflowID string) error {
+	return c.svc.SelectOfficeWorkflow(ctx, workspaceID, workflowID)
+}
+
+// SaveOfficeWorkflowDefinition creates or replaces an Office copy.
+func (c *Controller) SaveOfficeWorkflowDefinition(
+	ctx context.Context, def service.OfficeWorkflowDefinition,
+) (*service.OfficeWorkflowSaveResult, error) {
+	return c.svc.SaveOfficeWorkflowDefinition(ctx, def)
+}
