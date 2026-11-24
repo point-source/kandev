@@ -278,7 +278,12 @@ func TestOfficeHumanCompletionFreshProjectMembership(t *testing.T) {
 func TestOfficeHumanCompletionMissingWorkflowRefused(t *testing.T) {
 	f := newOfficeAtomicFixture(t, nil)
 	ctx := context.Background()
-	require.NoError(t, f.h.repo.DeleteWorkflow(ctx, "wf-home"))
+	// The repository refuses deleting a selected Office workflow, so remove
+	// the rows directly to reach the missing-workflow state.
+	_, err := f.h.db.Exec(`DELETE FROM workflow_steps WHERE workflow_id='wf-home'`)
+	require.NoError(t, err)
+	_, err = f.h.db.Exec(`DELETE FROM workflows WHERE id='wf-home'`)
+	require.NoError(t, err)
 	before, err := f.h.repo.GetTask(ctx, "atomic-task")
 	require.NoError(t, err)
 	state := v1.TaskStateCompleted

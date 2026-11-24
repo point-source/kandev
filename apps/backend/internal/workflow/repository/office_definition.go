@@ -23,11 +23,15 @@ type OfficeDefinitionWrite struct {
 	Create            bool
 	CreatedByUserID   string
 	ExpectedUpdatedAt *time.Time
-	Name              string
-	Description       string
-	Prompt            string
-	AgentProfileID    string
-	Steps             []*models.WorkflowStep
+	// ExpectedSteps, when set, is every step the writer loaded with its
+	// updated_at. A stored step set that differs refuses the write, so a
+	// step changed by any other writer is never overwritten.
+	ExpectedSteps  map[string]time.Time
+	Name           string
+	Description    string
+	Prompt         string
+	AgentProfileID string
+	Steps          []*models.WorkflowStep
 }
 
 // OfficeDefinitionResult describes a committed definition save.
@@ -65,7 +69,9 @@ func (r *Repository) SaveOfficeWorkflowDefinition(
 	if !found || selected == "" {
 		return nil, []models.OfficeWorkflowProblem{{Code: models.OfficeProblemRequiresOfficeWorkspace}}, nil
 	}
-	now := time.Now().UTC()
+	// Microseconds survive a round trip on every supported database, so a
+	// returned version can be sent back as an expected version.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	row, existing, problems, err := r.prepareOfficeDefinitionTarget(ctx, tx, w, now)
 	if err != nil || len(problems) > 0 {
 		return nil, problems, err
@@ -129,7 +135,26 @@ func (r *Repository) prepareOfficeDefinitionTarget(
 		}
 	}
 	existing, err := r.listStepsTx(ctx, tx, w.WorkflowID)
-	return row, existing, nil, err
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if w.ExpectedSteps != nil && !stepVersionsMatch(existing, w.ExpectedSteps) {
+		return nil, nil, nil, repoerrors.ErrTaskVersionConflict
+	}
+	return row, existing, nil, nil
+}
+
+func stepVersionsMatch(existing []*models.WorkflowStep, expected map[string]time.Time) bool {
+	if len(existing) != len(expected) {
+		return false
+	}
+	for _, step := range existing {
+		version, ok := expected[step.ID]
+		if !ok || !version.Equal(step.UpdatedAt) {
+			return false
+		}
+	}
+	return true
 }
 
 // writeOfficeDefinitionSteps refuses removing a step that holds or queues

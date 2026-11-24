@@ -411,5 +411,7 @@
   "officeEventsErrorBadAction": "{{trigger}} 中的第 {{index}} 个操作需要 type，并可选 config 映射。请修正该操作以保存此步骤。",
   "officeEventsErrorUnknownAction": "“{{action}}”不是 {{trigger}} 支持的操作。请使用该触发器支持的操作。",
   "officeEventsErrorUnknownStep": "{{trigger}} 引用了此工作流中不存在的步骤“{{step}}”。请使用现有步骤的名称。",
-  "officeEventsErrorDuplicateStepNames": "有两个步骤都叫“{{step}}”，步骤引用不明确。请重命名其中一个。"
+  "officeEventsErrorDuplicateStepNames": "有两个步骤都叫“{{step}}”，步骤引用不明确。请重命名其中一个。",
+  "officeEventsMustBeFixed": "步骤“{{step}}”的 Office 事件还不是有效的 YAML。请先修正，才能保存此工作流。",
+  "officeWorkflowChangedElsewhere": "此 Office 工作流在你打开后已被更改，因此你的更改未保存。请重新加载页面，然后再次进行更改。"
 }

@@ -1,11 +1,16 @@
 import {
   createOfficeWorkflow,
+  getOfficeWorkflowState,
+  isWorkflowChangedError,
   OfficeWorkflowRefusedError,
   saveOfficeWorkflowDefinition,
   type OfficeWorkflowDefinitionBody,
 } from "@/lib/api/domains/office-workflow-api";
 import { t } from "@/lib/i18n";
-import { describeOfficeWorkflowProblems } from "@/lib/office-workflow/problem-messages";
+import {
+  describeOfficeWorkflowProblem,
+  describeOfficeWorkflowProblems,
+} from "@/lib/office-workflow/problem-messages";
 import type { Workflow, WorkflowStep } from "@/lib/types/http";
 
 const TEMP_WORKFLOW_PREFIX = "temp-workflow-";
@@ -18,15 +23,30 @@ type OfficeDraftProgress = {
 type PersistOfficeDraftParams = {
   workflow: Workflow;
   draftSteps: WorkflowStep[];
+  /** The steps as last loaded or saved; their versions fence the save. */
+  savedSteps: WorkflowStep[];
   progress: OfficeDraftProgress;
 };
 
-/** Steps without client timestamps: the backend assigns them. */
+/** Steps without client timestamps or drafts: the backend assigns versions. */
 function definitionSteps(steps: WorkflowStep[]): WorkflowStep[] {
   return steps.map((step, position) => {
-    const { created_at: _created, updated_at: _updated, ...rest } = step;
+    const {
+      created_at: _created,
+      updated_at: _updated,
+      office_events_draft: _draft,
+      ...rest
+    } = step;
     return { ...rest, position } as WorkflowStep;
   });
+}
+
+/** The versions this editor loaded, so a save never overwrites another writer. */
+function expectedVersions(workflow: Workflow, savedSteps: WorkflowStep[]) {
+  return {
+    expected_updated_at: workflow.updated_at,
+    expected_steps: Object.fromEntries(savedSteps.map((step) => [step.id, step.updated_at])),
+  };
 }
 
 function definitionBody(workflow: Workflow, steps: WorkflowStep[]): OfficeWorkflowDefinitionBody {
@@ -47,6 +67,7 @@ function definitionBody(workflow: Workflow, steps: WorkflowStep[]): OfficeWorkfl
 export async function persistOfficeWorkflowDraft({
   workflow,
   draftSteps,
+  savedSteps,
   progress,
 }: PersistOfficeDraftParams): Promise<{ workflow: Workflow; steps: WorkflowStep[] }> {
   const persistedId =
@@ -56,11 +77,17 @@ export async function persistOfficeWorkflowDraft({
   let result;
   try {
     result = persistedId
-      ? await saveOfficeWorkflowDefinition(persistedId, body)
+      ? await saveOfficeWorkflowDefinition(persistedId, {
+          ...body,
+          ...expectedVersions(workflow, savedSteps),
+        })
       : await createOfficeWorkflow(workflow.workspace_id, body);
   } catch (error) {
     if (error instanceof OfficeWorkflowRefusedError) {
       throw new Error(describeOfficeWorkflowProblems(t, error.problems));
+    }
+    if (isWorkflowChangedError(error)) {
+      throw new Error(t("workflows:officeWorkflowChangedElsewhere"));
     }
     throw error;
   }
@@ -79,4 +106,16 @@ export async function persistOfficeWorkflowDraft({
   };
   progress.workflow = savedWorkflow;
   return { workflow: savedWorkflow, steps: result.steps };
+}
+
+/**
+ * Refuses deleting the workspace's selected Office workflow before any task
+ * moves, including a selection made after the delete dialog opened.
+ */
+export async function ensureOfficeWorkflowDeletable(workflow: Workflow): Promise<void> {
+  if (!workflow.is_office) return;
+  const state = await getOfficeWorkflowState(workflow.workspace_id);
+  if (state.selected_workflow_id === workflow.id) {
+    throw new Error(describeOfficeWorkflowProblem(t, { code: "selected_delete" }));
+  }
 }

@@ -227,6 +227,28 @@ func writeNotVisible(c *gin.Context, err error, message string) bool {
 	return true
 }
 
+// writeExecutorMutationError answers the permission checks every workflow
+// write passes: an unavailable default executor (409) and a caller denied
+// the executor or workspace management (403).
+func writeExecutorMutationError(c *gin.Context, err error) bool {
+	if errors.Is(err, taskmodels.ErrWorkspaceDefaultExecutorUnavailable) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      taskmodels.ErrWorkspaceDefaultExecutorUnavailable.Error(),
+			"error_code": taskmodels.WorkspaceDefaultExecutorUnavailableErrorCode,
+		})
+		return true
+	}
+	if errors.Is(err, taskmodels.ErrExecutorMutationDenied) {
+		c.JSON(http.StatusForbidden, gin.H{"error": taskmodels.ErrExecutorMutationDenied.Error()})
+		return true
+	}
+	if errors.Is(err, service.ErrWorkspaceManageDenied) {
+		c.JSON(http.StatusForbidden, gin.H{"error": service.ErrWorkspaceManageDenied.Error()})
+		return true
+	}
+	return false
+}
+
 func (h *Handlers) writeStepMutationError(c *gin.Context, err error) {
 	if refusal, ok := service.AsOfficeWorkflowRefusal(err); ok {
 		c.JSON(http.StatusConflict, gin.H{"error": refusal.Error(), "code": officeWorkflowRefusedCode, "problems": refusal.Problems})
@@ -240,15 +262,7 @@ func (h *Handlers) writeStepMutationError(c *gin.Context, err error) {
 	if writeNotVisible(c, err, "Step not found") {
 		return
 	}
-	if errors.Is(err, taskmodels.ErrWorkspaceDefaultExecutorUnavailable) {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":      taskmodels.ErrWorkspaceDefaultExecutorUnavailable.Error(),
-			"error_code": taskmodels.WorkspaceDefaultExecutorUnavailableErrorCode,
-		})
-		return
-	}
-	if errors.Is(err, taskmodels.ErrExecutorMutationDenied) {
-		c.JSON(http.StatusForbidden, gin.H{"error": taskmodels.ErrExecutorMutationDenied.Error()})
+	if writeExecutorMutationError(c, err) {
 		return
 	}
 	msg := strings.ToLower(err.Error())

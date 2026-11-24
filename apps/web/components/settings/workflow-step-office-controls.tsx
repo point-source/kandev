@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Label } from "@kandev/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@kandev/ui/select";
 import { Textarea } from "@kandev/ui/textarea";
 import {
+  officeEventsTextMatches,
   officeEventsToYaml,
   parseOfficeEventsYaml,
   type OfficeEventsError,
@@ -96,21 +97,48 @@ function describeEventsError(t: Translate, error: OfficeEventsError): string {
   }
 }
 
-function StepOfficeEventsEditor({ step, steps, onUpdate, readOnly }: OfficeStepControlsProps) {
-  const { t } = useTranslation();
-  const [text, setText] = useState(() => officeEventsToYaml(step.events, steps));
-  const [error, setError] = useState<OfficeEventsError | null>(null);
-  const id = `${step.id}-office-events`;
-  const handleChange = (next: string) => {
-    setText(next);
+/**
+ * Text for a step's Office events editor. Valid text is applied to the step
+ * at once; text that does not parse is kept on the step as a draft, which
+ * blocks saving, until it is fixed. Shown text follows the stored events
+ * when a rename or discard makes the last valid text stale.
+ */
+function useOfficeEventsText(
+  step: WorkflowStep,
+  steps: WorkflowStep[],
+  onUpdate: OfficeStepControlsProps["onUpdate"],
+) {
+  const [validText, setValidText] = useState(() => officeEventsToYaml(step.events, steps));
+  const draft = step.office_events_draft;
+  const draftResult = draft === undefined ? null : parseOfficeEventsYaml(draft, steps);
+  useEffect(() => {
+    // A draft can become valid without an edit, for example after a rename.
+    if (draft !== undefined && draftResult?.ok) {
+      setValidText(draft);
+      onUpdate({ events: draftResult.events, office_events_draft: undefined });
+    }
+  }, [draft, draftResult?.ok]); // eslint-disable-line react-hooks/exhaustive-deps
+  let text = draft ?? validText;
+  if (draft === undefined && !officeEventsTextMatches(validText, steps, step.events)) {
+    text = officeEventsToYaml(step.events, steps);
+  }
+  const error = draftResult && !draftResult.ok ? draftResult.error : null;
+  const change = (next: string) => {
     const parsed = parseOfficeEventsYaml(next, steps);
     if (!parsed.ok) {
-      setError(parsed.error);
+      onUpdate({ office_events_draft: next });
       return;
     }
-    setError(null);
-    onUpdate({ events: parsed.events });
+    setValidText(next);
+    onUpdate({ events: parsed.events, office_events_draft: undefined });
   };
+  return { text, error, change };
+}
+
+function StepOfficeEventsEditor({ step, steps, onUpdate, readOnly }: OfficeStepControlsProps) {
+  const { t } = useTranslation();
+  const { text, error, change } = useOfficeEventsText(step, steps, onUpdate);
+  const id = `${step.id}-office-events`;
   return (
     <details className="rounded-md border p-3" data-testid="office-events-editor">
       <summary className="cursor-pointer text-sm font-medium">
@@ -124,7 +152,7 @@ function StepOfficeEventsEditor({ step, steps, onUpdate, readOnly }: OfficeStepC
         <Textarea
           id={id}
           value={text}
-          onChange={(event) => handleChange(event.target.value)}
+          onChange={(event) => change(event.target.value)}
           disabled={readOnly}
           spellCheck={false}
           rows={Math.min(24, Math.max(6, text.split("\n").length + 1))}

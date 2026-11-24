@@ -411,5 +411,7 @@
   "officeEventsErrorBadAction": "Àćţĩōń {{index}} ĩń {{trigger}} ńēēďś à ţŷƥē àńď, ōƥţĩōńàĺĺŷ, à ćōńƒĩĝ ḿàƥƥĩńĝ. Ƒĩx ţĥàţ àćţĩōń ţō śàvē ţĥĩś śţēƥ.",
   "officeEventsErrorUnknownAction": "\"{{action}}\" ĩśń'ţ à śũƥƥōŕţēď àćţĩōń ĩń {{trigger}}. Ũśē à śũƥƥōŕţēď àćţĩōń ƒōŕ ţĥàţ ţŕĩĝĝēŕ.",
   "officeEventsErrorUnknownStep": "{{trigger}} ŕēƒēŕś ţō śţēƥ \"{{step}}\", ŵĥĩćĥ ĩśń'ţ ĩń ţĥĩś ŵōŕķƒĺōŵ. Ũśē ţĥē ńàḿē ōƒ àń ēxĩśţĩńĝ śţēƥ.",
-  "officeEventsErrorDuplicateStepNames": "Ţŵō śţēƥś àŕē ńàḿēď \"{{step}}\", śō śţēƥ ŕēƒēŕēńćēś àŕē àḿƀĩĝũōũś. Ŕēńàḿē ōńē ōƒ ţĥēḿ."
+  "officeEventsErrorDuplicateStepNames": "Ţŵō śţēƥś àŕē ńàḿēď \"{{step}}\", śō śţēƥ ŕēƒēŕēńćēś àŕē àḿƀĩĝũōũś. Ŕēńàḿē ōńē ōƒ ţĥēḿ.",
+  "officeEventsMustBeFixed": "Ţĥē Ōƒƒĩćē ēvēńţś ōƒ śţēƥ \"{{step}}\" àŕēń'ţ vàĺĩď ŶÀḾĹ ŷēţ. Ƒĩx ţĥēḿ ţō śàvē ţĥĩś ŵōŕķƒĺōŵ.",
+  "officeWorkflowChangedElsewhere": "Ţĥĩś Ōƒƒĩćē ŵōŕķƒĺōŵ ćĥàńĝēď àƒţēŕ ŷōũ ōƥēńēď ĩţ, śō ŷōũŕ ćĥàńĝēś ŵēŕēń'ţ śàvēď. Ŕēĺōàď ţĥē ƥàĝē, ţĥēń ḿàķē ŷōũŕ ćĥàńĝēś àĝàĩń."
 }

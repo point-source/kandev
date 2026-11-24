@@ -106,3 +106,4 @@ Task 07.
 - `pnpm e2e:run --host --project mobile-chrome tests/office/mobile-office-workflow-selection.spec.ts`: 1 passed.
 - Existing specs that reconfigured the built-in Office workflow with single-step writes now use an Office copy (`e2e/helpers/office-workflow-copy.ts`) or the Office > Routing endpoint: `board-done-final-step`, `mobile-board-done-final-step`, `workflow-quorum-transitions`, `office-review-author-exclusion`: all pass. `workflow-import-export`, `workflow-duplication`, `workflow-settings`: pass.
 - Public docs: `docs/public/office.md`, `docs/public/workflow-import-export.md`, `docs/public/feature-status.md`; `node scripts/validate-public-docs.mjs`: pass.
+- Review round: `office-workflow-selection.spec.ts` gains a test that a refused save of the selected copy names its reason and that Delete is disabled (4 passed); mobile 1 passed; adjusted and related workflow specs 40 passed.

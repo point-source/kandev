@@ -105,3 +105,4 @@ Tasks 01, 02, 03 (lock helper).
 - `go test ./internal/workflow/service/... ./internal/workflow/repository/... ./internal/workflow/handlers/...`: pass (definition save, atomic refusal, removed-step guard, single-step guard, routing control still allowed).
 - `TestPostgresSelectionAndSaveSerialize` covers the save side: pass.
 - `scripts/lint-go-changed`: 0 issues.
+- Review fixes: duplicate step IDs are refused, positions follow submission order, session-target and pull-chain topology are checked, and `expected_steps` fences the save against any step writer (`office_definition_integrity_test.go`). Task creation or moves that race a save removing an unoccupied step remain covered only by the Needs Reassignment column; recorded in the design.

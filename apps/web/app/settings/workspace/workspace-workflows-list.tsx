@@ -61,6 +61,8 @@ type WorkflowListProps = {
   sortable?: boolean;
   /** Optional notice rendered above a workflow's card. */
   renderNotice?: (workflow: Workflow) => React.ReactNode;
+  /** Why a workflow cannot be deleted, or undefined when it can. */
+  deleteBlockedReason?: (workflow: Workflow) => string | undefined;
 };
 
 function SortableWorkflowItem({
@@ -148,6 +150,7 @@ export function WorkflowList({
   onReorder,
   sortable = true,
   renderNotice,
+  deleteBlockedReason,
 }: WorkflowListProps) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const { view, setView } = useWorkflowListView();
@@ -200,6 +203,7 @@ export function WorkflowList({
                   initialWorkflowSteps={initialStepsByWorkflowId.get(workflow.id)}
                   otherWorkflows={workflowItems.filter((w) => w.id !== workflow.id)}
                   isImproveWorkspace={isImproveWorkspace}
+                  deleteBlockedReason={deleteBlockedReason?.(workflow)}
                   compact={compact}
                   initiallyExpanded={locallyFinalizedWorkflowIds.has(workflow.id)}
                   onUpdateWorkflow={(updates) => onUpdate(workflow.id, updates)}

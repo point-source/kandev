@@ -29,6 +29,9 @@ func (r *Repository) ReorderSteps(ctx context.Context, workflowID string, stepID
 		}
 		return err
 	}
+	if err := r.recheckOfficeStepGuard(ctx, tx, workflowID); err != nil {
+		return err
+	}
 	var existing []string
 	if err := tx.SelectContext(ctx, &existing, tx.Rebind(`SELECT id FROM workflow_steps WHERE workflow_id = ?`), workflowID); err != nil {
 		return err

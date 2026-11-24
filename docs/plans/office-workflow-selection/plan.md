@@ -236,7 +236,7 @@ horizontal scroll inside the textarea only.
 | 004.1–004.5 | `service_office_workflow_test.go` (candidates, eligibility, scope); `app/settings/workspace/use-office-workflow-selection.test.ts` |
 | 005.1–005.7 | `internal/workflow/models/office_validation_test.go` table test incl. `TestOfficeDefaultTemplatePasses` |
 | 006.1–006.4 | `office_definition_test.go` (`TestSelectedSaveRefusedWhenInvalid`, `TestSaveIsAtomic`, `TestSaveRefusesRemovingStepWithTasks`); `internal/workflow/service/office_step_guard_test.go` |
-| 006.5 | `internal/task/repository/sqlite/office_workflow_lock_postgres_test.go` `TestSelectionAndSaveSerialize` |
+| 006.5 | `internal/workflow/service/office_workflow_race_test.go` `TestSQLiteSelectionAndSaveSerialize`, `TestPostgresSelectionAndSaveSerialize` |
 | 007.1–007.4 | `internal/workflow/models/export_office_test.go`; `internal/workflow/service/import_office_test.go` |
 | 002.1–002.4 | `app/settings/workspace/office-workflows-section.test.tsx`; `components/settings/workflow-card-actions-office.test.ts` |
 | 003.1, 003.4 | `components/settings/workflow-pipeline-editor-office.test.tsx` |

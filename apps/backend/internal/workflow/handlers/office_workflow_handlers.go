@@ -109,7 +109,11 @@ func (h *Handlers) writeOfficeWorkflowError(c *gin.Context, err error, message s
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
-	if writeNotVisible(c, err, "Workspace not found") {
+	if errors.Is(err, service.ErrWorkflowReadOnly) || errors.Is(err, service.ErrWorkflowWorkspaceReadOnly) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if writeNotVisible(c, err, "Workspace not found") || writeExecutorMutationError(c, err) {
 		return
 	}
 	if errors.Is(err, repoerrors.ErrWorkspaceNotFound) || errors.Is(err, repoerrors.ErrWorkflowNotFound) {

@@ -9,7 +9,10 @@ import {
 } from "@/lib/types/http";
 import { generateUUID } from "@/lib/utils";
 import { t } from "@/lib/i18n";
-import { persistOfficeWorkflowDraft } from "./office-workflow-persistence";
+import {
+  ensureOfficeWorkflowDeletable,
+  persistOfficeWorkflowDraft,
+} from "./office-workflow-persistence";
 import { useToast } from "@/components/toast-provider";
 import { useSerializedMutationQueue } from "./use-serialized-mutation-queue";
 import type { WorkflowMutationGuardController } from "./workflow-mutation-guard";
@@ -265,7 +268,9 @@ export async function persistWorkflowDraft({
   savedSteps,
   progress,
 }: PersistWorkflowDraftParams): Promise<{ workflow: Workflow; steps: WorkflowStep[] }> {
-  if (workflow.is_office) return persistOfficeWorkflowDraft({ workflow, draftSteps, progress });
+  if (workflow.is_office) {
+    return persistOfficeWorkflowDraft({ workflow, draftSteps, savedSteps, progress });
+  }
   const isNewWorkflow = workflow.id.startsWith(TEMP_WORKFLOW_PREFIX);
   const persistedWorkflow = await ensurePersistedWorkflow(workflow, progress);
   const updatedWorkflow = await updateWorkflowAction(persistedWorkflow.id, {
@@ -560,6 +565,7 @@ export function useWorkflowDeleteHandlers({
     if (!wfDel.targetWorkflowId || !wfDel.targetStepId) return;
     wfDel.setMigrateLoading(true);
     try {
+      await ensureOfficeWorkflowDeletable(workflow);
       await bulkMoveTasks({
         source_workflow_id: workflow.id,
         target_workflow_id: wfDel.targetWorkflowId,

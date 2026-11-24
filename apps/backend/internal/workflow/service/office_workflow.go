@@ -36,6 +36,10 @@ func AsOfficeWorkflowRefusal(err error) (*OfficeWorkflowRefusal, bool) {
 	if errors.As(err, &refusal) {
 		return refusal, true
 	}
+	var stepRefusal *repository.OfficeStepWriteRefusedError
+	if errors.As(err, &stepRefusal) {
+		return &OfficeWorkflowRefusal{Problems: []models.OfficeWorkflowProblem{{Code: stepRefusal.Code}}, Conflict: true}, true
+	}
 	return nil, false
 }
 
@@ -170,6 +174,15 @@ func (s *Service) officeProfileExists(id string) bool {
 // the write may proceed.
 func (s *Service) SetOfficeStepWritePolicy(policy func(ctx context.Context, workflowID string) (string, error)) {
 	s.officeStepWritePolicy = policy
+}
+
+// withOfficeStepGuard marks a single-step write for the repository's
+// in-transaction Office check when an Office step policy is wired.
+func (s *Service) withOfficeStepGuard(ctx context.Context) context.Context {
+	if s.officeStepWritePolicy == nil {
+		return ctx
+	}
+	return repository.WithOfficeStepGuard(ctx)
 }
 
 func (s *Service) ensureOfficeStepWriteAllowed(ctx context.Context, workflowID string) error {

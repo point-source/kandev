@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteWorkflowAction } from "@/app/actions/workspaces";
+import { i18n } from "@/lib/i18n";
 import type { Workflow, WorkflowStep } from "@/lib/types/http";
 import { SettingsSaveCancelledError, type SettingsSaveContributor } from "./settings-save-provider";
 import { persistWorkflowDraft } from "./workflow-card-actions";
@@ -65,6 +66,7 @@ function renderContributor({
   guardMutation = vi.fn(async ({ operation }: { operation: () => Promise<void> }) => operation()),
   onDeleteWorkflow = vi.fn(async () => undefined),
   isSessionConfigResolutionPending = false,
+  toast = vi.fn(),
 }: {
   draftWorkflow?: Workflow;
   workflowSteps?: WorkflowStep[];
@@ -72,6 +74,7 @@ function renderContributor({
   guardMutation?: ReturnType<typeof vi.fn>;
   onDeleteWorkflow?: () => Promise<unknown>;
   isSessionConfigResolutionPending?: boolean;
+  toast?: ReturnType<typeof vi.fn>;
 } = {}) {
   const setWorkflowSteps = vi.fn();
   const setSavedWorkflowSteps = vi.fn();
@@ -85,7 +88,7 @@ function renderContributor({
       setWorkflowSteps,
       setSavedWorkflowSteps,
       mutationGuard: { guardMutation } as never,
-      toast: vi.fn(),
+      toast: toast as never,
       onWorkflowSaved: vi.fn(),
       onDiscardWorkflow,
       onDeleteWorkflow,
@@ -114,6 +117,29 @@ describe("useWorkflowDraftContributor", () => {
     });
 
     expect(contributor().revision).toContain('"workflow":["Workflow","","",""]');
+  });
+
+  // @covers AC-OFFICE-WORKFLOW-SELECT-003.3
+  it("blocks coordinated saves while a step holds invalid Office events YAML", () => {
+    renderContributor({
+      workflowSteps: [{ ...step("step-1", savedWorkflow.id), office_events_draft: "on_enter: [" }],
+    });
+
+    expect(contributor().canSave).toBe(false);
+    expect(contributor().invalidReason).toBe(
+      i18n.t("workflows:officeEventsMustBeFixed", { step: "Backlog" }),
+    );
+  });
+
+  it("reports why an Office workflow save was refused", async () => {
+    const toast = vi.fn();
+    vi.mocked(persistWorkflowDraft).mockRejectedValueOnce(new Error("Add a Work step."));
+    renderContributor({ draftWorkflow: { ...savedWorkflow, is_office: true }, toast });
+
+    await expect(contributor().save(contributor().revision)).rejects.toThrow("Add a Work step.");
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "Add a Work step.", variant: "error" }),
+    );
   });
 
   it("blocks coordinated saves while session model options are resolving", () => {

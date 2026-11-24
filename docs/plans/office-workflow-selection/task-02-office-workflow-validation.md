@@ -81,3 +81,4 @@ None.
 
 - `go test ./internal/workflow/models/... ./config/workflows/...`: pass, including `TestOfficeDefaultTemplatePassesOfficeValidation`.
 - `scripts/lint-go-changed`: 0 issues.
+- Review fix: `move_to_next` / `move_to_previous` reachability follows the runtime's strict position rule (`TestValidateOfficeWorkflowMoveToNextRequiresHigherPosition`).

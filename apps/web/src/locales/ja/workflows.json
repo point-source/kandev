@@ -411,5 +411,7 @@
   "officeEventsErrorBadAction": "{{trigger}} のアクション {{index}} には type と、必要に応じて config マッピングが必要です。このステップを保存するにはそのアクションを修正してください。",
   "officeEventsErrorUnknownAction": "「{{action}}」は {{trigger}} でサポートされていないアクションです。そのトリガーでサポートされているアクションを使ってください。",
   "officeEventsErrorUnknownStep": "{{trigger}} がこのワークフローにないステップ「{{step}}」を参照しています。既存のステップ名を使ってください。",
-  "officeEventsErrorDuplicateStepNames": "「{{step}}」という名前のステップが 2 つあるため、ステップの参照があいまいです。どちらかの名前を変更してください。"
+  "officeEventsErrorDuplicateStepNames": "「{{step}}」という名前のステップが 2 つあるため、ステップの参照があいまいです。どちらかの名前を変更してください。",
+  "officeEventsMustBeFixed": "ステップ「{{step}}」の Office イベントがまだ有効な YAML ではありません。このワークフローを保存するには修正してください。",
+  "officeWorkflowChangedElsewhere": "この Office ワークフローは開いた後に変更されたため、変更内容は保存されませんでした。ページを再読み込みしてから、もう一度変更してください。"
 }

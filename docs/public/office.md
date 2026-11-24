@@ -47,7 +47,7 @@ Review and Approval can create an automatic participant seat when one is needed.
 
 ## Change the Office workflow
 
-Each Office workspace has one **selected Office workflow**. New Office tasks start on it; tasks already created stay on their own workflow with their seats, decisions, and runs.
+Each Office workspace has one **selected Office workflow**. New Office tasks start on it; tasks already created stay on their own workflow with their seats, decisions, and runs. Routine runs keep starting on the workspace's dedicated Routine workflow.
 
 1. Open **Settings → Workspaces → select the workspace → Workflows**. The **Office workflows** section lists the built-in Office Default workflow (read-only) and your Office copies.
 2. Choose **Duplicate** on the built-in workflow, edit the copy, and choose **Save changes**. A copy doesn't receive future updates to the built-in workflow.
@@ -63,7 +63,7 @@ Kandev refuses a workflow Office can't drive and names every problem. A selectab
 - on each Review or Approval step, `ensure_participant_seat` and `queue_run_for_each_participant` actions for the step's role;
 - agent profiles that exist in this installation.
 
-The selected Office workflow changes only through **Save changes**, so it never runs half-edited; a save that would break it, or remove a step that still holds tasks, is refused. You can't delete the built-in workflow or the selected one. Workflows managed by workflow sync, and Kanban workflows that already hold tasks, can't be selected. Office workflows never appear on the Kanban board.
+The selected Office workflow changes only through **Save changes**, so it never runs half-edited; a save that would break it, or remove a step that still holds tasks, is refused with the reasons. **Save changes** stays unavailable while a step's Office events aren't valid YAML. If the workflow changed somewhere else after you opened it, the save is refused; reload the page and make your changes again. You can't delete the built-in workflow or the selected one. Workflows managed by workflow sync, and Kanban workflows that already hold tasks, can't be selected. Office workflows never appear on the Kanban board.
 
 Export an Office workflow from its card and import it into another Office workspace; see [Workflow import/export](workflow-import-export.md).
 

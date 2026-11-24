@@ -411,5 +411,7 @@
   "officeEventsErrorBadAction": "A ação {{index}} de {{trigger}} precisa de um type e, opcionalmente, de um mapeamento config. Corrija essa ação para guardar este passo.",
   "officeEventsErrorUnknownAction": "\"{{action}}\" não é uma ação suportada em {{trigger}}. Use uma ação suportada por esse gatilho.",
   "officeEventsErrorUnknownStep": "{{trigger}} refere o passo \"{{step}}\", que não existe neste fluxo de trabalho. Use o nome de um passo existente.",
-  "officeEventsErrorDuplicateStepNames": "Há dois passos chamados \"{{step}}\", por isso as referências a passos são ambíguas. Mude o nome de um deles."
+  "officeEventsErrorDuplicateStepNames": "Há dois passos chamados \"{{step}}\", por isso as referências a passos são ambíguas. Mude o nome de um deles.",
+  "officeEventsMustBeFixed": "Os eventos do Office do passo \"{{step}}\" ainda não são YAML válido. Corrija-os para guardar este fluxo de trabalho.",
+  "officeWorkflowChangedElsewhere": "Este fluxo de trabalho do Office foi alterado depois de o abrir, por isso as suas alterações não foram guardadas. Recarregue a página e volte a fazer as alterações."
 }

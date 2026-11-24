@@ -411,5 +411,7 @@
   "officeEventsErrorBadAction": "Action {{index}} in {{trigger}} needs a type and, optionally, a config mapping. Fix that action to save this step.",
   "officeEventsErrorUnknownAction": "\"{{action}}\" isn't a supported action in {{trigger}}. Use a supported action for that trigger.",
   "officeEventsErrorUnknownStep": "{{trigger}} refers to step \"{{step}}\", which isn't in this workflow. Use the name of an existing step.",
-  "officeEventsErrorDuplicateStepNames": "Two steps are named \"{{step}}\", so step references are ambiguous. Rename one of them."
+  "officeEventsErrorDuplicateStepNames": "Two steps are named \"{{step}}\", so step references are ambiguous. Rename one of them.",
+  "officeEventsMustBeFixed": "The Office events of step \"{{step}}\" aren't valid YAML yet. Fix them to save this workflow.",
+  "officeWorkflowChangedElsewhere": "This Office workflow changed after you opened it, so your changes weren't saved. Reload the page, then make your changes again."
 }

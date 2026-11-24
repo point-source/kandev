@@ -158,7 +158,7 @@ func ValidateOfficeWorkflow(steps []*WorkflowStep, profileExists func(id string)
 | `start_step_count` | exactly one `is_start_step` (`Count` = actual) | 005.1 |
 | `missing_work_stage` | ≥1 step with `stage_type = work` and `auto_advance_requires_signal` | 005.2 |
 | `final_step_not_completing` | highest-position step has `complete_task_on_enter` | 005.3 |
-| `completing_step_unreachable` | completing step reachable from the start step over `move_to_step`, `move_to_next` and `move_to_previous` actions in any event | 005.3 |
+| `completing_step_unreachable` | completing step reachable from the start step over `move_to_step`, `move_to_next` and `move_to_previous` actions in any event; `move_to_next` / `move_to_previous` follow the runtime rule (first step with a strictly higher position, last with a strictly lower one), so tied positions do not count as a move | 005.3 |
 | `missing_seat_action` | each `review` / `approval` step has `on_enter` `ensure_participant_seat` and `queue_run_for_each_participant` with the same `role` (`Action` = missing type) | 005.4 |
 | `unknown_agent_profile` | every action `agent_profile_id` (`ReviewAgentProfileConfigKey`) resolves | 005.5 |
 
@@ -188,7 +188,9 @@ the workspace-manage check (`taskservice.AuthorizeWorkspaceManage`, wired as
 - `GET /api/v1/workspaces/:id/office-workflow` → `{ selected_workflow_id,
   candidates: [{ id, name, built_in, is_office }] }`. Candidates follow
   AC-004.1: `is_office` and `source = 'manual'`, plus non-Office manual
-  workflows with zero tasks (`CountTasksByWorkflow`). Requires workspace read.
+  workflows with zero tasks that are neither hidden nor system-owned (hidden
+  rows are the built-in Kanban templates and Improve Kandev flows, which a
+  user cannot see or edit). Requires workspace read.
 - `PUT /api/v1/workspaces/:id/office-workflow` `{ workflow_id }`. Requires
   `authz.ScopeWorkspaceManage` (AC-004.5). Refuses a workspace without Office
   (`requires_office_workspace`). Returns the workspace DTO on success, or
@@ -211,22 +213,37 @@ Office copies are saved as a whole, never step by step:
 - `POST /api/v1/workspaces/:id/office-workflows` creates an Office copy.
 - `PUT /api/v1/workflows/:id/definition` replaces an Office copy.
 
-Body: `{ expected_updated_at?, name, description, prompt, agent_profile_id,
-steps: [{ id?, key, name, position, color, prompt, stage_type, is_start_step,
-events, ...every persisted step field... }] }`. Existing steps carry `id`; new
-steps carry a client `key` (the editor's `temp-step-*` ID). Step references in
-`events` (`move_to_step.step_id`, session targets) may use either.
+Body: `{ expected_updated_at?, expected_steps?, name, description, prompt,
+agent_profile_id, steps: [{ id, name, position, color, prompt, stage_type,
+is_start_step, events, ...every persisted step field... }] }`. An `id` that
+names an existing step of the workflow updates it; any other `id` is a client
+key (the editor's `temp-step-*` ID) for a new step. Step references in
+`events`, `pull_from_step_id` and session targets may use either. A repeated
+`id` is refused (`invalid_events`), so validation and the write always see the
+same step set. Positions are taken from the order of `steps`.
+
+`expected_updated_at` is the workflow version the editor loaded and
+`expected_steps` maps every step it loaded to that step's `updated_at`. Both
+are compared inside the transaction; a different workflow version or stored
+step set returns HTTP 409 `{ code: "workflow_changed" }`. The step fence
+catches writers that change steps without touching the workflow row, such as
+the Office > Routing toggle and single-step writes to an unselected copy.
+Versions are written at microsecond precision so a returned version can be
+sent back unchanged.
 
 Service `SaveOfficeWorkflowDefinition` (`internal/workflow/service/office_definition.go`):
 
 1. Authorize as workflow creation does (`authz.ScopeRepositoryManage`). Refuse
    `is_system` (`built_in_read_only`), non-Office targets, and workspaces
    without Office.
-2. Assign UUIDs to new keys and rewrite references; run
-   `ValidateStepEventsWithRouting` per step (`invalid_events`, AC-003.3).
+2. Assign UUIDs to new keys and rewrite references; check each step
+   (`ValidateWorkflowStep`, known actions, references inside the workflow),
+   then the workflow-wide session-target rules (`validateWorkflowSessionTargets`)
+   and pull chains (no self or cyclic `pull_from_step_id`), all as
+   `invalid_events` (AC-003.3).
 3. In one transaction, under the locking order: compare `expected_updated_at`
-   (mismatch → existing `ErrWorkflowStepChanged` path, HTTP 409, editor
-   reloads); refuse removed steps that hold tasks (`step_holds_tasks`,
+   and `expected_steps` (mismatch → HTTP 409 `workflow_changed`, the editor
+   keeps the draft and asks for a reload); refuse removed steps that hold tasks (`step_holds_tasks`,
    AC-006.3); when the workflow is the workspace's selected Office workflow,
    run `ValidateOfficeWorkflow` on the resulting steps and refuse on any
    problem (AC-006.1); then update the workflow row, update kept steps, insert
@@ -246,7 +263,18 @@ policy `OfficeStepWriteRefusal` (wired as `SetOfficeStepWritePolicy`) about the
 owning workflow: when it is a built-in Office workflow they return
 `built_in_read_only`; when it is the selected Office workflow they return
 `selected_requires_definition_save` (HTTP 409, AC-006.4). Workflow metadata
-PATCH stays allowed. `SetSeatAuthorExclusion` writes through
+PATCH stays allowed.
+
+That early check reads outside the write. To close the gap with a selection
+that commits in between, a guarded write carries
+`repository.WithOfficeStepGuard(ctx)`, and the repository repeats the check
+inside the create, update, delete and reorder transactions after their locks
+(`recheckOfficeStepGuard`), returning `OfficeStepWriteRefusedError`, which
+handlers map to the same 409. Writes without the marker (internal callers,
+workflow sync, the Routing toggle) are not affected. Deleting a step is two
+writes (clearing references, then the delete); a selection that commits
+between them makes the delete refuse after references are already cleared,
+as the pre-existing non-atomic step delete already allows. `SetSeatAuthorExclusion` writes through
 `UpdateStepEventsIfUnchanged`, not these methods, and only toggles
 `exclude_author_provider`, which no validation rule reads, so Office > Routing
 keeps working.
@@ -258,14 +286,31 @@ workflow row (`SELECT ... FOR UPDATE` on PostgreSQL; SQLite serializes writers
 at transaction start, as `lockWorkflowRowForStepWrite` documents). A save
 therefore validates against the selection that is current when it commits,
 and a selection validates the steps that are current when it commits
-(AC-006.5). Test: a PostgreSQL test runs selection and an invalidating save
-concurrently and asserts the selected workflow always passes validation.
+(AC-006.5). Single-step writes take the workspace lock (create, update,
+delete) or the workflow row lock (reorder) and re-read the selection inside
+the transaction, in the same order. Test: `office_workflow_race_test.go`
+runs selection and an invalidating save in both orders and concurrently, on
+SQLite and PostgreSQL, and requires exactly one to succeed and the other to
+be refused with its named problem.
+
+Task creation and moves resolve their destination step before their own
+transaction. A definition save that removes an unoccupied step in that window
+can leave the new task on a removed step ID; it then appears in the existing
+**Needs Reassignment** column, the recovery path the board already uses for a
+deleted step. Task rows do not reference steps with a foreign key, and test
+fixtures rely on that, so this design does not add a check there.
 
 ## Deletion guard
 
 `Service.DeleteWorkflow` refuses `is_system` Office workflows
 (`built_in_read_only`) and the workspace's selected Office workflow
-(`selected_delete`), AC-002.5. Other deletions keep their existing rules.
+(`selected_delete`), AC-002.5. The repository delete repeats the selection
+check inside its transaction (`ErrOfficeWorkflowSelected`), so a selection
+that commits after the early check cannot leave a dangling
+`office_workflow_id`. The settings card disables **Delete** with the named
+reason for the built-in and the selected workflow, and **Migrate & Delete**
+re-reads the selection before moving any task. Other deletions keep their
+existing rules.
 
 ## Export and import
 
@@ -309,7 +354,9 @@ New `app/settings/workspace/office-workflows-section.tsx`, rendered only when
   (AC-002.3).
 - **Save.** `persistWorkflowDraft` (`components/settings/workflow-card-actions.ts`)
   branches on `is_office`: one POST or PUT definition call instead of the
-  per-step calls. Problems render inline on the card; unsaved edits stay.
+  per-step calls, sending the loaded versions. A refusal or version conflict
+  shows the localized reasons in an error toast (the floating save bar only
+  says the save failed); unsaved edits stay.
 - **Import** stays the tab-level action; Office files land in the Office
   section after reload.
 
@@ -327,12 +374,16 @@ take the Office mode from `workflow.is_office`:
 - New `workflow-step-office-events.tsx` renders an **Office events** section:
   a monospace `Textarea` (as in `workflow-export-dialog.tsx`) holding the
   step's `events` serialized with the `yaml` package, step IDs shown as step
-  names. Parsing happens on change; a parse error shows inline and is not applied to
-  the draft. The client checks YAML syntax, triggers, action types and step
-  references; the backend re-checks action types
-  (`models.ValidateKnownStepActions`) and references. Action config keys pass
-  through unchecked, as elsewhere in the workflow editor.
-  Server `invalid_events` problems map back to the step (AC-003.2, 003.3).
+  names. Parsing happens on change. Valid text updates the step's `events`;
+  text that does not parse is kept on the step as the client-only
+  `office_events_draft`, shows a located error, and blocks the route-level
+  Save (`officeEventsMustBeFixed`) until fixed, so nothing is written with
+  stale events. The shown text follows the stored events when a step rename
+  or a discard makes the last valid text stale. The client checks YAML
+  syntax, triggers, action types and step references; the backend re-checks
+  action types (`models.ValidateKnownStepActions`) and references. Action
+  config keys pass through unchecked, as elsewhere in the workflow editor;
+  the runtime ignores unknown keys.
 - Built-in Office workflows render with the existing `readOnly` prop
   (AC-003.4).
 
@@ -340,8 +391,8 @@ take the Office mode from `workflow.is_office`:
 
 - Validation and guard refusals write nothing and return 422 or 409 with
   problem codes. The editor keeps the draft; the picker keeps its value.
-- A save that loses an `expected_updated_at` race returns 409 and the editor
-  offers reload, matching existing step-write conflicts.
+- A save that loses a version race returns 409 `workflow_changed`; the editor
+  keeps the draft and tells the user to reload, then reapply the change.
 - A failed definition create leaves no workflow (single transaction), so the
   per-step partial-save cleanup is not needed for Office copies.
 

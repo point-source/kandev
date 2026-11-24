@@ -428,6 +428,15 @@ func (r *Repository) DeleteWorkflow(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	var selected bool
+	if err := tx.QueryRowxContext(ctx, tx.Rebind(`
+		SELECT EXISTS (SELECT 1 FROM workspaces WHERE office_workflow_id = ?)
+	`), id).Scan(&selected); err != nil {
+		return err
+	}
+	if selected {
+		return repoerrors.ErrOfficeWorkflowSelected
+	}
 	if _, err := tx.ExecContext(ctx, r.db.Rebind(`
 		DELETE FROM task_workflow_session_bindings WHERE workflow_id = ?
 	`), id); err != nil {

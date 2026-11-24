@@ -15,6 +15,8 @@ type WorkflowCardHeaderActionsProps = {
   onDeleteClick: () => Promise<void>;
   onDuplicateClick: () => Promise<void>;
   deleteDisabled: boolean;
+  /** Why this workflow cannot be deleted; disables Delete and explains it. */
+  deleteDisabledReason?: string;
   exportDisabled: boolean;
   duplicateDisabled: boolean;
   duplicateDisabledReason?: string;
@@ -30,6 +32,7 @@ export function WorkflowCardHeaderActions({
   onDeleteClick,
   onDuplicateClick,
   deleteDisabled,
+  deleteDisabledReason,
   exportDisabled,
   duplicateDisabled,
   duplicateDisabledReason,
@@ -37,6 +40,8 @@ export function WorkflowCardHeaderActions({
   readOnly,
 }: WorkflowCardHeaderActionsProps) {
   const { t } = useTranslation();
+  const deleteTooltip =
+    deleteDisabledReason ?? (readOnly ? t("workflows:syncedReadOnlyReason") : undefined);
   const duplicateTooltip =
     duplicateDisabledReason ?? (duplicateLoading ? t("workflows:duplicatingWorkflow") : undefined);
   return (
@@ -89,7 +94,7 @@ export function WorkflowCardHeaderActions({
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span tabIndex={readOnly ? 0 : undefined} className="inline-flex">
+          <span tabIndex={deleteTooltip ? 0 : undefined} className="inline-flex">
             <Button
               type="button"
               variant="destructive"
@@ -102,7 +107,7 @@ export function WorkflowCardHeaderActions({
                   });
                 });
               }}
-              disabled={deleteDisabled}
+              disabled={deleteDisabled || deleteDisabledReason !== undefined}
               className="cursor-pointer"
               data-testid="delete-workflow-button"
             >
@@ -111,7 +116,7 @@ export function WorkflowCardHeaderActions({
             </Button>
           </span>
         </TooltipTrigger>
-        {readOnly && <TooltipContent>{t("workflows:syncedReadOnlyReason")}</TooltipContent>}
+        {deleteTooltip && <TooltipContent>{deleteTooltip}</TooltipContent>}
       </Tooltip>
     </div>
   );

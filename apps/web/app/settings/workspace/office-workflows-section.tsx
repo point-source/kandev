@@ -8,7 +8,10 @@ import { Label } from "@kandev/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@kandev/ui/select";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { useRouter } from "@/lib/routing/client-router";
-import { describeOfficeWorkflowProblem } from "@/lib/office-workflow/problem-messages";
+import {
+  describeOfficeWorkflowProblem,
+  type Translate,
+} from "@/lib/office-workflow/problem-messages";
 import type { Workflow, Workspace } from "@/lib/types/http";
 import { WorkflowList } from "./workspace-workflows-list";
 import { useOfficeWorkflowItems } from "./use-office-workflow-items";
@@ -121,6 +124,18 @@ function OfficeWorkflowBadges({
   );
 }
 
+/** Why an Office workflow cannot be deleted from this section, if it cannot. */
+function officeDeleteBlockedReason(
+  t: Translate,
+  workflow: Workflow,
+  selectedId: string,
+): string | undefined {
+  if (workflow.is_system) return describeOfficeWorkflowProblem(t, { code: "built_in_read_only" });
+  if (workflow.id === selectedId)
+    return describeOfficeWorkflowProblem(t, { code: "selected_delete" });
+  return undefined;
+}
+
 function BuiltInCopyNotice() {
   const { t } = useTranslation();
   return (
@@ -190,6 +205,7 @@ export function OfficeWorkflowsSection({
           }}
           onDiscard={office.discard}
           onReorder={() => undefined}
+          deleteBlockedReason={(workflow) => officeDeleteBlockedReason(t, workflow, selectedId)}
         />
       </div>
     </SettingsSection>

@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/kandev/kandev/internal/auth/authn"
 	"github.com/kandev/kandev/internal/authz"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/repository/repoerrors"
+	wfmodels "github.com/kandev/kandev/internal/workflow/models"
 )
 
 // Workspace access scoping.
@@ -392,6 +394,11 @@ func (s *Service) authorizeWorkflowScopeAction(
 // WorkflowMutationReadOnly resolves policy without granting conversation reads.
 func (s *Service) WorkflowMutationReadOnly(ctx context.Context, workflowID string) (synced, workspaceReadOnly bool, err error) {
 	if err := s.authorizeWorkflowAction(ctx, workflowID, models.CollaborationControl); err != nil {
+		if IsForbidden(err) {
+			// The workflow surface answers 403 for this sentinel without
+			// importing the task service.
+			return false, false, fmt.Errorf("%w: %w", wfmodels.ErrWorkspaceManageDenied, err)
+		}
 		return false, false, err
 	}
 	workflow, err := s.workflows.GetWorkflow(ctx, workflowID)

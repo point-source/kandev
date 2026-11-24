@@ -725,6 +725,9 @@ func (r *Repository) createStepWithDemotedStartSteps(
 	if err := r.lockWorkflowRowForStepWrite(ctx, tx, step.WorkflowID, expectedWorkflow); err != nil {
 		return nil, err
 	}
+	if err := r.recheckOfficeStepGuard(ctx, tx, step.WorkflowID); err != nil {
+		return nil, err
+	}
 
 	var demoted []*models.WorkflowStep
 	if step.IsStartStep {
@@ -921,6 +924,9 @@ func (r *Repository) updateStepWithDemotedStartSteps(
 	if err := r.lockOfficeEligibilityScopes(ctx, tx.Tx, nil, []string{step.ID}, []string{step.WorkflowID}); err != nil {
 		return nil, err
 	}
+	if err := r.recheckOfficeStepGuardForStep(ctx, tx, step.ID); err != nil {
+		return nil, err
+	}
 
 	var demoted []*models.WorkflowStep
 	if isStartStep != nil && *isStartStep {
@@ -1047,6 +1053,9 @@ func (r *Repository) ReorderStepsIfUnchanged(
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := r.lockOfficeEligibilityScopes(ctx, tx.Tx, nil, nil, []string{workflowID}); err != nil {
+		return err
+	}
+	if err := r.recheckOfficeStepGuard(ctx, tx, workflowID); err != nil {
 		return err
 	}
 	var workflowVersion time.Time
@@ -1245,6 +1254,9 @@ func (r *Repository) DeleteStep(ctx context.Context, id string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := r.lockOfficeEligibilityScopes(ctx, tx, nil, []string{id}, nil); err != nil {
+		return err
+	}
+	if err := r.recheckOfficeStepGuardForStep(ctx, tx, id); err != nil {
 		return err
 	}
 	cleanupQuery := `

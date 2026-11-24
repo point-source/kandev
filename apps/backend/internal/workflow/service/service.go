@@ -392,6 +392,7 @@ func (s *Service) CreateStepsFromTemplate(ctx context.Context, workflowID, templ
 	if err := s.ensureOfficeStepWriteAllowed(ctx, workflowID); err != nil {
 		return err
 	}
+	ctx = s.withOfficeStepGuard(ctx)
 	template, err := s.repo.GetTemplate(ctx, templateID)
 	if err != nil {
 		s.logger.Error("failed to get template for step creation",
@@ -528,9 +529,11 @@ func (s *Service) CreateStep(ctx context.Context, step *models.WorkflowStep) err
 // CreateStepWithStartStepUpdates creates a new workflow step and returns any
 // other workflow steps whose start-step flag was cleared.
 func (s *Service) CreateStepWithStartStepUpdates(ctx context.Context, step *models.WorkflowStep) ([]*models.WorkflowStep, error) {
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, step.WorkflowID)
+	if err != nil {
 		return nil, err
 	}
+	ctx = guardedCtx
 
 	if err := models.ValidateWorkflowStep(step); err != nil {
 		return nil, err
@@ -552,9 +555,11 @@ func (s *Service) CreateStepWithStartStepUpdates(ctx context.Context, step *mode
 func (s *Service) CreateStepWithStartStepUpdatesIfWorkflowUnchanged(
 	ctx context.Context, step *models.WorkflowStep, expectedWorkflow time.Time,
 ) ([]*models.WorkflowStep, error) {
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, step.WorkflowID)
+	if err != nil {
 		return nil, err
 	}
+	ctx = guardedCtx
 
 	if err := s.AuthorizeWorkflow(ctx, step.WorkflowID); err != nil {
 		return nil, err
@@ -588,9 +593,11 @@ func (s *Service) UpdateStepWithStartStepUpdates(ctx context.Context, step *mode
 
 // UpdateStepWithStartStepIntent preserves the saved start flag when intent is omitted.
 func (s *Service) UpdateStepWithStartStepIntent(ctx context.Context, step *models.WorkflowStep, isStartStep *bool) ([]*models.WorkflowStep, error) {
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, step.WorkflowID)
+	if err != nil {
 		return nil, err
 	}
+	ctx = guardedCtx
 
 	if err := models.ValidateWorkflowStep(step); err != nil {
 		return nil, err
@@ -609,9 +616,11 @@ func (s *Service) UpdateStepWithStartStepIntent(ctx context.Context, step *model
 func (s *Service) UpdateStepWithStartStepUpdatesIfUnchanged(
 	ctx context.Context, step *models.WorkflowStep, expectedWorkflow, expectedStep time.Time,
 ) ([]*models.WorkflowStep, error) {
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, step.WorkflowID)
+	if err != nil {
 		return nil, err
 	}
+	ctx = guardedCtx
 
 	if err := s.AuthorizeWorkflow(ctx, step.WorkflowID); err != nil {
 		return nil, err
@@ -644,9 +653,11 @@ func (s *Service) DeleteStep(ctx context.Context, stepID string) error {
 		return err
 	}
 
-	if err := s.authorizeExecutorMutation(ctx, step.WorkflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, step.WorkflowID)
+	if err != nil {
 		return err
 	}
+	ctx = guardedCtx
 	return s.deleteStep(ctx, step.WorkflowID, stepID)
 }
 
@@ -676,9 +687,11 @@ func (s *Service) deleteStep(ctx context.Context, workflowID, stepID string) err
 
 // ReorderSteps reorders workflow steps for a workflow.
 func (s *Service) ReorderSteps(ctx context.Context, workflowID string, stepIDs []string) error {
-	if err := s.authorizeExecutorMutation(ctx, workflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, workflowID)
+	if err != nil {
 		return err
 	}
+	ctx = guardedCtx
 
 	if err := s.AuthorizeWorkflow(ctx, workflowID); err != nil {
 		return err
@@ -700,9 +713,11 @@ func (s *Service) ReorderSteps(ctx context.Context, workflowID string, stepIDs [
 func (s *Service) ReorderStepsIfUnchanged(
 	ctx context.Context, workflowID string, stepIDs []string, expectedWorkflow time.Time, expectedByID map[string]time.Time,
 ) error {
-	if err := s.authorizeExecutorMutation(ctx, workflowID); err != nil {
+	guardedCtx, err := s.authorizeExecutorMutation(ctx, workflowID)
+	if err != nil {
 		return err
 	}
+	ctx = guardedCtx
 
 	if err := s.AuthorizeWorkflow(ctx, workflowID); err != nil {
 		return err
@@ -1133,12 +1148,16 @@ func (s *Service) SetExecutorMutationChecker(check func(context.Context, string)
 
 // authorizeExecutorMutation gates single-step writes: the workflow must be
 // mutable, the caller allowed, and the workflow not one Office guards
-// against step-by-step edits.
-func (s *Service) authorizeExecutorMutation(ctx context.Context, workflowID string) error {
+// against step-by-step edits. The returned context makes the repository
+// repeat the Office check inside the write transaction.
+func (s *Service) authorizeExecutorMutation(ctx context.Context, workflowID string) (context.Context, error) {
 	if err := s.authorizeWorkflowWrite(ctx, workflowID); err != nil {
-		return err
+		return ctx, err
 	}
-	return s.ensureOfficeStepWriteAllowed(ctx, workflowID)
+	if err := s.ensureOfficeStepWriteAllowed(ctx, workflowID); err != nil {
+		return ctx, err
+	}
+	return s.withOfficeStepGuard(ctx), nil
 }
 
 // authorizeWorkflowWrite checks mutability and the caller's executor

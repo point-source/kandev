@@ -25,6 +25,7 @@ import (
 	"github.com/kandev/kandev/internal/task/models"
 	taskrepo "github.com/kandev/kandev/internal/task/repository"
 	"github.com/kandev/kandev/internal/task/repository/repoerrors"
+	wfmodels "github.com/kandev/kandev/internal/workflow/models"
 	"github.com/kandev/kandev/internal/worktree"
 	"github.com/kandev/kandev/internal/worktree/copyfiles"
 )
@@ -1028,6 +1029,9 @@ func (s *Service) DeleteWorkflow(ctx context.Context, id string) error {
 	}
 
 	if err := s.workflows.DeleteWorkflow(ctx, id); err != nil {
+		if errors.Is(err, repoerrors.ErrOfficeWorkflowSelected) {
+			return &OfficeWorkflowDeleteRefusal{Code: wfmodels.OfficeProblemSelectedDelete}
+		}
 		s.logger.Error("failed to delete workflow", zap.String("workflow_id", id), zap.Error(err))
 		return err
 	}

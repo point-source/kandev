@@ -124,9 +124,10 @@ from nothing.
   `on_children_completed`, `on_agent_error`, `on_turn_complete` and the other
   supported step events) and every supported action and action setting.
 - **AC-OFFICE-WORKFLOW-SELECT-003.3:** When the Office events YAML is not valid
-  YAML, or names an unknown trigger, action or setting, or a step that does not
-  exist, Save shall be refused with a message that names the problem and its
-  location, and nothing shall be written.
+  YAML, or names an unknown trigger or action, or a step that does not exist,
+  Save shall be refused with a message that names the problem and its
+  location, and nothing shall be written. Action settings are passed to the
+  runtime as written.
 - **AC-OFFICE-WORKFLOW-SELECT-003.4:** The built-in Office workflow shall open
   read-only in the editor, with **Duplicate** as the way to change it.
 
@@ -140,13 +141,13 @@ editing the database.
 - **AC-OFFICE-WORKFLOW-SELECT-004.1:** The Office workflows section shall show
   an **Office workflow** picker with the current selection. Its candidates
   shall be the built-in Office workflow, every Office copy that is not
-  sync-managed, and every workspace workflow that has no tasks and is not
-  sync-managed.
+  sync-managed, and every workspace workflow that has no tasks, is not
+  sync-managed, and is neither hidden nor system-owned.
 - **AC-OFFICE-WORKFLOW-SELECT-004.2:** When a workspace manager chooses a
   candidate that passes `REQ-OFFICE-WORKFLOW-SELECT-005`, Kandev shall make it
-  the selected Office workflow, and every Office task created afterwards (by a
-  user, an agent, a routine or onboarding) shall start on that workflow's start
-  step.
+  the selected Office workflow, and every Office task created afterwards by a
+  user, an agent or onboarding shall start on that workflow's start step.
+  Routine runs keep starting on the workspace's dedicated Routine workflow.
 - **AC-OFFICE-WORKFLOW-SELECT-004.3:** When the chosen workflow is a workspace
   workflow without tasks that was not yet an Office workflow, selecting it
   shall make it an Office workflow, and it shall move from the Kanban list to

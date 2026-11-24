@@ -191,6 +191,11 @@ export type WorkflowStep = {
    * on_turn_complete actions after the cancelled turn settles.
    */
   cancel_triggers_turn_complete?: boolean;
+  /**
+   * Client-only Office events YAML the user typed that does not parse yet.
+   * While set, the workflow cannot be saved; it is never sent to the backend.
+   */
+  office_events_draft?: string;
   created_at: string;
   updated_at: string;
 };

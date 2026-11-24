@@ -200,12 +200,12 @@ func moveTargets(ordered []*WorkflowStep, current int, index map[string]int) []i
 	add := func(actionType string, config map[string]interface{}) {
 		switch actionType {
 		case string(GenericActionMoveToNext):
-			if current+1 < len(ordered) {
-				targets = append(targets, current+1)
+			if next := nextByPosition(ordered, current); next >= 0 {
+				targets = append(targets, next)
 			}
 		case string(GenericActionMoveToPrevious):
-			if current > 0 {
-				targets = append(targets, current-1)
+			if prev := previousByPosition(ordered, current); prev >= 0 {
+				targets = append(targets, prev)
 			}
 		case string(GenericActionMoveToStep):
 			id, _ := config[moveTargetConfigKey].(string)
@@ -227,6 +227,30 @@ func moveTargets(ordered []*WorkflowStep, current int, index map[string]int) []i
 		}
 	}
 	return targets
+}
+
+// nextByPosition mirrors the runtime's next-step lookup: the first step with
+// a strictly higher position, or -1.
+func nextByPosition(ordered []*WorkflowStep, current int) int {
+	for i, step := range ordered {
+		if step.Position > ordered[current].Position {
+			return i
+		}
+	}
+	return -1
+}
+
+// previousByPosition mirrors the runtime's previous-step lookup: the last
+// step with a strictly lower position, or -1.
+func previousByPosition(ordered []*WorkflowStep, current int) int {
+	prev := -1
+	for i, step := range ordered {
+		if step.Position >= ordered[current].Position {
+			break
+		}
+		prev = i
+	}
+	return prev
 }
 
 func genericTriggerActions(events StepEvents) [][]GenericAction {

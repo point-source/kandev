@@ -28,6 +28,7 @@ type OfficeWorkflowDefinition struct {
 	WorkspaceID       string                 `json:"workspace_id,omitempty"`
 	WorkflowID        string                 `json:"-"`
 	ExpectedUpdatedAt *time.Time             `json:"expected_updated_at,omitempty"`
+	ExpectedSteps     map[string]time.Time   `json:"expected_steps,omitempty"`
 	Name              string                 `json:"name"`
 	Description       string                 `json:"description"`
 	Prompt            string                 `json:"prompt"`
@@ -73,7 +74,7 @@ func (s *Service) SaveOfficeWorkflowDefinition(ctx context.Context, def OfficeWo
 	}
 	result, problems, err := s.repo.SaveOfficeWorkflowDefinition(ctx, repository.OfficeDefinitionWrite{
 		WorkspaceID: workspaceID, WorkflowID: workflowID, Create: create, CreatedByUserID: officeWorkflowCreator(ctx),
-		ExpectedUpdatedAt: def.ExpectedUpdatedAt, Name: strings.TrimSpace(def.Name), Description: def.Description,
+		ExpectedUpdatedAt: def.ExpectedUpdatedAt, ExpectedSteps: def.ExpectedSteps, Name: strings.TrimSpace(def.Name), Description: def.Description,
 		Prompt: def.Prompt, AgentProfileID: def.AgentProfileID, Steps: steps,
 	}, func(row *repository.OfficeWorkflowRow, selected bool, _ []*models.WorkflowStep) []models.OfficeWorkflowProblem {
 		if problem := officeDefinitionTargetProblem(row); problem != nil {
@@ -150,6 +151,7 @@ func (s *Service) prepareOfficeSteps(ctx context.Context, workflowID string, sub
 	}
 	idMap := make(map[string]string, len(submitted))
 	names := make(map[string]bool, len(submitted))
+	ids := make(map[string]bool, len(submitted))
 	for _, step := range submitted {
 		if step == nil {
 			return nil, invalidOfficeEvents("", "step is required")
@@ -158,6 +160,10 @@ func (s *Service) prepareOfficeSteps(ctx context.Context, workflowID string, sub
 			return nil, invalidOfficeEvents(step.Name, "step names must be unique")
 		}
 		names[step.Name] = true
+		if step.ID != "" && ids[step.ID] {
+			return nil, invalidOfficeEvents(step.Name, "step IDs must be unique")
+		}
+		ids[step.ID] = true
 		if step.ID == "" || !existing[step.ID] {
 			newID := uuid.New().String()
 			if step.ID != "" {
@@ -167,9 +173,12 @@ func (s *Service) prepareOfficeSteps(ctx context.Context, workflowID string, sub
 		}
 	}
 	steps := make([]*models.WorkflowStep, 0, len(submitted))
-	for _, original := range submitted {
+	for position, original := range submitted {
 		step := *original
 		step.WorkflowID = workflowID
+		// The submitted order is the workflow order; positions follow it so
+		// position-based moves never meet a tie.
+		step.Position = position
 		step.Events = models.RemapStepEvents(step.Events, idMap)
 		step.PullFromStepID = remapID(step.PullFromStepID, idMap)
 		if step.SessionTarget != nil {
@@ -210,6 +219,33 @@ func (s *Service) validateOfficeSteps(ctx context.Context, steps []*models.Workf
 			if err := s.AuthorizeTask(ctx, taskID); err != nil {
 				return err
 			}
+		}
+	}
+	if err := validateWorkflowSessionTargets(steps); err != nil {
+		return invalidOfficeEvents("", err.Error())
+	}
+	return validateOfficePullChains(steps)
+}
+
+// validateOfficePullChains refuses a step that pulls from itself or a pull
+// chain that loops, matching the single-step pull_from rules.
+func validateOfficePullChains(steps []*models.WorkflowStep) error {
+	byID := make(map[string]*models.WorkflowStep, len(steps))
+	for _, step := range steps {
+		byID[step.ID] = step
+	}
+	for _, step := range steps {
+		seen := map[string]bool{step.ID: true}
+		for current := step; current.PullFromStepID != ""; {
+			if seen[current.PullFromStepID] {
+				return invalidOfficeEvents(step.Name, "pull_from_step_id cannot create a pull cycle")
+			}
+			seen[current.PullFromStepID] = true
+			next, ok := byID[current.PullFromStepID]
+			if !ok {
+				break
+			}
+			current = next
 		}
 	}
 	return nil

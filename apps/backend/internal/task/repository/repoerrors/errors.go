@@ -16,6 +16,10 @@ var ErrWorkspaceNotFound = errors.New("workspace not found")
 // ErrWorkflowNotFound reports that no workflow row matched the supplied id.
 var ErrWorkflowNotFound = errors.New("workflow not found")
 
+// ErrOfficeWorkflowSelected reports that a workflow cannot be deleted because
+// a workspace selects it as its Office workflow.
+var ErrOfficeWorkflowSelected = errors.New("workflow is a workspace's selected office workflow")
+
 // ErrWorkflowAllocationRecorded reports a second destination allocation for
 // the same accepted workflow entry.
 var ErrWorkflowAllocationRecorded = errors.New("workflow entry already has a recorded allocation")

@@ -101,3 +101,4 @@ Task 06.
 - `components/settings/workflow-step-office-controls.test.tsx`, `lib/office-workflow/office-events-yaml.test.ts`: pass.
 - `pnpm run i18n:check`, `typecheck`, `lint`: pass.
 - Deviation: action config keys are not validated (the client checks syntax, triggers, action types and step references; the backend re-checks action types and references), matching the rest of the workflow editor.
+- Review fixes: YAML that does not parse is kept as a client-only step draft that blocks Save with a named reason; the shown YAML follows step renames and discards; syntax errors no longer repeat the parser's location.

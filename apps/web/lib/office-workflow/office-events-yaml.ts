@@ -139,6 +139,12 @@ function validateTrigger(
  * Parses Office events YAML. Step references use step names and are mapped
  * back to step IDs; unknown triggers, actions and steps are refused.
  */
+/** The parser's first message line without its own location, which the copy states. */
+function syntaxMessage(message: string): string {
+  const first = message.split("\n")[0] ?? "";
+  return first.replace(/\s+at line \d+, column \d+:?$/, "").replace(/:$/, "");
+}
+
 export function parseOfficeEventsYaml(
   text: string,
   steps: WorkflowStep[],
@@ -152,7 +158,7 @@ export function parseOfficeEventsYaml(
     const line = syntaxError.linePos?.[0]?.line ?? 1;
     return {
       ok: false,
-      error: { code: "syntax", line, message: syntaxError.message.split("\n")[0] ?? "" },
+      error: { code: "syntax", line, message: syntaxMessage(syntaxError.message) },
     };
   }
   const parsed: unknown = document.toJS() ?? {};
@@ -163,4 +169,17 @@ export function parseOfficeEventsYaml(
     if (error) return { ok: false, error };
   }
   return { ok: true, events: mapStepReferences(parsed, (name) => ids.get(name)) as StepEvents };
+}
+
+/**
+ * Reports whether YAML the user typed still means `events` against the
+ * current step names. A rename or a discard makes it stale.
+ */
+export function officeEventsTextMatches(
+  text: string,
+  steps: WorkflowStep[],
+  events: StepEvents | undefined,
+): boolean {
+  const parsed = parseOfficeEventsYaml(text, steps);
+  return parsed.ok && JSON.stringify(parsed.events) === JSON.stringify(events ?? {});
 }

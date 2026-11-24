@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "../../fixtures/office-fixture";
+import { createOfficeWorkflowCopy } from "../../helpers/office-workflow-copy";
 import { WorkflowSettingsPage } from "../../pages/workflow-settings-page";
 import {
   candidateId,
@@ -106,6 +107,34 @@ test.describe("Office workflow selection", () => {
     );
     expect(res.status).toBe(409);
     expect(await res.text()).toContain("built_in_read_only");
+  });
+
+  // @covers AC-OFFICE-WORKFLOW-SELECT-006.1, AC-OFFICE-WORKFLOW-SELECT-002.5
+  test("names why a save of the selected copy is refused and blocks deleting it", async ({
+    testPage,
+    apiClient,
+    officeSeed,
+  }) => {
+    const { workspaceId, workflowId: builtInId } = officeSeed;
+    const copy = await createOfficeWorkflowCopy(apiClient, workspaceId, builtInId);
+    await selectOfficeWorkflowApi(apiClient, workspaceId, copy.workflowId);
+
+    const settings = new WorkflowSettingsPage(testPage);
+    await settings.goto(workspaceId);
+    const card = settings.workflowCard(copy.workflowId);
+    await expect(card.getByTestId("delete-workflow-button")).toBeDisabled();
+
+    await settings.stepNodeByName(card, "Work").first().click();
+    await card.getByTestId("step-stage-type-select").click();
+    await testPage.getByRole("option", { name: "Custom", exact: true }).click();
+    await settings.submitSaveChanges();
+    const guard = settings.cycleGuardDialog;
+    await guard.waitFor({ state: "visible", timeout: 3000 }).catch(() => undefined);
+    if (await guard.isVisible()) await guard.getByRole("button", { name: /anyway/ }).click();
+
+    await expect(testPage.getByText(/No step does the work/)).toBeVisible();
+    const { steps } = await apiClient.listWorkflowSteps(copy.workflowId);
+    expect(steps.find((step) => step.name === "Work")?.stage_type).toBe("work");
   });
 
   // @covers AC-OFFICE-WORKFLOW-SELECT-007.1, AC-OFFICE-WORKFLOW-SELECT-007.2

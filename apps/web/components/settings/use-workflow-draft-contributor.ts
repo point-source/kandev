@@ -18,15 +18,28 @@ import { hasInvalidWorkflowSessionTargets } from "./workflow-session-target-vali
 
 const TEMP_WORKFLOW_PREFIX = "temp-workflow-";
 
+type WorkflowSaveBlockers = {
+  workflowName: string;
+  modelConfigResolutionPending: boolean;
+  invalidSessionTargets: boolean;
+  /** Name of a step whose Office events YAML does not parse. */
+  invalidOfficeEventsStep?: string;
+};
+
 function workflowSaveInvalidReason(
-  workflowName: string,
-  modelConfigResolutionPending: boolean,
-  invalidSessionTargets: boolean,
-  translate: (key: string) => string,
+  blockers: WorkflowSaveBlockers,
+  translate: typeof t,
 ): string | undefined {
-  if (!workflowName.trim()) return translate("workflows:workflowNameIsRequired");
-  if (modelConfigResolutionPending) return translate("agents:resolvingModelOptions");
-  if (invalidSessionTargets) return translate("workflows:workflowSessionTargetMustBeRepaired");
+  if (!blockers.workflowName.trim()) return translate("workflows:workflowNameIsRequired");
+  if (blockers.modelConfigResolutionPending) return translate("agents:resolvingModelOptions");
+  if (blockers.invalidSessionTargets) {
+    return translate("workflows:workflowSessionTargetMustBeRepaired");
+  }
+  if (blockers.invalidOfficeEventsStep !== undefined) {
+    return translate("workflows:officeEventsMustBeFixed", {
+      step: blockers.invalidOfficeEventsStep,
+    });
+  }
   return undefined;
 }
 
@@ -84,6 +97,15 @@ function useWorkflowDraftPersistence(args: WorkflowDraftContributorArgs) {
       saveFailedRef.current = false;
     } catch (error) {
       saveFailedRef.current = true;
+      // The save bar shows only that saving failed; an Office refusal names
+      // what to fix.
+      if (workflow.is_office) {
+        args.toast({
+          title: t("workflows:failedToSaveWorkflowChanges"),
+          description: error instanceof Error ? error.message : t("common:requestFailed"),
+          variant: "error",
+        });
+      }
       throw error;
     }
     const unchanged = submittedRevision === latestRevisionRef.current;
@@ -128,23 +150,25 @@ export function useWorkflowDraftContributor(args: WorkflowDraftContributorArgs) 
   const removingDraftRef = useRef(false);
   const [isRemovingDraft, setIsRemovingDraft] = useState(false);
   const stepsDirty = !areStepDraftsEqual(workflowSteps, savedWorkflowSteps);
-  const invalidSessionTargets = hasInvalidWorkflowSessionTargets(workflowSteps);
+  const invalidReason = workflowSaveInvalidReason(
+    {
+      workflowName: workflow.name,
+      modelConfigResolutionPending: isSessionConfigResolutionPending,
+      invalidSessionTargets: hasInvalidWorkflowSessionTargets(workflowSteps),
+      invalidOfficeEventsStep: workflowSteps.find((step) => step.office_events_draft !== undefined)
+        ?.name,
+    },
+    t,
+  );
 
   useSettingsSaveContributor({
     id: `workflow:${workflow.id}`,
     order: 100,
     revision: persistence.revision,
     isDirty: args.isWorkflowDirty || stepsDirty,
-    canSave:
-      workflow.name.trim().length > 0 &&
-      !isSessionConfigResolutionPending &&
-      !invalidSessionTargets,
-    invalidReason: workflowSaveInvalidReason(
-      workflow.name,
-      isSessionConfigResolutionPending,
-      invalidSessionTargets,
-      t,
-    ),
+    // Every blocker has a reason, so a reason is exactly a refusal.
+    canSave: invalidReason === undefined,
+    invalidReason,
     save: async (submittedRevision) => {
       if (!workflow.id.startsWith(TEMP_WORKFLOW_PREFIX)) {
         await persistence.persistSubmittedDraft(submittedRevision);
@@ -162,6 +186,8 @@ export function useWorkflowDraftContributor(args: WorkflowDraftContributorArgs) 
             await persistence.persistSubmittedDraft(submittedRevision);
           } catch (error) {
             if (!guardReturned) throw error;
+            // persistSubmittedDraft already reported an Office failure.
+            if (workflow.is_office) return;
             toast({
               title: t("workflows:failedToSaveWorkflowChanges"),
               description: error instanceof Error ? error.message : t("common:requestFailed"),

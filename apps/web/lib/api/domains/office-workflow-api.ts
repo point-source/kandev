@@ -29,6 +29,10 @@ export type OfficeWorkflowDefinitionBody = {
   prompt: string;
   agent_profile_id: string;
   steps: WorkflowStep[];
+  /** The loaded workflow version; a newer stored version refuses the save. */
+  expected_updated_at?: string;
+  /** Every loaded step's version; any other stored step set refuses the save. */
+  expected_steps?: Record<string, string>;
 };
 
 export type OfficeWorkflowSaveResult = {
@@ -40,6 +44,15 @@ export type OfficeWorkflowSaveResult = {
 
 // i18n-exempt: wire error code returned by the backend.
 const OFFICE_WORKFLOW_REFUSED = "office_workflow_refused";
+// i18n-exempt: wire error code returned by the backend.
+const WORKFLOW_CHANGED = "workflow_changed";
+
+/** Reports a definition save refused because the workflow changed after it loaded. */
+export function isWorkflowChangedError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const body = error.body as { code?: unknown } | null;
+  return body?.code === WORKFLOW_CHANGED;
+}
 
 /** A refused Office workflow write and every reason the backend named. */
 export class OfficeWorkflowRefusedError extends Error {

@@ -49,6 +49,8 @@ type WorkflowCardProps = {
   otherWorkflows?: Workflow[];
   /** Workflows in the dedicated Improve Kandev workspace are read-only. */
   isImproveWorkspace?: boolean;
+  /** Why this workflow cannot be deleted; disables Delete before any task moves. */
+  deleteBlockedReason?: string;
   /** Compact list view: render a collapsible summary row above the editor. */
   compact?: boolean;
   /** Start expanded in the compact view (workflow appeared during this visit). */
@@ -495,6 +497,16 @@ function WorkflowCardCompactHeader({
   );
 }
 
+function isDeleteBusyOrReadOnly(s: ReturnType<typeof useWorkflowCardState>): boolean {
+  return (
+    s.mutationGuard.isMutationPending ||
+    s.deleteWorkflowRequest.isLoading ||
+    s.wfDel.workflowDeleteLoading ||
+    s.isRemovingDraft ||
+    s.readOnly
+  );
+}
+
 export function WorkflowCard(props: WorkflowCardProps) {
   const { t } = useTranslation();
   const { workflow, savedWorkflow, otherWorkflows = [], onUpdateWorkflow, compact = false } = props;
@@ -559,13 +571,8 @@ export function WorkflowCard(props: WorkflowCardProps) {
                 else await s.wfDeleteHandlers.handleDeleteWorkflowClick();
               }}
               onDuplicateClick={duplicate.handleDuplicateWorkflow}
-              deleteDisabled={
-                s.mutationGuard.isMutationPending ||
-                s.deleteWorkflowRequest.isLoading ||
-                s.wfDel.workflowDeleteLoading ||
-                s.isRemovingDraft ||
-                s.readOnly
-              }
+              deleteDisabled={isDeleteBusyOrReadOnly(s)}
+              deleteDisabledReason={props.deleteBlockedReason}
               readOnly={s.readOnly}
               exportDisabled={workflow.id.startsWith(TEMP_WORKFLOW_PREFIX)}
               duplicateDisabled={duplicate.duplicateDisabled}

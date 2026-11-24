@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { workflowId, type WorkflowStep } from "@/lib/types/http";
-import { officeEventsToYaml, parseOfficeEventsYaml } from "./office-events-yaml";
+import type { StepEvents } from "@/lib/types/workflow-actions";
+import {
+  officeEventsTextMatches,
+  officeEventsToYaml,
+  parseOfficeEventsYaml,
+} from "./office-events-yaml";
 
 const step = (id: string, name: string): WorkflowStep => ({
   id,
@@ -61,11 +66,34 @@ describe("office events YAML", () => {
   it("reports the line of a syntax error", () => {
     const parsed = parseOfficeEventsYaml("on_enter:\n  - type: x\n bad: [", steps);
     expect(parsed.ok).toBe(false);
-    if (!parsed.ok && parsed.error.code === "syntax") expect(parsed.error.line).toBeGreaterThan(1);
+    if (!parsed.ok && parsed.error.code === "syntax") {
+      expect(parsed.error.line).toBeGreaterThan(1);
+      expect(parsed.error.message).not.toMatch(/at line|:$/);
+    }
   });
 
   it("refuses editing while step names are not unique", () => {
     const parsed = parseOfficeEventsYaml("", [step("a", "Same"), step("b", "Same")]);
     expect(parsed).toEqual({ ok: false, error: { code: "duplicateStepNames", step: "Same" } });
+  });
+});
+
+describe("officeEventsTextMatches", () => {
+  const events: StepEvents = {
+    on_turn_complete: [{ type: "move_to_step", config: { step_id: "s-review" } }],
+  };
+  const text = "on_turn_complete:\n  - type: move_to_step\n    config:\n      step_id: Review\n";
+
+  it("matches text that still means the stored events", () => {
+    expect(officeEventsTextMatches(text, steps, events)).toBe(true);
+  });
+
+  it("does not match after the referenced step is renamed", () => {
+    const renamed = [step("s-work", "Work"), step("s-review", "Check")];
+    expect(officeEventsTextMatches(text, renamed, events)).toBe(false);
+  });
+
+  it("does not match after the stored events change", () => {
+    expect(officeEventsTextMatches(text, steps, {})).toBe(false);
   });
 });
