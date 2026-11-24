@@ -59,7 +59,7 @@ func TestRouterCountsAReturnToWorkOnlyForARejection(t *testing.T) {
 	}
 }
 
-func TestExtendingTheCapAppliesTheHeldReturn(t *testing.T) {
+func TestExtendingTheLimitAppliesTheHeldReturn(t *testing.T) {
 	svc, gates := newControlService(t, failedCI("pr-1@h2"))
 	navigator := &fakeNavigator{placement: officePlacement("approval")}
 	svc.SetNavigator(navigator)

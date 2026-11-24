@@ -8,6 +8,7 @@ import type {
   TaskCompletionCriterion,
 } from "@/lib/api/domains/task-completion-gates-api";
 import {
+  asksPerson,
   criterionActions,
   criterionDisplayStatus,
   type CriterionAction,
@@ -66,6 +67,18 @@ function CriterionCounts({
   limits?: EffectiveCompletionLimits;
 }) {
   const { t } = useTranslation();
+  if (criterion.kind === "approval") {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid="completion-criterion-counts">
+        {limits
+          ? t("office:completionGatesReworkCountOfLimit", {
+              rework: criterion.rework_count ?? 0,
+              reworkLimit: limits.rework_limit,
+            })
+          : t("office:completionGatesReworkCount", { rework: criterion.rework_count ?? 0 })}
+      </p>
+    );
+  }
   return (
     <p className="text-xs text-muted-foreground" data-testid="completion-criterion-counts">
       {limits
@@ -93,7 +106,9 @@ function CriterionActions({ criterion, onAction }: Pick<Props, "criterion" | "on
         <Button
           key={action}
           size="sm"
-          variant={index === 0 && criterion.hold_kind ? "default" : "outline"}
+          variant={
+            index === 0 && (criterion.hold_kind || asksPerson(criterion)) ? "default" : "outline"
+          }
           className="cursor-pointer min-h-11 sm:min-h-0"
           data-testid={`completion-${action.replace("_", "-")}`}
           onClick={() => onAction(action, criterion)}

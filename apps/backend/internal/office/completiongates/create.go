@@ -16,6 +16,9 @@ import (
 var (
 	ErrCriteriaRequireRepository  error = &taskservice.CompletionCriteriaRefusal{Code: "completion_criteria_requires_repository"}
 	ErrCriteriaRequireReviewStage error = &taskservice.CompletionCriteriaRefusal{Code: "completion_criteria_requires_review_stage"}
+	// ErrCriteriaRequireApprovalStage refuses an approval in a workflow whose
+	// work stage leads straight to completion, where it could never be asked.
+	ErrCriteriaRequireApprovalStage error = &taskservice.CompletionCriteriaRefusal{Code: "completion_criteria_requires_approval_stage"}
 )
 
 // creationRefusal maps validation errors to client-facing creation refusals.
@@ -32,9 +35,13 @@ func creationRefusal(err error) error {
 	}
 }
 
-// ReviewStageReader reports whether a workflow has a review stage.
-type ReviewStageReader interface {
+// WorkflowStageReader reports the workflow stages that review and approval
+// criteria depend on.
+type WorkflowStageReader interface {
 	HasReviewStage(ctx context.Context, workflowID string) (bool, error)
+	// HasStepAfterWork reports a workflow without a work stage, or one with a
+	// step after its work stage that does not complete the task.
+	HasStepAfterWork(ctx context.Context, workflowID string) (bool, error)
 }
 
 // ResolveCreateCriteria implements the task service's creation resolver:
@@ -86,10 +93,8 @@ func (s *Service) resolveSpec(
 	if !input.HasRepository {
 		return models.TaskCompletionCriterion{}, ErrCriteriaRequireRepository
 	}
-	if spec.Kind == models.TaskCompletionCriterionReview {
-		if err := s.requireReviewStage(ctx, input.WorkflowID); err != nil {
-			return models.TaskCompletionCriterion{}, err
-		}
+	if err := s.requireStage(ctx, spec.Kind, input.WorkflowID); err != nil {
+		return models.TaskCompletionCriterion{}, err
 	}
 	above := spec.VerificationLimit > settings.VerificationLimitCeiling || spec.ReworkLimit > settings.ReworkLimitCeiling
 	criterion := models.TaskCompletionCriterion{
@@ -109,22 +114,33 @@ func (s *Service) resolveSpec(
 	return criterion, nil
 }
 
-func (s *Service) requireReviewStage(ctx context.Context, workflowID string) error {
+// requireStage refuses a review in a workflow without a review stage, and an
+// approval in one whose work stage leads straight to completion.
+func (s *Service) requireStage(ctx context.Context, kind, workflowID string) error {
 	if s.stages == nil {
 		return nil
 	}
-	ok, err := s.stages.HasReviewStage(ctx, workflowID)
+	has, refusal := s.stages.HasReviewStage, ErrCriteriaRequireReviewStage
+	switch kind {
+	case models.TaskCompletionCriterionReview:
+	case models.TaskCompletionCriterionApproval:
+		has, refusal = s.stages.HasStepAfterWork, ErrCriteriaRequireApprovalStage
+	default:
+		return nil
+	}
+	ok, err := has(ctx, workflowID)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return ErrCriteriaRequireReviewStage
+		return refusal
 	}
 	return nil
 }
 
 func isApplicabilityError(err error) bool {
-	return errors.Is(err, ErrCriteriaRequireRepository) || errors.Is(err, ErrCriteriaRequireReviewStage)
+	return errors.Is(err, ErrCriteriaRequireRepository) || errors.Is(err, ErrCriteriaRequireReviewStage) ||
+		errors.Is(err, ErrCriteriaRequireApprovalStage)
 }
 
 func hasDuplicateKind(specs []officemodels.CompletionGateCriterionSpec) bool {
@@ -203,8 +219,8 @@ func trimPaths(paths []string) []string {
 // the task's workflow has no review stage, as at creation.
 func (s *Service) ValidateCriteriaChange(ctx context.Context, task *models.Task, criteria []models.TaskCompletionCriterion) error {
 	for _, criterion := range criteria {
-		if criterion.Kind == models.TaskCompletionCriterionReview {
-			return s.requireReviewStage(ctx, task.WorkflowID)
+		if err := s.requireStage(ctx, criterion.Kind, task.WorkflowID); err != nil {
+			return err
 		}
 	}
 	return nil

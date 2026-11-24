@@ -90,8 +90,8 @@ introduced remain complete; criteria edits do not silently reopen them.
 
 ### Host-verified criteria
 
-A criterion has a `kind`. `attested` keeps the behavior above. `check`
-and `review` are host-verified: their evidence and results come only
+A criterion has a `kind`. `attested` keeps the behavior above. `check`,
+`review` and `approval` are host-verified: their evidence and results come only
 from task-service commands called by in-process verifiers, never from the
 HTTP, plugin Host, or MCP evidence paths, which refuse them with
 `task_completion_verifier_reserved`. This fence does not depend on caller
@@ -105,8 +105,9 @@ revision, an owner, optional limits, attempt and rework counters, and an
 optional hold with a kind. Only `pass` with current proof satisfies the guard.
 The verdict source (`program`, `person`, `agent`) is derived from the verifier
 and kind and reported per verified criterion and in the history; there is no
-task-level aggregate. A person's acceptance or send back is a heads-bound
-control, not evidence.
+task-level aggregate. A person's acceptance, approval (`approve`, the only
+way an `approval` criterion passes) or send back is a heads-bound control,
+not evidence.
 Criteria supplied at creation are inserted in the task's create transaction.
 
 Office is the first consumer; its verifiers, routing, limits, and UI are in the

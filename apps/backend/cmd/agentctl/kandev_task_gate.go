@@ -77,7 +77,7 @@ func (l *stringList) Set(value string) error {
 
 func registerCriteriaFlags(fs *flag.FlagSet) *criteriaFlags {
 	flags := &criteriaFlags{}
-	fs.Var(&flags.require, "require", "Completion criterion to require: github-check or review (repeatable); omit to apply the workspace default")
+	fs.Var(&flags.require, "require", "Completion criterion to require: github-check, review or approval (repeatable); omit to apply the workspace default")
 	fs.Var(&flags.protect, "protect", "Protected path glob for github-check, for example tests/** (repeatable)")
 	flags.reworkLimit = fs.Int("rework-limit", 0, "Rework limit (rounds) for the required criteria")
 	flags.verificationLimit = fs.Int("verification-limit", 0, "Verification limit (attempts) for the required criteria")
@@ -86,7 +86,9 @@ func registerCriteriaFlags(fs *flag.FlagSet) *criteriaFlags {
 }
 
 // criterionFlags maps --require names to a criterion kind and runner.
-var criterionFlags = map[string][2]string{"github-check": {"check", "github"}, "review": {"review", ""}}
+var criterionFlags = map[string][2]string{
+	"github-check": {"check", "github"}, "review": {"review", ""}, "approval": {"approval", ""},
+}
 
 // build returns nil when no criterion was required, so the workspace default
 // applies.
@@ -101,7 +103,7 @@ func (f *criteriaFlags) build() ([]map[string]any, error) {
 	for _, name := range f.require {
 		kind, ok := criterionFlags[strings.TrimSpace(name)]
 		if !ok {
-			return nil, fmt.Errorf("--require must be github-check or review, got %q", name)
+			return nil, fmt.Errorf("--require must be github-check, review or approval, got %q", name)
 		}
 		criteria = append(criteria, f.criterion(kind[0], kind[1]))
 	}
@@ -119,7 +121,7 @@ func (f *criteriaFlags) criterion(kind, runner string) map[string]any {
 	if *f.reworkLimit > 0 {
 		criterion["rework_limit"] = *f.reworkLimit
 	}
-	if *f.verificationLimit > 0 {
+	if *f.verificationLimit > 0 && kind != "approval" {
 		criterion["verification_limit"] = *f.verificationLimit
 	}
 	if kind == "review" && *f.reviewWaitLimit > 0 {

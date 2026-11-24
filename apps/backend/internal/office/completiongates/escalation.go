@@ -157,10 +157,19 @@ type HeldLister interface {
 	ListHeldCompletionCriteria(ctx context.Context, workspaceID string) ([]models.HeldTaskCompletionCriterion, error)
 }
 
+// InboxTypeApproval is the Inbox item type of an approval that asks a person.
+const InboxTypeApproval = "completion_gate_approval"
+
 func inboxItems(held []models.HeldTaskCompletionCriterion) []*officemodels.InboxItem {
 	items := make([]*officemodels.InboxItem, 0, len(held))
 	for _, entry := range held {
 		criterion := entry.Criterion
+		if criterion.HoldKind == "" {
+			if criterion.ResultReason == models.TaskCompletionReasonAwaitingPerson {
+				items = append(items, approvalInboxItem(entry))
+			}
+			continue
+		}
 		if criterion.HoldKind != HoldProtectedFilesChanged && ownedByAgentOrRoutine(criterion) && criterion.EscalatedAt != nil {
 			continue
 		}
@@ -177,9 +186,29 @@ func inboxItems(held []models.HeldTaskCompletionCriterion) []*officemodels.Inbox
 				"criterion_revision": criterion.CriterionRevision, "hold_kind": criterion.HoldKind,
 				"detail": criterion.ResultDetail, "subject_revision": criterion.ResultSubjectRevision,
 				"rework_count": criterion.ReworkCount, "attempt_count": criterion.AttemptCount,
+				"held_at": created.UTC().Format(time.RFC3339Nano),
 			},
 			CreatedAt: created,
 		})
 	}
 	return items
+}
+
+// approvalInboxItem asks a person to approve the task's live heads.
+func approvalInboxItem(entry models.HeldTaskCompletionCriterion) *officemodels.InboxItem {
+	criterion := entry.Criterion
+	asked := time.Now().UTC()
+	if criterion.ResultAt != nil {
+		asked = *criterion.ResultAt
+	}
+	return &officemodels.InboxItem{
+		ID: "completion-gate:" + entry.TaskID + ":" + criterion.ID, Type: InboxTypeApproval,
+		Title: entry.TaskTitle, Status: "pending", EntityID: entry.TaskID, EntityType: "task",
+		Payload: map[string]any{
+			"task_id": entry.TaskID, "criterion_id": criterion.ID, "criterion_kind": criterion.Kind,
+			"criterion_revision": criterion.CriterionRevision, "subject_revision": criterion.ResultSubjectRevision,
+			"rework_count": criterion.ReworkCount, "asked_at": asked.UTC().Format(time.RFC3339Nano),
+		},
+		CreatedAt: asked,
+	}
 }

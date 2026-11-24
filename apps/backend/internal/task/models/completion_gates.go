@@ -24,6 +24,9 @@ const (
 	TaskCompletionCriterionAttested = "attested"
 	TaskCompletionCriterionCheck    = "check"
 	TaskCompletionCriterionReview   = "review"
+	// TaskCompletionCriterionApproval passes only on a person's approval of
+	// the live PR heads.
+	TaskCompletionCriterionApproval = "approval"
 )
 
 // Check runners. A check criterion names the program that decides it.
@@ -64,7 +67,8 @@ const (
 // IsHostVerifiedCriterionKind reports whether only in-process verifiers may
 // record results for a criterion kind.
 func IsHostVerifiedCriterionKind(kind string) bool {
-	return kind == TaskCompletionCriterionCheck || kind == TaskCompletionCriterionReview
+	return kind == TaskCompletionCriterionCheck || kind == TaskCompletionCriterionReview ||
+		kind == TaskCompletionCriterionApproval
 }
 
 // NormalizeTaskCompletionCriterionKind maps the legacy empty kind to attested.
@@ -92,7 +96,8 @@ func TaskCompletionVerdictSource(criterion TaskCompletionCriterion) string {
 }
 
 // TaskCompletionCriterionID returns the canonical ID of a host-verified
-// criterion: "<runner>_check" for a check and the kind for a review.
+// criterion: "<runner>_check" for a check and the kind for a review or an
+// approval.
 func TaskCompletionCriterionID(kind, runner string) string {
 	if kind == TaskCompletionCriterionCheck {
 		return runner + "_check"
@@ -309,6 +314,19 @@ const (
 	// TaskCompletionControlAccept is a person's acceptance of a held review at
 	// the observed heads; it verifies only that criterion.
 	TaskCompletionControlAccept = "accept"
+	// TaskCompletionControlApprove is a person's approval of an approval
+	// criterion that asks them, at the observed heads.
+	TaskCompletionControlApprove = "approve"
+	// TaskCompletionReasonApproved is the result reason of an approval a
+	// person gave; it passes the criterion until the heads move.
+	TaskCompletionReasonApproved = "approved"
+	// TaskCompletionReasonAwaitingPerson is the pending reason of an approval
+	// that asks a person: the task left the work stage and every other
+	// criterion passes at the live heads.
+	TaskCompletionReasonAwaitingPerson = "awaiting_person"
+	// TaskCompletionReasonAwaitingCriteria is the pending reason of an
+	// approval not yet asked; its detail names what it waits for.
+	TaskCompletionReasonAwaitingCriteria = "awaiting_criteria"
 	// TaskCompletionControlHold holds a criterion with HoldKind and Detail.
 	TaskCompletionControlHold = "hold"
 	// TaskCompletionReasonAccepted is the result reason of an accepted review.
@@ -352,14 +370,21 @@ type TaskCompletionControlChange struct {
 	CriterionID       string
 	CriterionRevision int64
 	Action            string
-	// SubjectRevision binds allow_protected_paths, send_back and accept to the
-	// observed heads.
+	// SubjectRevision binds allow_protected_paths, send_back, accept and
+	// approve to the observed heads.
 	SubjectRevision string
 	// HoldKind and Detail apply to hold, which also records SubjectRevision as
 	// the heads it holds at when set; release_hold clears only a hold of
 	// HoldKind when it is set.
 	HoldKind string
 	Detail   []string
+	// RequireResultReason, when set, applies a hold only while the criterion's
+	// result reason still equals it; otherwise the hold changes nothing.
+	RequireResultReason string
+	// RebindFromSubject, when set, moves an existing hold: it applies only
+	// while the criterion still holds HoldKind at this subject, and
+	// SubjectRevision must name the live heads.
+	RebindFromSubject string
 	// VerificationLimit and ReworkLimit are the new limits for
 	// extend_limits; zero leaves a limit unchanged.
 	VerificationLimit int
@@ -443,7 +468,8 @@ func TaskPRHeadsRevision(heads []TaskPRHead) string {
 	return strings.Join(parts, ",")
 }
 
-// HeldTaskCompletionCriterion is a held criterion with its task identity.
+// HeldTaskCompletionCriterion is a criterion waiting for a person, held or an
+// approval that asks them, with its task identity.
 type HeldTaskCompletionCriterion struct {
 	TaskID    string                  `json:"task_id"`
 	TaskTitle string                  `json:"task_title"`

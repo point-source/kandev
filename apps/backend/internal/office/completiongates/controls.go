@@ -101,10 +101,16 @@ func (s *Service) extend(ctx context.Context, taskID, criterionID string, reques
 	// failure back to the stage it was waiting to return to.
 	background := context.WithoutCancel(ctx)
 	s.CI.Schedule(background, taskID)
-	if criterion := findCriterionByID(outcome.Snapshot, criterionID); criterion.ID != "" && criterion.HoldKind == "" {
+	criterion := findCriterionByID(outcome.Snapshot, criterionID)
+	switch {
+	case criterion.ID == "" || criterion.HoldKind != "":
+	case criterion.ResultReason == models.TaskCompletionReasonSentBack && len(criterion.ResultDetail) > 0:
+		s.routeSendBack(background, taskID, criterion, criterion.ResultDetail[0])
+	default:
 		s.Router.RouteCriterion(background, taskID, criterion)
 	}
-	return outcome.Snapshot, nil
+	s.Router.EvaluateApproval(background, taskID)
+	return s.gates.GetTaskCompletionGate(ctx, taskID)
 }
 
 // GetSettings returns the workspace settings with shipped defaults applied.
@@ -187,13 +193,16 @@ func ValidateCriterionSpec(spec officemodels.CompletionGateCriterionSpec) error 
 }
 
 // validSpecKind accepts a check naming the github runner without a review wait
-// limit, and a review naming no runner and protecting no paths.
+// limit, a review naming no runner and protecting no paths, and an approval
+// carrying only a rework limit.
 func validSpecKind(spec officemodels.CompletionGateCriterionSpec) bool {
 	switch spec.Kind {
 	case models.TaskCompletionCriterionCheck:
 		return spec.Runner == models.TaskCompletionCheckRunnerGitHub && spec.ReviewWaitLimit == 0
 	case models.TaskCompletionCriterionReview:
 		return spec.Runner == "" && len(spec.ProtectedPaths) == 0
+	case models.TaskCompletionCriterionApproval:
+		return spec.Runner == "" && len(spec.ProtectedPaths) == 0 && spec.VerificationLimit == 0 && spec.ReviewWaitLimit == 0
 	}
 	return false
 }
@@ -216,6 +225,15 @@ func (s *Service) InboxItems(ctx context.Context, workspaceID string) ([]*office
 		return nil, err
 	}
 	return inboxItems(held), nil
+}
+
+// AssigneeStartHeld counts a rejection that returned the task to the work
+// stage, then reports whether the assignee's start there is held.
+func (s *Service) AssigneeStartHeld(ctx context.Context, taskID, agentID string) bool {
+	if s.Router != nil {
+		s.Router.SettleWorkEntry(ctx, taskID)
+	}
+	return s.AssigneeRunHeld(ctx, taskID, agentID)
 }
 
 // AssigneeRunHeld reports whether agentID is the assignee of a task that has

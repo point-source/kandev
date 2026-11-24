@@ -39,3 +39,17 @@ func TestHeldPromptNamesTheChoicesForTheHoldKind(t *testing.T) {
 		t.Fatalf("reviewer prompt = %q", reviewer)
 	}
 }
+
+// @covers AC-OFFICE-COMPLETION-GATES-010.2
+func TestPromptSaysAPersonApprovesAnApproval(t *testing.T) {
+	gate := &models.TaskCompletionGateSnapshot{
+		Blocked: true,
+		Criteria: []models.TaskCompletionCriterion{{ID: "approval", Kind: "approval", Description: "A person approves the PR head commit",
+			Result: "pending", ResultReason: "awaiting_criteria", ResultDetail: []string{"work_stage"}}},
+		Blockers: []models.TaskCompletionBlocker{{CriterionID: "approval", Reason: "unverified"}},
+	}
+	prompt := BuildPrompt(&PromptContext{Reason: RunReasonTaskAssigned, TaskID: "t1", CompletionGate: gate})
+	if !strings.Contains(prompt, "A person approves the PR head commit (approval)") || !strings.Contains(prompt, "No agent can approve it") {
+		t.Fatalf("prompt = %s", prompt)
+	}
+}

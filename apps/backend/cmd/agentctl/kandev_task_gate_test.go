@@ -30,6 +30,27 @@ func TestTaskCreateSendsCompletionCriteria(t *testing.T) {
 	}
 }
 
+// @covers AC-OFFICE-COMPLETION-GATES-010.1
+func TestTaskCreateRequiresAnApprovalWithoutAVerificationLimit(t *testing.T) {
+	captured := setupMockTransport(t, http.StatusCreated, `{"task_id":"t-1"}`)
+	t.Setenv("KANDEV_API_URL", "http://kandev.test")
+	t.Setenv("KANDEV_API_KEY", "signed-run-token")
+	code := runKandevCLI([]string{"task", "create", "--title", "Fix webhook",
+		"--require", "github-check", "--require", "approval", "--verification-limit", "4", "--rework-limit", "2"})
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	criteria, ok := taskCreateBody(t, captured)["completion_criteria"].([]interface{})
+	if !ok || len(criteria) != 2 {
+		t.Fatalf("completion_criteria = %#v", criteria)
+	}
+	approval := criteria[1].(map[string]interface{})
+	if approval["kind"] != "approval" || approval["runner"] != nil || approval["verification_limit"] != nil ||
+		approval["rework_limit"] != float64(2) {
+		t.Fatalf("approval = %#v", approval)
+	}
+}
+
 func TestTaskCreateRejectsUnknownCriterion(t *testing.T) {
 	captured := setupMockTransport(t, http.StatusCreated, `{}`)
 	t.Setenv("KANDEV_API_URL", "http://kandev.test")

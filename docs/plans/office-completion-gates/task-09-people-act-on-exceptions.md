@@ -129,3 +129,40 @@ for reviews held as `assignee_only` or `no_reviewer_role`, registers the new
 reviewer (claiming the fallback seat), queues its review run and releases the
 hold; the review verifier ignores the assignee's seat. Covered by unit tests
 and an E2E that adds a specialist agent to a held task.
+
+Independent review and manual QA on an isolated instance found and fixed:
+
+- With authentication on, every person-action route was refused as an
+  unresolved Office parameter; `criteria/:criterionId` is now a task
+  sub-resource and the route-scope test mounts the completion-gate routes.
+- A failing check sent a protected change back to the worker before a person
+  saw it; the protected-files hold now comes first (AC-003.1).
+- A held review kept its old heads after a push, so Accept and Send back were
+  refused forever; the hold now follows the heads, and a person's verdict
+  under a hold is dropped for a pending review at the new heads.
+- A verifier that read before a person acted could overwrite the person's
+  verdict at the same heads, and the wait sweep could hold a review whose
+  reviewer had just launched; both are now refused inside the transaction.
+- Raising the limit after a send back held at the limit stranded the return;
+  it now resumes the send back under its original key.
+- Four linked PRs produced a heads revision over the scalar 256-character
+  limit; PR heads revisions now allow 8192.
+- Criteria edits accepted two checks or two reviews; one per kind is enforced.
+- The reseat could seat and wake a reviewer for a task that just left Review;
+  it now re-reads the placement after seating.
+- Accepting a review that is no longer held returned 500; it returns 409, and
+  the dialog explains that the criterion changed.
+- The Inbox dialog now captures its target when it opens and shows the commit
+  and hold time; the task page shows a review decided at earlier heads as
+  awaiting a verdict at the live heads, so Send back acts on the current
+  commit.
+
+- Inbox rows show their time again: `getInbox` now maps the API's
+  `created_at` to `createdAt` (`office-inbox-normalize.ts`).
+
+- A seat rejection at the rework limit now holds before the worker starts.
+  The Work step's `auto_start_agent` launches through the orchestrator, not
+  the run queue, so it now asks the gate first: the gate counts the keyed
+  rejection, and a held assignee is not launched. `count_rework` reports the
+  call that applied the hold, so exactly one of the start check and the move
+  event escalates it.

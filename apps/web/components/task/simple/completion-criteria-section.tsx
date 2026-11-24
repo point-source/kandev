@@ -10,6 +10,7 @@ import type {
 import {
   completionGateRefreshKey,
   criterionActions,
+  criterionAtShownCommit,
   criterionBlocker,
   overriddenBy,
   type CriterionAction,
@@ -19,7 +20,11 @@ import {
   REASON_REQUIRED_ACTIONS,
   type CompletionDialogAction,
 } from "@/lib/completion-gates/copy-keys";
-import { applyCriterionAction, limitField } from "@/lib/completion-gates/person-actions";
+import {
+  actionTarget,
+  applyCriterionAction,
+  limitField,
+} from "@/lib/completion-gates/person-actions";
 import { GateActionsAuthWarning } from "@/components/completion-gates/gate-actions-auth-warning";
 import type { DecisionLike } from "@/lib/completion-gates/criterion-detail";
 import {
@@ -50,7 +55,11 @@ export function CompletionCriteriaSection({ task }: { task: SectionTask }) {
   if (!enabled || !gate || gate.criteria.length === 0) return null;
   const done = task.status === "done";
   const personActions =
-    gate.blocked || gate.criteria.some((item) => criterionActions(item, "task").length > 0);
+    gate.blocked ||
+    gate.criteria.some(
+      (item) =>
+        criterionActions(criterionAtShownCommit(item, gate.heads_revision), "task").length > 0,
+    );
   return (
     <section
       className="mt-4 rounded-lg border border-border"
@@ -62,7 +71,7 @@ export function CompletionCriteriaSection({ task }: { task: SectionTask }) {
         {gate.criteria.map((criterion) => (
           <CompletionCriterionRow
             key={criterion.id}
-            criterion={atShownCommit(criterion, gate)}
+            criterion={criterionAtShownCommit(criterion, gate.heads_revision)}
             blocker={criterionBlocker(gate, criterion.id)}
             limits={limits.find((entry) => entry.criterion_id === criterion.id)}
             decisions={task.decisions ?? []}
@@ -82,18 +91,6 @@ export function CompletionCriteriaSection({ task }: { task: SectionTask }) {
       />
     </section>
   );
-}
-
-/**
- * A criterion with no result yet is shown, and acted on, at the live PR heads;
- * otherwise at the commit its result was recorded for.
- */
-function atShownCommit(
-  criterion: TaskCompletionCriterion,
-  gate: TaskCompletionGateSnapshot,
-): TaskCompletionCriterion {
-  if (criterion.result_subject_revision || !gate.heads_revision) return criterion;
-  return { ...criterion, result_subject_revision: gate.heads_revision };
 }
 
 function SectionHeader(props: { done: boolean; overriddenBy?: string }) {
@@ -178,12 +175,7 @@ async function applyCompletionAction(
   }
   if (!criterion) return;
   await applyCriterionAction(
-    {
-      taskId,
-      criterionId: criterion.id,
-      criterionRevision: criterion.criterion_revision,
-      subjectRevision: criterion.result_subject_revision ?? "",
-    },
+    actionTarget(taskId, criterion),
     pending.action as CriterionAction,
     values,
   );

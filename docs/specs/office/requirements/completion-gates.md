@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 system: office
 created: 2026-11-20
 owners:
@@ -14,7 +14,7 @@ Office tasks complete on agent decisions alone. A task can reach Done with
 failing CI, a reviewer's approval still counts after new commits land, and
 nothing stops the worker from changing the tests that judge its own work.
 
-This capability lets an Office task carry completion criteria of two kinds
+This capability lets an Office task carry completion criteria of three kinds
 that Kandev checks against the pull request as it stands:
 
 - **Check:** a program decides, by exit status. Each check names a runner. In
@@ -22,6 +22,8 @@ that Kandev checks against the pull request as it stands:
   commit succeed, and the PR does not touch paths the task creator protected.
 - **Review:** judgement decides. The required reviewer seats approved the
   current head commit.
+- **Approval:** a person decides. A person approved the current head commit
+  (`REQ-OFFICE-COMPLETION-GATES-010`, in part 1).
 
 The task system's completion gate (`REQ-TASKS-COMPLETION-001`, `-005` and
 `-006`) stores the criteria, refuses every completing move until they pass,
@@ -29,9 +31,10 @@ and records the audit history. Office owns which tasks carry criteria, how
 Kandev verifies them, what happens when one fails, and how people see and
 recover a gated task.
 
-People handle exceptions, not routine verification. Programs and agent
-reviewers decide; a person acts only when they cannot, from the Inbox or the
-task page, never as a seat or a workflow stage. Every person's decision is
+Programs and agent reviewers decide checks and reviews; a person acts on
+those only when they cannot, from the Inbox or the task page, never as a seat
+or a workflow stage. A task that needs a person's judgement carries a human
+approval criterion, alone or with the others. Every person's decision is
 recorded as what it was, because these records later judge how reliable each
 kind of verifier is.
 
@@ -83,10 +86,14 @@ creation path, and let a workspace require it by default.
 - **AC-OFFICE-COMPLETION-GATES-001.1:** The Office new-task dialog, `$KANDEV_CLI
   kandev task create`, the `create_task_kandev` MCP tool, and routine task
   templates shall accept a check criterion naming the `github` runner (with
-  optional protected paths and limits) and a review criterion (with optional
-  limits, including a review wait limit). A check without a runner, a check
-  naming another runner, or a review naming a runner shall be refused. The
-  created task shall carry the criteria from its first committed version.
+  optional protected paths and limits), a review criterion (with optional
+  limits, including a review wait limit), and a human approval criterion
+  (`AC-OFFICE-COMPLETION-GATES-010.1`). A check without a runner, a check
+  naming another runner, or a review or approval naming a runner shall be
+  refused. A task shall carry at most one criterion of each kind; a second one
+  shall be refused at creation, when the criteria are edited, and through
+  the plugin write path. The created task shall carry the criteria from its
+  first committed version.
 - **AC-OFFICE-COMPLETION-GATES-001.2:** A workspace setting shall define
   default criteria for new Office tasks. When a creation request does not name
   criteria, the default shall apply. A person creating a task can remove a

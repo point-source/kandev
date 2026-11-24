@@ -4,6 +4,7 @@ import {
   completionGateRefreshKey,
   completingStepId,
   criterionActions,
+  criterionAtShownCommit,
   criterionDisplayStatus,
   isProtectedPathHold,
   overriddenBy,
@@ -99,13 +100,49 @@ describe("criterionActions", () => {
     ]);
   });
 
-  it("lets a person send a review back from the task page at any time", () => {
-    expect(criterionActions(review({ result: "pass" }), "task")).toEqual(["send_back"]);
-    expect(criterionActions(review({ hold_kind: "review_wait_limit_reached" }), "task")).toEqual([
-      "accept",
-      "send_back",
-    ]);
-    expect(criterionActions(review({ result: "pass" }), "inbox")).toEqual([]);
-    expect(criterionActions(check({ result: "fail" }), "task")).toEqual([]);
+  it("lets a person send a review back from the task page at any commit shown", () => {
+    const at = { result_subject_revision: "pr@h1" };
+    expect(criterionActions(review({ result: "pass", ...at }), "task")).toEqual(["send_back"]);
+    expect(
+      criterionActions(review({ hold_kind: "review_wait_limit_reached", ...at }), "task"),
+    ).toEqual(["accept", "send_back"]);
+    expect(criterionActions(review({ result: "pass", ...at }), "inbox")).toEqual([]);
+    expect(criterionActions(check({ result: "fail", ...at }), "task")).toEqual([]);
+    expect(criterionActions(review({}), "task")).toEqual([]);
+  });
+});
+
+describe("criterionAtShownCommit", () => {
+  const live = "pr@h2";
+
+  it("shows a criterion with no result at the live heads", () => {
+    expect(criterionAtShownCommit(criterion({}), live).result_subject_revision).toBe(live);
+  });
+
+  it("keeps a result recorded at the live heads, and a hold at its own heads", () => {
+    const current = criterion({ result: "fail", result_subject_revision: live });
+    expect(criterionAtShownCommit(current, live)).toBe(current);
+    const held = criterion({
+      kind: "review",
+      hold_kind: "rework_limit_reached",
+      result_subject_revision: "pr@h1",
+    });
+    expect(criterionAtShownCommit(held, live)).toBe(held);
+  });
+
+  it("shows a review decided at earlier heads as awaiting a verdict at the live heads", () => {
+    const sentBack = criterion({
+      kind: "review",
+      result: "fail",
+      result_reason: "sent_back",
+      result_detail: ["missed a case"],
+      result_subject_revision: "pr@h1",
+    });
+    expect(criterionAtShownCommit(sentBack, live)).toMatchObject({
+      result: "pending",
+      result_reason: undefined,
+      result_detail: [],
+      result_subject_revision: live,
+    });
   });
 });

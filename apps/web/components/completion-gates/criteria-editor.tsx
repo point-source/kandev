@@ -13,7 +13,7 @@ type Props = {
   showLimits?: boolean;
 };
 
-/** Check and review criteria with protected paths and limits. */
+/** Check, review and human approval criteria with protected paths and limits. */
 export function CriteriaEditor({ value, onChange, idPrefix, showLimits = true }: Props) {
   const { t } = useTranslation();
   const set = (patch: Partial<CriteriaSelection>) => onChange({ ...value, ...patch });
@@ -57,7 +57,18 @@ export function CriteriaEditor({ value, onChange, idPrefix, showLimits = true }:
           />
         </div>
       )}
-      {showLimits && (value.ci || value.review) && (
+      <CheckRow
+        id={`${idPrefix}-approval`}
+        checked={value.approval}
+        onChange={(approval) => set({ approval })}
+        label={t("office:completionGatesKindApproval")}
+      />
+      {value.approval && (
+        <p className="pl-7 text-xs text-muted-foreground">
+          {t("office:completionGatesApprovalHint")}
+        </p>
+      )}
+      {showLimits && (value.ci || value.review || value.approval) && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <NumberField
             id={`${idPrefix}-rework-limit`}
@@ -65,12 +76,14 @@ export function CriteriaEditor({ value, onChange, idPrefix, showLimits = true }:
             value={value.reworkLimit}
             onChange={(reworkLimit) => set({ reworkLimit })}
           />
-          <NumberField
-            id={`${idPrefix}-verification-limit`}
-            label={t("office:completionGatesVerificationLimit")}
-            value={value.verificationLimit}
-            onChange={(verificationLimit) => set({ verificationLimit })}
-          />
+          {(value.ci || value.review) && (
+            <NumberField
+              id={`${idPrefix}-verification-limit`}
+              label={t("office:completionGatesVerificationLimit")}
+              value={value.verificationLimit}
+              onChange={(verificationLimit) => set({ verificationLimit })}
+            />
+          )}
         </div>
       )}
     </div>

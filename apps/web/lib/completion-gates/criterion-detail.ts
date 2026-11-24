@@ -2,7 +2,7 @@ import type {
   EffectiveCompletionLimits,
   TaskCompletionCriterion,
 } from "@/lib/api/domains/task-completion-gates-api";
-import { REASON_KEYS } from "./copy-keys";
+import { KIND_KEYS, REASON_KEYS } from "./copy-keys";
 import { shortHeads } from "./criteria-display";
 
 /** The fields of a task decision the detail line reads. */
@@ -24,6 +24,8 @@ export type CriterionDetail = {
   commits: string[];
   text?: { key: string; values?: Record<string, string | number> };
   reviewers?: { key: string; reviewers: Reviewer[] };
+  /** Name keys of the criteria an approval waits for before it asks a person. */
+  waitingFor?: string[];
 };
 
 type Described = Omit<CriterionDetail, "commits">;
@@ -62,6 +64,7 @@ function describe(
     case "waiting_for_reviewer":
       return describeReviewerWait(criterion.result_detail?.[1]);
   }
+  if (criterion.kind === "approval") return describeApproval(criterion, blocker);
   if (criterion.kind === "review") return describeReview(criterion, blocker, decisions);
   if (!blocker) return {};
   if (criterion.result_reason === "checks_failed") {
@@ -124,6 +127,33 @@ function describeReviewerWait(retryAt: string | undefined): Described {
   });
   return text("office:completionGatesDetailWaitingForReviewerUntil", { time });
 }
+
+/** What an approval waits for, that it asks the person, or that they approved. */
+function describeApproval(
+  criterion: TaskCompletionCriterion,
+  blocker: string | undefined,
+): Described {
+  const detail = criterion.result_detail ?? [];
+  switch (criterion.result_reason) {
+    case "approved":
+      return detail[0]
+        ? text("office:completionGatesDetailApprovedNote", { reason: detail[0] })
+        : text("office:completionGatesDetailApproved");
+    case "awaiting_person":
+      return text("office:completionGatesDetailAwaitingYou");
+    case "awaiting_criteria":
+      if (detail.includes(PULL_REQUEST)) return text("office:completionGatesReasonPrMissing");
+      if (detail.includes(WORK_STAGE)) return text("office:completionGatesDetailAfterWork");
+      return { waitingFor: detail.map((kind) => KIND_KEYS[kind] ?? KIND_KEYS.attested) };
+  }
+  if (!blocker) return {};
+  return criterion.result_subject_revision
+    ? text("office:completionGatesDetailAfterWork")
+    : text("office:completionGatesReasonPrMissing");
+}
+
+const WORK_STAGE = "work_stage";
+const PULL_REQUEST = "pull_request";
 
 function describeReview(
   criterion: TaskCompletionCriterion,

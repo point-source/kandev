@@ -1,9 +1,11 @@
 import {
   acceptCriterion,
   allowProtectedFiles,
+  approveCriterion,
   extendCompletionCriterion,
   sendBackCriterion,
 } from "@/lib/api/domains/task-completion-gates-api";
+import type { TaskCompletionCriterion } from "@/lib/api/domains/task-completion-gates-api";
 import type { CriterionAction } from "./criteria-display";
 
 /** The criterion a person acts on, at the revision and heads they saw. */
@@ -13,6 +15,16 @@ export type ActionTarget = {
   criterionRevision: number;
   subjectRevision: string;
 };
+
+/** The target of an action on a criterion as shown to the person. */
+export function actionTarget(taskId: string, criterion: TaskCompletionCriterion): ActionTarget {
+  return {
+    taskId,
+    criterionId: criterion.id,
+    criterionRevision: criterion.criterion_revision,
+    subjectRevision: criterion.result_subject_revision ?? "",
+  };
+}
 
 export type ActionValues = { reason: string; rework: number; attempts: number };
 
@@ -41,6 +53,7 @@ export async function applyCriterionAction(
     allow: allowProtectedFiles,
     send_back: sendBackCriterion,
     accept: acceptCriterion,
+    approve: approveCriterion,
   }[action];
   await post(taskId, criterionId, request);
 }

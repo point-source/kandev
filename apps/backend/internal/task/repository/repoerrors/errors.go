@@ -57,6 +57,10 @@ var ErrTaskManagementClaimOwned = errors.New("task management claim already owne
 // one missing, stale, or unverified task-owned criterion.
 var ErrTaskCompletionGateBlocked = errors.New("task completion requirements are not satisfied")
 
+// ErrTaskCompletionCriteriaInvalid reports a criteria set that breaks a
+// per-kind or set-wide rule.
+var ErrTaskCompletionCriteriaInvalid = errors.New("task completion criteria are invalid")
+
 // ErrTaskCompletionCriteriaConflict reports a stale criteria-set revision.
 var ErrTaskCompletionCriteriaConflict = errors.New("task completion criteria changed")
 

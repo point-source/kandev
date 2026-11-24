@@ -382,7 +382,7 @@ func (r *Repository) createCostTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
-	-- Completion-gate defaults, caps and ceilings
+	-- Completion-gate defaults, limits and ceilings
 	-- (REQ-OFFICE-COMPLETION-GATES-001/007). An absent row means no default
 	-- criteria and the shipped cap defaults.
 	CREATE TABLE IF NOT EXISTS office_completion_gate_settings (

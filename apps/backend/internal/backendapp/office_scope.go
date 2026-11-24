@@ -118,6 +118,7 @@ var officeScopedSubResourceParams = map[string]string{
 	"instructions/:filename":    "an instruction file, addressed under its agent",
 	"memory/:entryId":           "a memory entry, addressed under its agent",
 	"blockers/:blockerId":       "a task blocker, addressed under its task",
+	"criteria/:criterionId":     "a task completion criterion, addressed under its task",
 	"labels/:labelName":         "a label name, resolved under its task and workspace by the service",
 	"by-identifier/:identifier": "a task identifier, looked up within the workspace named by `:wsId` on the same route",
 }

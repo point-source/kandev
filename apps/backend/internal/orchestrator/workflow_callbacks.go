@@ -283,7 +283,7 @@ type autoStartAgentCallback struct {
 const maxBusyAutoStartAttempts = 3
 
 func (c *autoStartAgentCallback) Execute(ctx context.Context, in engine.ActionInput) (engine.ActionResult, error) {
-	if in.State.IsPassthrough {
+	if in.State.IsPassthrough || c.svc.autoStartHeld(ctx, in.State.TaskID, in.State.SessionID) {
 		return engine.ActionResult{}, nil
 	}
 

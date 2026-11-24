@@ -5,7 +5,6 @@ import type {
   Project,
   CostSummary,
   Approval,
-  InboxItem,
   OfficeMeta,
   ProviderUsage,
   LiveRun,
@@ -13,6 +12,7 @@ import type {
 import type { CLIFlag, AgentRole, AgentStatus } from "@/lib/types/agent-profile";
 import { agentProfileId, workspaceId } from "@/lib/types/ids";
 import { normalizeProject } from "./office-project-normalize";
+import { normalizeInboxItem, type RawInboxItem } from "./office-inbox-normalize";
 
 // Re-export extended API so existing imports continue to work.
 export {
@@ -528,10 +528,10 @@ export function getInbox(workspaceId: string, options?: ApiRequestOptions) {
   // Returns items + total_count in a single call (Stream F of office
   // optimization). The sidebar count subscribes to the store value the
   // inbox page sets; no separate count fetch is required.
-  return fetchJsonWithRetry<{ items: InboxItem[]; total_count: number }>(
+  return fetchJsonWithRetry<{ items: RawInboxItem[] | null; total_count: number }>(
     `${BASE}/workspaces/${workspaceId}/inbox`,
     options,
-  );
+  ).then((res) => ({ ...res, items: (res.items ?? []).map(normalizeInboxItem) }));
 }
 
 /**

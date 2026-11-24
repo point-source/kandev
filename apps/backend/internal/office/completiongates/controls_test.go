@@ -117,7 +117,7 @@ func TestSettingsValidation(t *testing.T) {
 }
 
 // @covers AC-OFFICE-COMPLETION-GATES-003.2, AC-OFFICE-COMPLETION-GATES-007.4
-func TestInboxShowsProtectedHoldsAndPersonOwnedOrUnescalatedCapHolds(t *testing.T) {
+func TestInboxShowsProtectedHoldsAndPersonOwnedOrUnescalatedLimitHolds(t *testing.T) {
 	now := time.Now()
 	protected := ownedCriterion(ownerKindAgent, "owner")
 	protected.HoldKind, protected.HeldAt = HoldProtectedFilesChanged, &now
@@ -133,6 +133,9 @@ func TestInboxShowsProtectedHoldsAndPersonOwnedOrUnescalatedCapHolds(t *testing.
 	if err != nil || len(items) != 3 || items[0].Type != InboxTypeHold ||
 		items[1].EntityID != "t3" || items[2].EntityID != "t4" || items[2].Type != InboxTypeHold {
 		t.Fatalf("items = %+v, %v", items, err)
+	}
+	if heldAt := items[0].Payload["held_at"]; heldAt != now.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("held_at = %v", heldAt)
 	}
 }
 

@@ -1,9 +1,10 @@
 ---
-status: draft
+status: current
 system: office
 requirements:
   - REQ-OFFICE-COMPLETION-GATES-008
   - REQ-OFFICE-COMPLETION-GATES-009
+  - REQ-OFFICE-COMPLETION-GATES-010
 created: 2026-11-21
 ---
 
@@ -15,12 +16,13 @@ created: 2026-11-21
 | --- | --- |
 | `REQ-OFFICE-COMPLETION-GATES-008` | [Person actions](#person-actions), [User interface](#user-interface) |
 | `REQ-OFFICE-COMPLETION-GATES-009` | [No reviewer available](#no-reviewer-available) |
+| `REQ-OFFICE-COMPLETION-GATES-010` | [Human approval](#human-approval), [User interface](#user-interface) |
 
 ## Purpose and boundaries
 
 This part of the [Office completion gates design](completion-gates.md) covers
-the holds raised when no reviewer can approve, the person actions, the Office
-user interface, and the phase 2 check runner. The task-owned primitive, the
+the holds raised when no reviewer can approve, the human approval criterion,
+the person actions, the Office user interface, and the phase 2 check runner. The task-owned primitive, the
 verifiers, routing and limits are in the main design.
 
 ## No reviewer available
@@ -55,13 +57,80 @@ escalates once through the normal path.
   while the task is at the review stage. When the cast picks an agent other
   than the assignee, it registers it through `DashboardService.AddTaskReviewer`
   (claiming the undecided automatic fallback seat in place, else adding a
-  seat), queues its `task_assigned` run at the review step, and the service
-  releases the hold. The review verifier ignores seats held by the assignee,
+  seat), re-reads the task, and only while it is still at the review step
+  queues its `task_assigned` run there and lets the service release the hold.
+  A task that left the review stage keeps the hold and is cast again when it
+  returns. The review verifier ignores seats held by the assignee,
   so a fallback seat that could not be claimed never blocks the new reviewer.
 - **Review wait limit:** the escalation loop's one-minute tick runs
   `sweepReviewWaits`, which holds a review with `review_wait_limit_reached`
   once a reviewer wait has lasted its resolved review wait limit. Without a
-  limit the review waits.
+  limit the review waits. The hold control carries `RequireResultReason`
+  `waiting_for_reviewer`, so a seat run that launched after the sweep read
+  the wait leaves the review unheld.
+
+## Human approval
+
+Kind `approval` (`models.TaskCompletionCriterionApproval`) is the third
+host-verified kind. Its config carries only `rework_limit`. The one-per-kind
+check in `validateCompletionCriteriaForTask` covers it; Office creation needs a
+repository and no review stage, but `WorkflowStageReader.HasStepAfterWork`
+must report a step after the work stage that does not complete the task on
+entry (or no work stage). Creation and criteria edits refuse it otherwise with
+`completion_criteria_requires_approval_stage`. Evidence submission stays
+refused (`task_completion_verifier_reserved`). Invalid criteria sets, from any
+kind's rules, wrap `ErrTaskCompletionCriteriaInvalid` and answer 400
+`invalid_completion_gate`; extending a verification limit on an approval is
+refused the same way.
+
+`completiongates/approval_verifier.go` records whether a person is asked, as
+an ordinary evaluation, so the task page, the Inbox query and the history read
+one stored state:
+
+- **Not asked:** `pending` / `awaiting_criteria` at the live heads, with
+  detail naming what it waits for: `pull_request` (with an empty subject)
+  while no pull request is linked, `work_stage` while the task is at or before
+  the work stage, then the kind of each other criterion that has a gate
+  blocker at the live heads.
+- **Asked:** `pending` / `awaiting_person` at the live heads, once the task is
+  past the work stage (`Placement.pastWork()`; a workflow without a work stage
+  counts as past it) and no other criterion has a gate blocker.
+- **Approved:** `pass` / `approved`, verifier kind `human`, verifier the
+  person, recorded by the `approve` control. `personVerdictStands` keeps it,
+  and a person's send back, until the heads move; the next evaluation then
+  records at the new heads, so the approval waits for the others there and
+  asks again.
+
+`Router.EvaluateApproval` runs after every result recorded for another
+criterion of the task (`AfterRecord`), after a person's Accept, Send back or
+limit extension, on `task.moved`, on every Office `task.updated` (engine
+moves, criteria changes and attested evidence publish it without a move), and
+on `github.task_pr.updated` and `github.task_pr.deleted`. Evaluation and the
+`approve` control hold a per-task lock (`Router.approvals`), so an evaluation
+never records an ask from a placement that a later one replaced. A held
+approval (rework limit) is left alone. It
+never moves a task, never holds the assignee and never escalates; there is no
+hold kind for an unanswered approval.
+
+Control `approve` (`POST .../criteria/:criterionId/approve`, body as below
+with an optional `reason`) applies only to an `approval` criterion at
+`awaiting_person` whose subject equals the heads shown; anything else is 409
+`task_completion_evidence_changed`. `Service.Approve` re-evaluates the ask
+first, so an approval whose other criteria stopped passing is refused as
+changed. It records the note and the person in the history with verdict
+source `person`, then retries the completing transition when the gate is
+unblocked, as Accept does. The retry re-applies only a satisfied
+quorum-guarded transition into the completing step; an unguarded
+`on_turn_complete` transition is not replayed, since the step's turn may still
+be running, and the person moves the task instead. **Send back** on an approval routes
+through `Service.routeSendBack`, counting against its own rework limit.
+
+The Inbox lists `completion_gate_approval` items for criteria at
+`awaiting_person` (`ListHeldCompletionCriteria` also selects that reason),
+with the task, the short heads and `asked_at` (the result time).
+`DashboardService.GetInboxItems` and `GetInboxCount` no longer include
+`task_review_request` items for the person; agent inboxes are unchanged. The worker's prompt
+section names the criterion and says a person approves after the others pass.
 
 ## Person actions
 
@@ -73,8 +142,9 @@ the history actor with their reason.
 | Route (`POST /api/v1/office/tasks/:id/completion-gate/criteria/:criterionId/...`) | Control | Applies to |
 | --- | --- | --- |
 | `allow` | `allow_protected_paths` | A check held with `protected_files_changed` |
-| `send-back` | `send_back` | A check held with `protected_files_changed`; a review at any time |
+| `send-back` | `send_back` | A check held with `protected_files_changed`; a review or approval at any time |
 | `accept` | `accept` | A held review |
+| `approve` | `approve` | An `approval` criterion at `awaiting_person` |
 | `extend` | `extend_limits` | A limit hold (also the agent route, within the ceiling) |
 
 The body is `{expected_criterion_revision, expected_subject_revision, reason}`.
@@ -103,7 +173,10 @@ once the task is done. Each row shows the kind and runner (**CI check
 detail line, and the rework and attempt counts against the limits. The detail
 line (`lib/completion-gates/criterion-detail.ts`) names what decided the
 result, then the short heads (7 characters per PR) it was decided at, or the
-live heads when there is no result yet:
+live heads when there is no result yet. A review whose verdict belongs to
+earlier heads, and is not held, shows as awaiting a verdict at the live heads
+(`criterionAtShownCommit`), so **Send back at this commit** acts on the commit
+the PR is at:
 
 - A hold names its kind with its labelled value: the protected files; the
   rounds or attempts used of the limit; the no-reviewer cause; or how long the
@@ -119,13 +192,23 @@ Actions come from one helper (`criterionActions`) shared by the task page and
 the Inbox, and apply through one client (`lib/completion-gates/person-actions.ts`):
 **Allow for this commit** and **Send back** for a protected-files hold;
 **Allow more rounds** or **Allow more attempts** for a limit hold (the dialog
-asks for that limit only); **Accept at this commit** on a held review; and, on
-the task page only, **Send back at this commit** on every review. Dialogs open
+asks for that limit only); **Accept at this commit** on a held review;
+**Approve at this commit** (optional note) and **Send back** on an approval
+that is asked; and, on the task page only, **Send back at this commit** on
+every review and approval. A **Human approval** row reads "Asked after CI
+check and Review pass" (or "Asked once the task leaves Work") until asked,
+"Waiting for your approval" with **Needs you** while asked, and "Approved by
+<person>" with the note once passed. Dialogs open
 as bottom sheets on phones. **Override completion** stays at the bottom of the
 section.
 
-The Inbox renders a `completion_gate_hold` item with the same detail line as
-its title, a link to the task, and the same actions.
+The Inbox renders a `completion_gate_approval` item titled **Approval
+needed** with the task title, the short heads, when it was asked and the same
+actions. It renders a `completion_gate_hold` item with the same detail line as
+its title, a link to the task, the short heads it is held at, and the same
+actions. Both surfaces capture the action's target (criterion revision and
+heads) when the dialog opens, so a refresh while it is open cannot redirect
+the action to another commit.
 
 While `state.auth.mode` is not `enabled`, the section (when it offers actions)
 and the Inbox (when it lists a completion-criteria item) render a non-blocking
@@ -134,7 +217,9 @@ warning with a link to the Feature Toggles page
 
 The new-task dialog (`app/office/components/new-task-dialog.tsx`) gets a
 **Completion criteria** group prefilled from workspace settings, with the
-review wait limit on a review. Workspace settings
+review wait limit on a review and a **Human approval** option with its rework
+limit. `kandev task create --require approval` and the MCP `completion_criteria`
+kind `approval` add it from the CLI and agents. Workspace settings
 (`app/office/workspace/settings/components/settings-content.tsx`) get a
 **Completion gates** card for defaults (including the default review wait
 limit), limits and ceilings. API clients live in

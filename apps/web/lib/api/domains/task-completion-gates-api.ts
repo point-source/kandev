@@ -12,7 +12,7 @@ export type TaskCompletionEvidence = {
   reference?: string;
 };
 
-export type TaskCompletionCriterionKind = "attested" | "check" | "review";
+export type TaskCompletionCriterionKind = "attested" | "check" | "review" | "approval";
 
 export type TaskCompletionResult = "pending" | "pass" | "fail" | "cannot_evaluate";
 
@@ -200,6 +200,9 @@ export const sendBackCriterion = postPersonAction("send-back");
 /** Accepts a held review at the heads shown as the person's verdict. */
 export const acceptCriterion = postPersonAction("accept");
 
+/** Approves an approval criterion that asks the person, at the heads shown. */
+export const approveCriterion = postPersonAction("approve");
+
 /** Raises a criterion's limits and releases a limit hold. */
 export function extendCompletionCriterion(
   taskId: string,
@@ -235,7 +238,7 @@ export async function getEffectiveCompletionLimits(taskId: string, options?: Api
 }
 
 export type TaskCompletionCriterionRequest = {
-  kind: "check" | "review";
+  kind: "check" | "review" | "approval";
   runner?: TaskCompletionCheckRunner;
   protected_paths?: string[];
   verification_limit?: number;

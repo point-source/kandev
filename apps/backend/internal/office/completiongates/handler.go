@@ -34,6 +34,7 @@ func RegisterRoutes(router *gin.RouterGroup, svc *Service, log *logger.Logger) {
 	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/allow", h.personAction(svc.Allow))
 	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/send-back", h.personAction(svc.SendBack))
 	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/accept", h.personAction(svc.Accept))
+	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/approve", h.personAction(svc.Approve))
 	router.POST("/tasks/:id/completion-gate/criteria/:criterionId/extend", h.extend)
 	router.GET("/tasks/:id/completion-gate/limits", h.limits)
 	router.GET("/workspaces/:wsId/completion-gates/settings", h.getSettings)
@@ -131,7 +132,8 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrHumanRequired):
 		c.JSON(http.StatusForbidden, gin.H{"code": "completion_control_requires_person"})
-	case errors.Is(err, ErrUnsupportedControl), errors.Is(err, ErrInvalidCriterion), errors.Is(err, ErrReasonRequired):
+	case errors.Is(err, ErrUnsupportedControl), errors.Is(err, ErrInvalidCriterion), errors.Is(err, ErrReasonRequired),
+		errors.Is(err, repoerrors.ErrTaskCompletionCriteriaInvalid):
 		c.JSON(http.StatusBadRequest, gin.H{"code": codeInvalidControl})
 	case errors.Is(err, ErrInvalidSettings):
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_completion_gate_settings"})

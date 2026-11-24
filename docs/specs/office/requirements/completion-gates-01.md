@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 system: office
 created: 2026-11-21
 owners:
@@ -11,11 +11,12 @@ owners:
 ## Overview
 
 This part of the [Office completion gates requirements](completion-gates.md)
-covers how people see a gated task and act on it, and what happens when no
-agent can review it. People handle exceptions, not routine verification: they
-act from the Inbox and the task page, never as a reviewer seat or a workflow
-stage, and each decision is recorded as what it was. Terms are defined in the
-main document.
+covers how people see a gated task and act on it, what happens when no agent
+can review it, and the human approval criterion. People act from the Inbox and
+the task page, never as a reviewer seat or a workflow stage: on exceptions for
+check and review criteria, and routinely only where a human approval criterion
+asks them to. Each decision is recorded as what it was. Terms are defined in
+the main document.
 
 ## Requirements
 
@@ -111,9 +112,59 @@ waiting forever.
   the task is at the review stage, start its review, and release the hold. The
   assignee's own seat shall neither pass nor block the review.
 
+### REQ-OFFICE-COMPLETION-GATES-010: Human approval
+
+**Intent:** Let a task require a person's approval of the work as it stands,
+on its own or together with the CI check and the agent review, without making
+the person a reviewer seat or a workflow stage.
+
+#### Acceptance criteria
+
+- **AC-OFFICE-COMPLETION-GATES-010.1:** Every creation path of
+  `AC-OFFICE-COMPLETION-GATES-001.1` and the workspace defaults shall accept a
+  human approval criterion (kind `approval`, no runner, an optional rework
+  limit). A task shall carry at most one. It can stand alone or sit beside a
+  check and a review; it needs a repository but not a review stage. Its
+  workflow needs a step after the work stage that does not complete the task;
+  otherwise the criterion is refused with
+  `completion_criteria_requires_approval_stage`, because it could never ask.
+- **AC-OFFICE-COMPLETION-GATES-010.2:** The criterion shall pass only when a
+  person approved the current heads. A new head shall make an approval stale
+  and ask again. No agent decision, seat decision or evidence submission shall
+  pass it.
+- **AC-OFFICE-COMPLETION-GATES-010.3:** A person shall be asked only once a
+  pull request is linked, the task has left the work stage and every other
+  criterion passes at the current heads. Until then the criterion shall show
+  `Pending` and name what it waits for. Detaching the last pull request
+  withdraws an ask. Asking shall not move the task, hold its assignee or escalate, and the
+  ask never times out.
+- **AC-OFFICE-COMPLETION-GATES-010.4:** While asked, the task page and an Inbox
+  item titled "Approval needed" shall offer **Approve at this commit** (an
+  optional note) and **Send back** (a required reason). Approve shall record
+  the person as the verifier (verdict source `person`) at the heads shown and
+  be refused with `task_completion_evidence_changed` when the heads moved.
+  Send back shall route like a review send back
+  (`AC-OFFICE-COMPLETION-GATES-004.6`), counting a rework round against this
+  criterion's limit. The task page offers Send back at any time once a pull
+  request is linked.
+- **AC-OFFICE-COMPLETION-GATES-010.5:** Any person who can change the task can
+  approve; with authentication off, that is the local person, with the warning
+  of `AC-OFFICE-COMPLETION-GATES-008.8`. A request carrying an Office run
+  token shall be refused, as for every person action.
+- **AC-OFFICE-COMPLETION-GATES-010.6:** Once approved and with every other
+  criterion passing, a satisfied quorum-guarded transition into the completing
+  step that the gate refused shall be re-applied without another action. A
+  transition without such a guard is not replayed, because its step's turn may
+  still be running; the person moves the task to its completing step.
+- **AC-OFFICE-COMPLETION-GATES-010.7:** The Inbox shall no longer list "your
+  review requested" items for the person. Office offers people no seat
+  decision, so the human approval item is the person's review request.
+
 ## Exclusions
 
-- A person as a reviewer seat or a human review stage.
+- A person as a reviewer seat or a human review stage. Human approval is a
+  criterion (`REQ-OFFICE-COMPLETION-GATES-010`), not a seat or a stage.
+- Named approvers or an approval quorum of several people.
 - Verdict-source labels or a task-level summary on the task page.
 
 ## Related documents

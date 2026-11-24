@@ -128,7 +128,7 @@ The default workflow moves Work → Review → Approval → Done. Work requires 
 4. Inspect the recorded decision and resulting transition. All required approvals allow advancement; a rejection returns the task to Work for revision.
 5. After revision, review again. Entering a new review or approval round clears previous decisions so stale approvals cannot finish a changed task.
 
-Workflow participants are Office agents; human users have no workflow approval or request-changes buttons. A human comment saying “looks good” provides guidance but does not satisfy the workflow gate. Confirm that the intended agent recorded a decision rather than treating its conversational reply as an approval.
+Workflow participants are Office agents; human users have no workflow approval or request-changes buttons. To require your own approval, add the **Human approval** completion criterion (see below). A human comment saying “looks good” provides guidance but does not satisfy the workflow gate. Confirm that the intended agent recorded a decision rather than treating its conversational reply as an approval.
 
 The primary assignee, reviewer, and approver are distinct capacities. A team member can hold more than one capacity on a task; removing one does not necessarily end its session while it still holds another.
 
@@ -136,7 +136,7 @@ To finish a task, drop its card on **Done** in the Office board or choose **Done
 
 Pending approvers or unmet completion criteria can refuse the move, leaving the task in its original status and step. Resolve the named gate before trying again. Tasks already on the final step keep their existing approval check, which can redirect a Done request to review.
 
-## Require CI and review before Done
+## Require CI, review or your approval before Done
 
 An Office task can carry completion criteria that Kandev checks itself against
 the linked pull request, so a task cannot reach Done on agent decisions alone.
@@ -149,12 +149,18 @@ the linked pull request, so a task cannot reach Done on agent decisions alone.
   it as a CI job and keep its workflow file and script under protected paths.
 - **Review** passes when every required reviewer agent approved the current
   head commit. A new commit makes earlier approvals stale.
+- **Human approval** passes only when a person approves the pull request's
+  current head commit. Kandev asks once the task has left Work and every other
+  criterion passes; until then the criterion shows what it waits for. Waiting
+  never moves the task or stops the worker, and a new commit asks again. Use
+  it alone or together with the other criteria.
 
 Add criteria in the **Completion criteria** group of the new-task dialog, or set
 workspace defaults under **Preferences → Completion gates**. An agent or routine
-cannot remove a workspace default; a person creating a task can. Both criteria
-need a repository on the task, and a review needs a workflow with a review
-step.
+cannot remove a workspace default; a person creating a task can. Every
+criterion needs a repository on the task, and a review needs a workflow with a
+review step. A human approval needs a workflow step after Work that does not
+complete the task, so it has somewhere to ask you.
 
 When CI fails after the task left Work, Kandev returns it to Work and wakes the
 assignee with the failing checks. Rework rounds and verification attempts have
@@ -169,17 +175,27 @@ A criterion that needs a person shows **Needs you**, with what it needs:
 | Verification limit reached | Kandev could not check the criterion, for example no checks ran | **Allow more attempts** |
 | No reviewer available | No reviewer agent can approve, for example the only reviewer is the task's assignee | **Accept at this commit** |
 | Review wait limit reached | A reviewer waited longer than the review wait limit for another provider | **Accept at this commit** |
+| Waiting for your approval | A human approval asks you: the task left Work and the other criteria pass | **Approve at this commit** or **Send back** |
 
-The criterion's owner is asked once: the creating agent, the workspace CEO, or
-you through the Inbox. A review waiting for a provider to recover shows
+The criterion's owner is asked once about a hold: the creating agent, the
+workspace CEO, or you through the Inbox. A human approval that asks you
+appears in the Inbox as **Approval needed**; any person who can change the
+task can approve it, and an agent never can. A review waiting for a provider to recover shows
 **Waiting for a reviewer** and waits indefinitely unless you set a review wait
 limit.
 
-On the task page you can **Send back at this commit** on any review, with a
-reason: the task returns to Work and the worker sees your reason. **Accept at
+On the task page you can **Send back at this commit** on any review, and
+**Send back** on a human approval, with a reason: the task returns to Work and
+the worker sees your reason. **Approve at this commit** takes an optional note
+and is refused if a new commit arrived after you opened it. **Accept at
 this commit** passes only that review, at the commit you saw, and is recorded
 as your acceptance. Use **Override completion** with a reason to finish a
 blocked task anyway; the override is recorded.
+
+When you approve, Kandev finishes the completion the gate refused if the
+task's step leads to Done through its reviewers' or approvers' decisions, as
+the default workflow does. In a custom workflow whose step moves to Done
+without such a decision, move the task to Done yourself after approving.
 
 With authentication off, any process on this machine can take these actions as
 you. The task page and the Inbox warn about this; turn on Authentication in
@@ -187,7 +203,7 @@ you. The task page and the Inbox warn about this; turn on Authentication in
 
 ## Handle human requests
 
-Open **Inbox** to review pending approval requests and items needing attention. Inspect the linked task or agent before approving or rejecting an action. Workspace governance requests, such as hiring an agent or changing skills, have their own human approval controls. Workflow review requests link back to the task, where you guide the reviewer or approver agent as described above.
+Open **Inbox** to review pending approval requests and items needing attention. Inspect the linked task or agent before approving or rejecting an action. Workspace governance requests, such as hiring an agent or changing skills, have their own human approval controls. The Inbox no longer lists workflow review requests for people; a task that needs your approval carries a human approval criterion instead.
 
 Answer a task question in the place it was asked. When granting partial approval, state the allowed scope explicitly. After a decision, revisit the task to confirm that the requested action or next workflow step occurred.
 

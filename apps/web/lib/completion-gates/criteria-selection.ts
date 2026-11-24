@@ -7,6 +7,8 @@ import type {
 export type CriteriaSelection = {
   ci: boolean;
   review: boolean;
+  /** A person approves the PR head commit after the other criteria pass. */
+  approval: boolean;
   protectedPaths: string;
   reworkLimit: string;
   verificationLimit: string;
@@ -17,6 +19,7 @@ export type CriteriaSelection = {
 export const EMPTY_SELECTION: CriteriaSelection = {
   ci: false,
   review: false,
+  approval: false,
   protectedPaths: "",
   reworkLimit: "",
   verificationLimit: "",
@@ -29,10 +32,12 @@ export function selectionFromCriteria(
 ): CriteriaSelection {
   const ci = criteria.find((criterion) => criterion.kind === "check");
   const review = criteria.find((criterion) => criterion.kind === "review");
-  const limitsSource = ci ?? review;
+  const approval = criteria.find((criterion) => criterion.kind === "approval");
+  const limitsSource = ci ?? review ?? approval;
   return {
     ci: Boolean(ci),
     review: Boolean(review),
+    approval: Boolean(approval),
     protectedPaths: (ci?.protected_paths ?? []).join(", "),
     reworkLimit: limitsSource?.rework_limit ? String(limitsSource.rework_limit) : "",
     verificationLimit: limitsSource?.verification_limit
@@ -75,6 +80,9 @@ export function criteriaFromSelection(
       review_wait_limit: positive(selection.reviewWaitLimit),
     });
   }
+  if (selection.approval) {
+    criteria.push({ kind: "approval", rework_limit: limits.rework_limit });
+  }
   return criteria.map((criterion) =>
     Object.fromEntries(Object.entries(criterion).filter(([, value]) => value !== undefined)),
   ) as TaskCompletionCriterionRequest[];
@@ -106,6 +114,7 @@ export function invalidLimits(
 const ERROR_KEYS: Record<string, string> = {
   completion_criteria_requires_repository: "office:completionGatesErrRequiresRepository",
   completion_criteria_requires_review_stage: "office:completionGatesErrRequiresReviewStage",
+  completion_criteria_requires_approval_stage: "office:completionGatesErrRequiresApprovalStage",
   completion_limit_above_ceiling: "office:completionGatesErrLimitAboveCeiling",
   invalid_protected_path: "office:completionGatesErrInvalidProtectedPath",
 };

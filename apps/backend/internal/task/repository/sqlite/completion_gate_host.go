@@ -226,16 +226,33 @@ func normalizeProtectedPaths(paths []string) []string {
 	return slices.Compact(clean)
 }
 
-// validateCompletionCriteriaForTask applies the per-kind rules that need the
-// owning task's identity.
+// validateCompletionCriteriaForTask applies the set-wide rules and the
+// per-kind rules that need the owning task's identity. Every refusal wraps
+// ErrTaskCompletionCriteriaInvalid.
 func validateCompletionCriteriaForTask(taskID string, criteria []models.TaskCompletionCriterion) error {
+	if err := checkCompletionCriteriaForTask(taskID, criteria); err != nil {
+		return fmt.Errorf("%w: %w", repoerrors.ErrTaskCompletionCriteriaInvalid, err)
+	}
+	return nil
+}
+
+func checkCompletionCriteriaForTask(taskID string, criteria []models.TaskCompletionCriterion) error {
 	if err := validateCompletionCriteria(criteria); err != nil {
 		return err
 	}
+	hostKinds := map[string]bool{}
 	for _, criterion := range criteria {
 		if err := validateCompletionCriterionKind(taskID, criterion); err != nil {
 			return err
 		}
+		kind := models.NormalizeTaskCompletionCriterionKind(criterion.Kind)
+		if kind == models.TaskCompletionCriterionAttested {
+			continue
+		}
+		if hostKinds[kind] {
+			return fmt.Errorf("a task carries at most one %s criterion", kind)
+		}
+		hostKinds[kind] = true
 	}
 	return nil
 }
@@ -256,13 +273,13 @@ func validateCompletionCriterionKind(taskID string, criterion models.TaskComplet
 
 // validateCompletionKindConfig applies each kind's configuration rules: a
 // check names the github runner, a review names none and protects no paths,
-// and an attested criterion carries no host-verified configuration.
+// an approval carries only a rework limit, and an attested criterion carries
+// no host-verified configuration.
 func validateCompletionKindConfig(kind string, criterion models.TaskCompletionCriterion) error {
 	config := criterion.Config
 	switch kind {
 	case models.TaskCompletionCriterionAttested:
-		if criterion.EvidenceSubject.Kind == models.TaskCompletionEvidenceGitHubPRHeads || len(config.ProtectedPaths) > 0 ||
-			config.Runner != "" || config.ReviewWaitLimit != 0 {
+		if criterion.EvidenceSubject.Kind == models.TaskCompletionEvidenceGitHubPRHeads || !noHostConfig(config) {
 			return fmt.Errorf("attested completion criterion is invalid")
 		}
 	case models.TaskCompletionCriterionCheck:
@@ -273,10 +290,20 @@ func validateCompletionKindConfig(kind string, criterion models.TaskCompletionCr
 		if config.Runner != "" || len(config.ProtectedPaths) > 0 {
 			return fmt.Errorf("review completion criterion has no runner or protected paths")
 		}
+	case models.TaskCompletionCriterionApproval:
+		if !noHostConfig(config) || config.VerificationLimit != 0 {
+			return fmt.Errorf("approval completion criterion carries only a rework limit")
+		}
 	default:
 		return fmt.Errorf("completion criterion kind %q is not supported", kind)
 	}
 	return nil
+}
+
+// noHostConfig reports a configuration without a runner, protected paths or a
+// review wait limit.
+func noHostConfig(config models.TaskCompletionCriterionConfig) bool {
+	return config.Runner == "" && len(config.ProtectedPaths) == 0 && config.ReviewWaitLimit == 0
 }
 
 func validateCompletionLimits(config models.TaskCompletionCriterionConfig) error {
@@ -453,6 +480,9 @@ func mergedBeforePass(locked lockedHostCriterion, change *models.TaskCompletionE
 // applyCompletionEvaluation computes the next criterion state. It reports
 // changed=false when the observation repeats the stored one.
 func applyCompletionEvaluation(current models.TaskCompletionCriterion, change models.TaskCompletionEvaluationChange, now time.Time) (models.TaskCompletionCriterion, bool) {
+	if personVerdictStands(current, change) {
+		return current, false
+	}
 	detail := boundedCompletionDetail(change.Detail)
 	releases := change.ReleaseHold != "" && change.ReleaseHold == current.HoldKind && change.Hold == ""
 	holdUnchanged := (change.Hold == "" || change.Hold == current.HoldKind) && !releases
@@ -471,6 +501,21 @@ func applyCompletionEvaluation(current models.TaskCompletionCriterion, change mo
 	applyEvaluationVerification(&next, change, now)
 	applyEvaluationCounters(&next, change, releases, now)
 	return next, true
+}
+
+// personVerdictStands reports a verifier observation at the heads a person
+// already sent back, accepted or approved: the person's verdict stands until
+// the heads move, even when the verifier read its inputs before the person
+// acted.
+func personVerdictStands(current models.TaskCompletionCriterion, change models.TaskCompletionEvaluationChange) bool {
+	if current.ResultSubjectRevision != change.SubjectRevision || change.VerifierKind == models.TaskCompletionVerifierHuman {
+		return false
+	}
+	switch current.ResultReason {
+	case models.TaskCompletionReasonSentBack, models.TaskCompletionReasonAccepted, models.TaskCompletionReasonApproved:
+		return true
+	}
+	return false
 }
 
 // applyEvaluationVerification keeps the invariant that a criterion is
@@ -531,7 +576,8 @@ func (r *Repository) ApplyTaskCompletionControl(ctx context.Context, change mode
 	if err != nil {
 		return nil, err
 	}
-	claimed := (change.Action == models.TaskCompletionControlCountRework && next.ReworkCount > criterion.ReworkCount) ||
+	claimed := (change.Action == models.TaskCompletionControlCountRework &&
+		(next.ReworkCount > criterion.ReworkCount || criterion.HoldKind != next.HoldKind)) ||
 		(change.Action == models.TaskCompletionControlHold && criterion.HoldKind != next.HoldKind)
 	if !controlLeftUnchanged(criterion, next, change.Action) {
 		if err := r.writeControlledCriterionTx(ctx, tx, change, next, locked); err != nil {
@@ -552,7 +598,7 @@ func (r *Repository) ApplyTaskCompletionControl(ctx context.Context, change mode
 // the heads the person saw for heads-bound controls.
 func (r *Repository) lockControlledCriterionTx(ctx context.Context, tx *sql.Tx, change models.TaskCompletionControlChange) (lockedHostCriterion, error) {
 	subject := ""
-	if isSubjectBoundControl(change.Action) {
+	if isSubjectBoundControl(change.Action) || change.RebindFromSubject != "" {
 		if change.SubjectRevision == "" {
 			return lockedHostCriterion{}, repoerrors.ErrTaskCompletionEvidenceChanged
 		}
@@ -585,8 +631,12 @@ func (r *Repository) writeControlledCriterionTx(
 }
 
 func isSubjectBoundControl(action string) bool {
-	return action == models.TaskCompletionControlAllowProtected || action == models.TaskCompletionControlSendBack ||
-		action == models.TaskCompletionControlAccept
+	switch action {
+	case models.TaskCompletionControlAllowProtected, models.TaskCompletionControlSendBack,
+		models.TaskCompletionControlAccept, models.TaskCompletionControlApprove:
+		return true
+	}
+	return false
 }
 
 // controlLeftUnchanged reports a hold or release that found the criterion
@@ -612,10 +662,11 @@ func applyCompletionControl(criterion models.TaskCompletionCriterion, change mod
 	switch change.Action {
 	case models.TaskCompletionControlHold, models.TaskCompletionControlReleaseHold:
 		return next, applyHoldControl(&next, change, now)
-	case models.TaskCompletionControlAllowProtected, models.TaskCompletionControlSendBack, models.TaskCompletionControlAccept:
+	case models.TaskCompletionControlAllowProtected, models.TaskCompletionControlSendBack,
+		models.TaskCompletionControlAccept, models.TaskCompletionControlApprove:
 		return next, applyPersonControl(&next, criterion, change, now)
 	case models.TaskCompletionControlExtendLimits:
-		return next, applyCapExtension(&next, change)
+		return next, applyLimitExtension(&next, change)
 	case models.TaskCompletionControlCountRework:
 		applyReworkCount(&next, change, now)
 	case models.TaskCompletionControlMarkEscalated:
@@ -640,6 +691,12 @@ func applyHoldControl(next *models.TaskCompletionCriterion, change models.TaskCo
 	if !knownHoldKind(change.HoldKind) {
 		return fmt.Errorf("completion hold kind %q is not supported", change.HoldKind)
 	}
+	if change.RequireResultReason != "" && next.ResultReason != change.RequireResultReason {
+		return nil
+	}
+	if change.RebindFromSubject != "" && (next.HoldKind != change.HoldKind || next.ResultSubjectRevision != change.RebindFromSubject) {
+		return nil
+	}
 	if next.HoldKind != change.HoldKind {
 		next.HoldKind, next.HeldAt, next.EscalatedAt = change.HoldKind, &now, nil
 	}
@@ -650,85 +707,12 @@ func applyHoldControl(next *models.TaskCompletionCriterion, change models.TaskCo
 	return nil
 }
 
-// applyPersonControl applies a person's Allow, Send back or Accept.
-func applyPersonControl(next *models.TaskCompletionCriterion, criterion models.TaskCompletionCriterion, change models.TaskCompletionControlChange, now time.Time) error {
-	switch change.Action {
-	case models.TaskCompletionControlAllowProtected:
-		if err := requireProtectedHold(criterion, change); err != nil {
-			return err
-		}
-		next.ProtectedAllowedRevision, next.ProtectedAllowedBy = change.SubjectRevision, change.ActorID
-		next.HoldKind, next.HeldAt, next.EscalatedAt = "", nil, nil
-	case models.TaskCompletionControlSendBack:
-		if err := requireSendBack(criterion, change); err != nil {
-			return err
-		}
-		applyPersonResult(next, change, models.TaskCompletionResultFail, models.TaskCompletionReasonSentBack, now)
-	default:
-		if err := requireAccept(criterion, change); err != nil {
-			return err
-		}
-		applyPersonResult(next, change, models.TaskCompletionResultPass, models.TaskCompletionReasonAccepted, now)
-	}
-	return nil
-}
-
 func knownHoldKind(kind string) bool {
 	switch kind {
 	case holdProtectedFilesChanged, holdVerificationLimitReached, holdReworkLimitReached, holdNoReviewerAvailable, holdReviewWaitLimitReached:
 		return true
 	}
 	return false
-}
-
-// applyPersonResult records a person's result at the observed heads and
-// releases any hold. Only a pass keeps verification, attributed to the person.
-func applyPersonResult(next *models.TaskCompletionCriterion, change models.TaskCompletionControlChange, result, reason string, now time.Time) {
-	if next.ResultSubjectRevision != change.SubjectRevision || next.ResultFirstSeenAt == nil {
-		next.ResultFirstSeenAt = &now
-	}
-	next.Result, next.ResultReason, next.ResultSubjectRevision, next.ResultAt = result, reason, change.SubjectRevision, &now
-	next.ResultDetail = boundedCompletionDetail([]string{strings.TrimSpace(change.Reason)})
-	next.HoldKind, next.HeldAt, next.EscalatedAt = "", nil, nil
-	applyEvaluationVerification(next, models.TaskCompletionEvaluationChange{
-		Result: result, SubjectRevision: change.SubjectRevision,
-		VerifierKind: models.TaskCompletionVerifierHuman, VerifierID: change.ActorID,
-	}, now)
-}
-
-// requireProtectedHold accepts Allow only for a protected-path hold
-// evaluated at the heads the person saw.
-func requireProtectedHold(criterion models.TaskCompletionCriterion, change models.TaskCompletionControlChange) error {
-	if criterion.Kind != models.TaskCompletionCriterionCheck || criterion.HoldKind != holdProtectedFilesChanged ||
-		criterion.ResultSubjectRevision != change.SubjectRevision {
-		return repoerrors.ErrTaskCompletionEvidenceChanged
-	}
-	return nil
-}
-
-// requireSendBack accepts a send back of a check only from a protected-path
-// hold, and of a review at any time. Both need a reason.
-func requireSendBack(criterion models.TaskCompletionCriterion, change models.TaskCompletionControlChange) error {
-	if criterion.Kind == models.TaskCompletionCriterionCheck {
-		if err := requireProtectedHold(criterion, change); err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(change.Reason) == "" {
-		return fmt.Errorf("a reason is required to send the task back")
-	}
-	return nil
-}
-
-// requireAccept accepts only a held review, with a reason.
-func requireAccept(criterion models.TaskCompletionCriterion, change models.TaskCompletionControlChange) error {
-	if criterion.Kind != models.TaskCompletionCriterionReview || criterion.HoldKind == "" {
-		return fmt.Errorf("only a held review can be accepted")
-	}
-	if strings.TrimSpace(change.Reason) == "" {
-		return fmt.Errorf("a reason is required to accept a review")
-	}
-	return nil
 }
 
 // ListTaskIDsWithUnmetCompletionCriteria returns open, unarchived tasks that
@@ -743,7 +727,8 @@ func (r *Repository) ListTaskIDsWithUnmetCompletionCriteria(ctx context.Context,
 	if query.Kind != "" {
 		where, args = append(where, "c.kind = ?"), append(args, query.Kind)
 	} else {
-		where, args = append(where, "c.kind IN (?, ?)"), append(args, models.TaskCompletionCriterionCheck, models.TaskCompletionCriterionReview)
+		where = append(where, "c.kind IN (?, ?, ?)")
+		args = append(args, models.TaskCompletionCriterionCheck, models.TaskCompletionCriterionReview, models.TaskCompletionCriterionApproval)
 	}
 	switch {
 	case query.HoldKind != "":
@@ -804,7 +789,10 @@ func applyReworkCount(next *models.TaskCompletionCriterion, change models.TaskCo
 	}
 }
 
-func applyCapExtension(next *models.TaskCompletionCriterion, change models.TaskCompletionControlChange) error {
+func applyLimitExtension(next *models.TaskCompletionCriterion, change models.TaskCompletionControlChange) error {
+	if next.Kind == models.TaskCompletionCriterionApproval && change.VerificationLimit > 0 {
+		return fmt.Errorf("%w: an approval criterion has no verification limit", repoerrors.ErrTaskCompletionCriteriaInvalid)
+	}
 	if err := validateCompletionLimits(models.TaskCompletionCriterionConfig{
 		VerificationLimit: change.VerificationLimit, ReworkLimit: change.ReworkLimit,
 	}); err != nil {
@@ -828,8 +816,9 @@ func applyCapExtension(next *models.TaskCompletionCriterion, change models.TaskC
 	return nil
 }
 
-// ListHeldCompletionCriteria returns held criteria of open, unarchived tasks in
-// a workspace, oldest hold first.
+// ListHeldCompletionCriteria returns the criteria of open, unarchived tasks in
+// a workspace that wait for a person: held criteria and approvals that ask a
+// person, oldest first.
 func (r *Repository) ListHeldCompletionCriteria(ctx context.Context, workspaceID string) ([]models.HeldTaskCompletionCriterion, error) {
 	columns := strings.Split(completionCriterionColumns, ",")
 	for index, column := range columns {
@@ -839,11 +828,12 @@ func (r *Repository) ListHeldCompletionCriteria(ctx context.Context, workspaceID
 		SELECT t.id, t.title, `+strings.Join(columns, ", ")+`
 		FROM task_completion_criteria c
 		JOIN tasks t ON t.id = c.task_id
-		WHERE t.workspace_id = ? AND c.hold_kind <> '' AND t.archived_at IS NULL
-		  AND t.state NOT IN (?, ?, ?)
-		ORDER BY c.held_at, t.id, c.criterion_id
+		WHERE t.workspace_id = ? AND t.archived_at IS NULL AND t.state NOT IN (?, ?, ?)
+		  AND (c.hold_kind <> '' OR (c.kind = ? AND c.result_reason = ?))
+		ORDER BY COALESCE(c.held_at, c.result_at), t.id, c.criterion_id
 		LIMIT 200
-	`), workspaceID, v1.TaskStateCompleted, v1.TaskStateCancelled, v1.TaskStateFailed)
+	`), workspaceID, v1.TaskStateCompleted, v1.TaskStateCancelled, v1.TaskStateFailed,
+		models.TaskCompletionCriterionApproval, models.TaskCompletionReasonAwaitingPerson)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: current
 system: office
 requirements:
   - REQ-OFFICE-COMPLETION-GATES-001
@@ -220,9 +220,11 @@ next update re-evaluates.
 
 Aggregation across PRs, first match wins:
 
-1. Any PR `failure` → `fail` / `checks_failed`.
-2. Protected-path match not allowed for these heads → hold
-   `protected_files_changed` (see below).
+1. Protected-path match not allowed for these heads → hold
+   `protected_files_changed` (see below). It comes first so a failing check
+   never sends a protected change back to the worker before a person sees it
+   (AC-OFFICE-COMPLETION-GATES-003.1).
+2. Any PR `failure` → `fail` / `checks_failed`.
 3. Any PR `pending` → `pending` (running checks decide nothing yet, so an
    incomplete file list waits instead of spending an attempt).
 4. Changed-file list incomplete → `cannot_evaluate` /
@@ -277,7 +279,10 @@ records `result=fail`, `result_reason=sent_back` and the reason as the result
 detail at the seen heads, and runs the rework path of
 [Result routing](#result-routing). The CI verifier skips a criterion whose
 `sent_back` result is pinned to the live heads, so the person's decision
-stands until a new head arrives.
+stands until a new head arrives. The repository enforces the same rule inside
+the evaluation transaction: a verifier result at the heads of a person's
+`sent_back` or `accepted` result changes nothing, even when the verifier read
+its inputs before the person acted.
 
 Human routes: see [Person actions](#person-actions).
 
@@ -362,7 +367,12 @@ not keep the key, so the same return counts once the limit is raised.
   task with a review criterion counts a rework round only when the newest
   decision at the review step is a rejection, keyed by that decision
   (`rejection:<decision id>`); the workflow already made the move. A manual
-  move after an approval counts nothing.
+  move after an approval counts nothing. The work stage's `auto_start_agent`
+  asks `Service.AssigneeStartHeld` before it launches the assignee, which
+  counts the same keyed rejection first (`Router.SettleWorkEntry`), so a
+  rejection at the rework limit holds the review before the worker starts.
+  Whichever of the start check and the move event applies the hold escalates
+  it: `count_rework` reports `claimed` for the call that applied the hold.
 - **Task leaves the review stage forward with the review criterion unmet:**
   the router first evaluates that step's decisions (the quorum transition
   commits before the decision hook records `pass`), then returns the task to
@@ -374,6 +384,19 @@ not keep the key, so the same return counts once the limit is raised.
   the review or work stage stays; approvals recorded against the old heads no
   longer count, and the forward-move rule above catches it when it leaves the
   review stage.
+- **Heads move while the review is held:** the router keeps the hold, its
+  kind and its cause, and moves the hold to the new heads (`hold` control with
+  the new `SubjectRevision`, no new escalation), so **Accept** and **Send back**
+  act on the commit the person is shown. The move carries `RebindFromSubject`:
+  it applies only while the same hold still sits at the heads the router read,
+  and only to the live heads, so a hold cleared meanwhile is not restored and
+  overlapping pushes cannot bind it to older heads. A confirmation opened for the earlier
+  heads is refused with `task_completion_evidence_changed`. A hold recorded
+  before any PR was linked gets its heads the same way. A person's verdict
+  (`sent_back`, `accepted`) belongs to the commit it was given at, so under a
+  hold it caused (a send back at the rework limit) the router instead records
+  `pending` / `head_moved` at the new heads and keeps the hold; raising the
+  limit then routes the review normally and never replays the old send back.
 - **All criteria pass:** the router calls the engine's new
   `ReevaluateGuardedTransitions` (through
   `engine_dispatcher.Dispatcher.RetryGuardedTransitions`) for the current step
@@ -422,7 +445,9 @@ values. Only the task's completing step's value is read.
 
 While a criterion is held, `SchedulerService.ProcessRunGuard` skips runs
 whose agent is the task's assignee and whose task is that task, with skip
-reason `completion_gate_held`. Escalation runs are not affected.
+reason `completion_gate_held`, and the orchestrator's `auto_start_agent`
+callback skips a launch whose session belongs to the assignee
+(`Service.SetAssigneeStartHold`). Escalation runs are not affected.
 
 Escalation follows the blocker-failure pattern
 (`office/service/blocker_failure_wakeup.go`):
@@ -454,6 +479,11 @@ human route `POST
 /api/v1/office/tasks/:id/completion-gate/criteria/:criterionId/extend`, above
 the ceiling allowed. Both apply the `extend_limits` control, which releases a
 limit hold only when the limit that caused it rises above its used count.
+When the released criterion holds a person's `sent_back` result, the service
+resumes that send back: it counts the round under the original
+`send-back:<heads>` key, returns the task to work, and wakes the worker with
+the person's reason when the task is already there. Other released failures
+route through `Router.RouteCriterion`.
 `GET /api/v1/office/tasks/:id/completion-gate/limits` returns each host
 criterion's effective limits and counts for the task page.
 

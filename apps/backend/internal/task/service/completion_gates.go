@@ -172,8 +172,9 @@ func (s *Service) SetTaskCompletionCriteriaExact(ctx context.Context, taskID str
 // Default descriptions for host-verified criteria stored when the caller
 // supplies none. They are task data, not UI copy.
 var hostCriterionDescriptions = map[string]string{
-	models.TaskCompletionCriterionCheck:  "CI passes at the PR head commit",       // i18n-exempt: stored task data
-	models.TaskCompletionCriterionReview: "Review approved at the PR head commit", // i18n-exempt: stored task data
+	models.TaskCompletionCriterionCheck:    "CI passes at the PR head commit",       // i18n-exempt: stored task data
+	models.TaskCompletionCriterionReview:   "Review approved at the PR head commit", // i18n-exempt: stored task data
+	models.TaskCompletionCriterionApproval: "A person approves the PR head commit",  // i18n-exempt: stored task data
 }
 
 func sanitizeCompletionCriteria(criteria []models.TaskCompletionCriterion) []models.TaskCompletionCriterion {

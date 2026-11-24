@@ -30,6 +30,9 @@ var ErrTaskCompletionEvidenceChanged = repoerrors.ErrTaskCompletionEvidenceChang
 var ErrTaskCompletionHumanConfirmationRequired = repoerrors.ErrTaskCompletionHumanConfirmationRequired
 var ErrTaskCompletionVerifierReserved = repoerrors.ErrTaskCompletionVerifierReserved
 var ErrTaskCompletionSelfVerification = repoerrors.ErrTaskCompletionSelfVerification
+
+// ErrTaskCompletionCriteriaInvalid reports a criteria set that breaks a rule.
+var ErrTaskCompletionCriteriaInvalid = repoerrors.ErrTaskCompletionCriteriaInvalid
 var ErrNoPrimarySession = repoerrors.ErrNoPrimarySession
 var ErrTaskHierarchyConflict = repoerrors.ErrTaskHierarchyConflict
 var ErrTaskParentMismatch = repoerrors.ErrTaskParentMismatch

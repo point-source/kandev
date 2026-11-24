@@ -1,6 +1,6 @@
 # ADR-2026-11-21-completion-gates-people-act-on-exceptions: People act on completion gates only as exceptions
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-11-21
 **Area:** backend
 
@@ -25,10 +25,13 @@ around two rules.
 
 ## Decision
 
-1. **People handle exceptions, not routine verification.** Programs and agent
-   reviewers decide. A person acts only when they cannot, from the Inbox or the
-   task page, never as a reviewer seat or a workflow stage. The review
-   criterion counts only decisions from required reviewer seats.
+1. **People handle exceptions, not routine verification, unless a task asks
+   for a person.** Programs and agent reviewers decide checks and reviews. A
+   person acts on those only when they cannot, from the Inbox or the task
+   page, never as a reviewer seat or a workflow stage. The review criterion
+   counts only decisions from required reviewer seats. A task that needs a
+   person's judgement carries a human approval criterion (see the amendment
+   below).
 2. **Every person's decision is recorded as what it was.** A person's
    acceptance of one held review (**Accept at this commit**) and a person's
    send back of one criterion (**Send back at this commit**) are heads-bound
@@ -65,6 +68,22 @@ Supporting choices:
   the Inbox.
 - **Store a confidence level per criterion.** Rejected: the source follows
   from who verified it, so deriving it cannot drift.
+
+## Amendment (2026-11-22): human approval criterion
+
+Human review is a completion criterion in its own right, usable alone, with
+the CI check and the agent review, or not at all; it is not a substitute for
+either. A third host-verified kind, `approval`, passes only when a person
+approves the current heads. A person is asked once the task has left the work
+stage and every other criterion passes, so nobody reviews work that fails CI
+or is still with agent reviewers. Asking is routine, not a hold: it does not
+move the task, hold the assignee, escalate or time out. Send back routes like
+a review send back. Any person who can change the task can approve. Because
+Office offers people no seat decision, the human approval item replaces the
+person's "review requested" Inbox items.
+
+This keeps the rejected alternatives rejected: a person's approval still does
+not count toward the agent review, and there is still no human seat or stage.
 
 ## Consequences
 

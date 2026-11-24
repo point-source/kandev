@@ -295,7 +295,8 @@ export type InboxItemType =
   | "task_review"
   | "task_review_request"
   | "provider_degraded"
-  | "completion_gate_hold";
+  | "completion_gate_hold"
+  | "completion_gate_approval";
 
 export type InboxItem = {
   id: string;

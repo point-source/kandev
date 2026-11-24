@@ -29,6 +29,7 @@ export function NewTaskCompletionCriteria({ workspaceId, draft, onUpdate }: Prop
   const summary = [
     selection.ci ? t("office:completionGatesKindCheckGithub") : null,
     selection.review ? t("office:completionGatesKindReview") : null,
+    selection.approval ? t("office:completionGatesKindApproval") : null,
   ].filter(Boolean);
   return (
     <Collapsible

@@ -761,6 +761,7 @@ type passthroughDispatchToken struct {
 // Service is the main orchestrator service
 type Service struct {
 	autonomousExecutorContext func(context.Context, string, string) (context.Context, error)
+	assigneeStartHeld         func(context.Context, string, string) bool
 	config                    ServiceConfig
 	logger                    *logger.Logger
 	eventBus                  bus.EventBus

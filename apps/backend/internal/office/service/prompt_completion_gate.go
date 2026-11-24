@@ -53,9 +53,15 @@ func appendCompletionGateSection(prompt string, snapshot *models.TaskCompletionG
 		if len(criterion.ResultDetail) > 0 {
 			fmt.Fprintf(&b, "\n  - %s", sanitizePromptField(strings.Join(criterion.ResultDetail, ", ")))
 		}
+		if criterion.Kind == models.TaskCompletionCriterionApproval {
+			b.WriteString("\n  - " + approvalPromptNote)
+		}
 	}
 	return prompt + b.String()
 }
+
+// approvalPromptNote tells a worker who decides an approval criterion.
+const approvalPromptNote = "A person approves the PR head commit once the task has left the work stage and every other criterion passes. No agent can approve it; a push asks the person again."
 
 func completionStatusLine(criterion models.TaskCompletionCriterion, blocker string) string {
 	parts := []string{blocker}

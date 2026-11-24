@@ -709,8 +709,16 @@ func validRequiredEvidenceSubject(subject models.TaskCompletionEvidenceSubject) 
 	return validEvidenceSubject(models.TaskCompletionEvidenceSubject{Kind: subject.Kind, ID: subject.ID, Revision: "immutable"})
 }
 
+// maxPRHeadsRevision bounds a PR heads revision, which joins one
+// "<link id>@<sha>" entry per linked PR and so outgrows a scalar revision.
+const maxPRHeadsRevision = 8192
+
 func validEvidenceSubject(subject models.TaskCompletionEvidenceSubject) bool {
-	if strings.TrimSpace(subject.ID) == "" || len(subject.ID) > 256 || len(subject.Revision) > 256 {
+	maxRevision := 256
+	if subject.Kind == models.TaskCompletionEvidenceGitHubPRHeads {
+		maxRevision = maxPRHeadsRevision
+	}
+	if strings.TrimSpace(subject.ID) == "" || len(subject.ID) > 256 || len(subject.Revision) > maxRevision {
 		return false
 	}
 	switch subject.Kind {

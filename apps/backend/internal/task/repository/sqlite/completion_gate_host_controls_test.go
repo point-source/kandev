@@ -117,7 +117,7 @@ func TestReworkCountReportsTheClaimAndRemembersRecentKeys(t *testing.T) {
 	}
 }
 
-func TestCapExtensionReleasesOnlyTheCausingCapAboveUse(t *testing.T) {
+func TestLimitExtensionReleasesOnlyTheCausingLimitAboveUse(t *testing.T) {
 	repo, writer := newHostGateRepo(t)
 	createHostGateTask(t, repo, ciCriterion())
 	linkPR(t, writer, "pr-1", "head-1")
@@ -129,8 +129,12 @@ func TestCapExtensionReleasesOnlyTheCausingCapAboveUse(t *testing.T) {
 		}
 	}
 	held, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) { c.Key, c.CountReworkLimit = "c", 2 })
-	if err != nil || held.Snapshot.Criteria[0].HoldKind != "rework_limit_reached" {
+	if err != nil || held.Snapshot.Criteria[0].HoldKind != "rework_limit_reached" || !held.Claimed {
 		t.Fatalf("hold = %+v, %v", held, err)
+	}
+	again, err := control(repo, models.TaskCompletionControlCountRework, func(c *models.TaskCompletionControlChange) { c.Key, c.CountReworkLimit = "c", 2 })
+	if err != nil || again.Claimed {
+		t.Fatalf("a repeated count claimed the existing hold: %+v, %v", again, err)
 	}
 	extend := func(attempts, rework int) models.TaskCompletionCriterion {
 		t.Helper()

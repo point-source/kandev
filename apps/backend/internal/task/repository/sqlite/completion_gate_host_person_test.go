@@ -69,8 +69,8 @@ func TestAcceptVerifiesAHeldReviewAtTheHeadsShown(t *testing.T) {
 		})
 		return err
 	}
-	if err := accept("pr-1@head-1", "looked at it"); err == nil {
-		t.Fatal("accepted a review that is not held")
+	if err := accept("pr-1@head-1", "looked at it"); !errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged) {
+		t.Fatalf("accept of a review that is not held err = %v", err)
 	}
 	holdReview(t, repo, "rework_limit_reached")
 	if err := accept("pr-1@head-1", " "); err == nil {
@@ -96,8 +96,8 @@ func TestAcceptVerifiesAHeldReviewAtTheHeadsShown(t *testing.T) {
 	}
 	if _, err := control(repo, models.TaskCompletionControlAccept, func(c *models.TaskCompletionControlChange) {
 		c.SubjectRevision, c.Reason = "pr-1@head-1", "not a review"
-	}); err == nil {
-		t.Fatal("accepted a check criterion")
+	}); !errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged) {
+		t.Fatalf("accept of a check criterion err = %v", err)
 	}
 }
 
@@ -161,5 +161,48 @@ func TestSweepSelectsReviewsHeldWithAHoldKind(t *testing.T) {
 	query.HoldKind = "review_wait_limit_reached"
 	if ids, err := repo.ListTaskIDsWithUnmetCompletionCriteria(context.Background(), query); err != nil || len(ids) != 0 {
 		t.Fatalf("other hold kind ids = %v, %v", ids, err)
+	}
+}
+
+func rebindReview(repo *Repository, from, to string) error {
+	_, err := control(repo, models.TaskCompletionControlHold, onReview, func(c *models.TaskCompletionControlChange) {
+		c.HoldKind, c.Detail, c.ActorKind, c.ActorID = "no_reviewer_available", []string{"assignee_only"}, "system", "completion_gates"
+		c.SubjectRevision, c.RebindFromSubject = to, from
+	})
+	return err
+}
+
+// @covers AC-OFFICE-COMPLETION-GATES-007.7
+func TestHoldRebindAppliesOnlyToTheSameHoldAtTheLiveHeads(t *testing.T) {
+	repo, writer := newHostGateRepo(t)
+	createHostGateTask(t, repo, reviewHostCriterion())
+	linkPR(t, writer, "pr-1", "head-1")
+	holdReview(t, repo, "no_reviewer_available", "assignee_only")
+	linkPR(t, writer, "pr-1", "head-2")
+	if err := rebindReview(repo, "pr-1@head-1", "pr-1@head-1"); !errors.Is(err, repoerrors.ErrTaskCompletionEvidenceChanged) {
+		t.Fatalf("rebind to earlier heads err = %v", err)
+	}
+	if err := rebindReview(repo, "pr-1@head-0", "pr-1@head-2"); err != nil {
+		t.Fatal(err)
+	}
+	if review := gate(t, repo).Criteria[0]; review.ResultSubjectRevision != "pr-1@head-1" {
+		t.Fatalf("rebind from another subject moved the hold: %+v", review)
+	}
+	if err := rebindReview(repo, "pr-1@head-1", "pr-1@head-2"); err != nil {
+		t.Fatal(err)
+	}
+	if review := gate(t, repo).Criteria[0]; review.ResultSubjectRevision != "pr-1@head-2" || review.HoldKind != "no_reviewer_available" {
+		t.Fatalf("rebound hold = %+v", review)
+	}
+	if _, err := control(repo, models.TaskCompletionControlReleaseHold, onReview, func(c *models.TaskCompletionControlChange) {
+		c.ActorKind, c.ActorID = "system", "completion_gates"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rebindReview(repo, "pr-1@head-2", "pr-1@head-2"); err != nil {
+		t.Fatal(err)
+	}
+	if review := gate(t, repo).Criteria[0]; review.HoldKind != "" {
+		t.Fatalf("rebind restored a released hold: %+v", review)
 	}
 }

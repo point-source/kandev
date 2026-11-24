@@ -6,11 +6,12 @@ export const GATE_PR = 4242;
 
 type Seed = { workspaceId: string; workflowId: string };
 
-type GateKind = "check" | "review";
+type GateKind = "check" | "review" | "approval";
 
 /**
  * Creates an Office task in the work step carrying the given criteria: a
- * GitHub check (with optional protected paths) and/or a review.
+ * GitHub check (with optional protected paths), a review and/or a human
+ * approval.
  */
 export async function seedGatedTask(
   apiClient: ApiClient,
@@ -26,7 +27,7 @@ export async function seedGatedTask(
     workflow_step_id: work.id,
   });
   const criteria = kinds.map((kind) => ({
-    id: kind === "check" ? "github_check" : "review",
+    id: kind === "check" ? "github_check" : kind,
     description: "",
     kind,
     config:
@@ -127,6 +128,20 @@ export async function criterionState(
   };
   const criterion = gate.criteria.find((item) => item.id === criterionId);
   return criterion?.hold_kind ? `held:${criterion.hold_kind}` : (criterion?.result ?? "missing");
+}
+
+/** A stored criterion's result reason, read from the backend. */
+export async function criterionReason(
+  apiClient: ApiClient,
+  taskId: string,
+  criterionId: string,
+): Promise<string> {
+  const response = await apiClient.rawRequest("GET", `/api/v1/tasks/${taskId}/completion-gate`);
+  if (!response.ok) return `http ${response.status}`;
+  const gate = (await response.json()) as {
+    criteria: Array<{ id: string; result_reason?: string }>;
+  };
+  return gate.criteria.find((item) => item.id === criterionId)?.result_reason ?? "missing";
 }
 
 /** The stored check criterion's result or hold kind. */

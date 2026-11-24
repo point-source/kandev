@@ -280,3 +280,32 @@ func (a completionGateStepLimits) HasReviewStage(ctx context.Context, workflowID
 	}
 	return false, nil
 }
+
+// HasStepAfterWork reports a workflow without a work stage, or one with a step
+// after its first work stage that does not complete the task on entry.
+func (a completionGateStepLimits) HasStepAfterWork(ctx context.Context, workflowID string) (bool, error) {
+	if workflowID == "" {
+		return false, nil
+	}
+	steps, err := a.steps.ListStepsByWorkflow(ctx, workflowID)
+	if err != nil {
+		return false, err
+	}
+	sort.SliceStable(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
+	work := -1
+	for index, step := range steps {
+		if step.StageType == workflowmodels.StageTypeWork {
+			work = index
+			break
+		}
+	}
+	if work < 0 {
+		return true, nil
+	}
+	for _, step := range steps[work+1:] {
+		if !step.CompleteTaskOnEnter {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -49,12 +49,6 @@ func (s *DashboardService) GetInboxItems(ctx context.Context, wsID string) ([]*m
 	}
 	items = append(items, pausedItems...)
 
-	reviewItems, err := s.inboxTaskReviewRequests(ctx, wsID, "")
-	if err != nil {
-		return nil, fmt.Errorf("review request items: %w", err)
-	}
-	items = append(items, reviewItems...)
-
 	providerItems, err := s.inboxProviderDegradedItems(ctx, wsID)
 	if err != nil {
 		return nil, fmt.Errorf("provider degraded items: %w", err)
@@ -116,15 +110,11 @@ func (s *DashboardService) GetInboxCount(ctx context.Context, wsID string) (int,
 	if s.permissions != nil {
 		permCount = len(s.permissions.ListPendingPermissions())
 	}
-	reviewCount := 0
-	if items, rerr := s.inboxTaskReviewRequests(ctx, wsID, ""); rerr == nil {
-		reviewCount = len(items)
-	}
 	gateCount := 0
 	if items, gerr := s.inboxCompletionGateItems(ctx, wsID); gerr == nil {
 		gateCount = len(items)
 	}
-	return pending + len(alerts) + len(errors) + permCount + reviewCount + gateCount, nil
+	return pending + len(alerts) + len(errors) + permCount + gateCount, nil
 }
 
 func (s *DashboardService) inboxApprovalItems(ctx context.Context, wsID string) ([]*models.InboxItem, error) {
@@ -311,12 +301,10 @@ func truncateInboxDescription(s string) string {
 // reviewer/approver decision request. Mirrored on the frontend.
 const reviewRequestInboxType = "task_review_request"
 
-// inboxTaskReviewRequests returns one InboxItem per task awaiting the
-// viewer's review/approval decision. When viewerAgentID is empty the
-// viewer is treated as the singleton human user and every active
-// task with at least one participant lacking a current decision is
-// returned. When viewerAgentID is set, only tasks where that specific
-// agent is a participant without a current decision are returned.
+// inboxTaskReviewRequests returns one InboxItem per task where the viewer
+// agent is a reviewer or approver participant without a current decision.
+// People get no review requests: a person approves through an approval
+// completion criterion, whose Inbox item comes from the completion gates.
 func (s *DashboardService) inboxTaskReviewRequests(
 	ctx context.Context, wsID, viewerAgentID string,
 ) ([]*models.InboxItem, error) {

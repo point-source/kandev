@@ -1965,6 +1965,9 @@ func wireOfficeSvcsDependencies(
 		services.OfficeSvcs.Dashboard.SetReviewHeadsHook(gates.Review)
 		services.OfficeSvcs.Dashboard.SetCompletionGateInbox(gates)
 		services.OfficeSvcs.Scheduler.SetCompletionHoldChecker(gates)
+		if orchestratorSvc != nil {
+			orchestratorSvc.SetAssigneeStartHold(gates.AssigneeStartHeld)
+		}
 		services.OfficeSvcs.Scheduler.SetReviewSeatObserver(gates)
 		gates.SetReviewerSeater(completionGateReviewerSeater{
 			tasks: services.Task, steps: repos.Workflow,

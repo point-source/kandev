@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 system: tasks
 created: 2026-11-20
 owners:
@@ -28,14 +28,15 @@ caller vouch for it. Office completion gates
 
 - **Criterion kind:** `attested` (every criterion that exists before this
   amendment, verified by any authorized caller), `check` (a program decides by
-  exit status; it names a runner, `github` in phase 1) or `review` (judgement
-  decides). The last two are **host-verified kinds**.
+  exit status; it names a runner, `github` in phase 1), `review` (judgement
+  decides) or `approval` (a person decides). The last three are
+  **host-verified kinds**.
 - **PR heads subject:** the set of head commits of every pull request linked
   to the task and not detached, as one revision.
 - **Verdict source:** what produced a verified criterion's verdict, derived
   and never stored: `person` when a person verified it (verifier kind
-  `human`), otherwise `program` for a `check` and `agent` for `review` and
-  `attested`. Order from strongest: `program`, `person`, `agent`. An
+  `human`, always for `approval`), otherwise `program` for a `check` and
+  `agent` for `review` and `attested`. Order from strongest: `program`, `person`, `agent`. An
   unverified criterion has no verdict source. Separation from the worker is a
   rule on every source (`AC-TASKS-COMPLETION-006.8`), not a source.
 
@@ -71,8 +72,9 @@ caller vouch for it. Office completion gates
   task-level aggregate such as a weakest source.
 - **AC-TASKS-COMPLETION-006.10:** The owning system can record a person's
   result for a host-verified criterion through a task control bound to the
-  heads the person saw: an acceptance (`pass`, verifier kind `human`) or a
-  send back (`fail` with the person's reason). A control applied after the
+  heads the person saw: an acceptance of a held criterion or an approval of
+  an `approval` criterion (`pass`, verifier kind `human`), or a send back
+  (`fail` with the person's reason). A control applied after the
   heads moved shall be refused with `task_completion_evidence_changed`. This is
   a control, not evidence: `AC-TASKS-COMPLETION-006.2` still refuses evidence
   for host-verified kinds.

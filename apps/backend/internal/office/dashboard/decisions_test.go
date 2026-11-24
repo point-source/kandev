@@ -512,25 +512,23 @@ func TestUpdateTaskEndpoint_409PendingApproversIncludesNames(t *testing.T) {
 
 // -- Inbox (B6) --
 
-func TestInbox_TaskReviewRequest_ForUser(t *testing.T) {
+// @covers AC-OFFICE-COMPLETION-GATES-010.7
+func TestInbox_TaskReviewRequest_NotForPeople(t *testing.T) {
 	deps := newTestDeps(t)
 	insertTestTask(t, deps.db, "ib1", "ws-i", "Title", "in_review", 2)
-	insertTestTask(t, deps.db, "ib2", "ws-i", "Other", "in_review", 2)
 	addApprover(t, deps.router, "ib1", "agent-A")
-	// ib2: no participants → no inbox row
 
 	items, err := deps.svc.GetInboxItems(context.Background(), "ws-i")
 	if err != nil {
 		t.Fatalf("inbox: %v", err)
 	}
-	count := 0
 	for _, it := range items {
-		if it.Type == "task_review_request" && it.EntityID == "ib1" {
-			count++
+		if it.Type == "task_review_request" {
+			t.Fatalf("person inbox has a review request: %#v", it)
 		}
 	}
-	if count != 1 {
-		t.Fatalf("review request items for ib1 = %d, want 1", count)
+	if count, err := deps.svc.GetInboxCount(context.Background(), "ws-i"); err != nil || count != 0 {
+		t.Fatalf("count = %d, %v", count, err)
 	}
 }
 

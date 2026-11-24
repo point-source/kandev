@@ -15,6 +15,7 @@ import (
 	officeagents "github.com/kandev/kandev/internal/office/agents"
 	"github.com/kandev/kandev/internal/office/approvals"
 	"github.com/kandev/kandev/internal/office/channels"
+	"github.com/kandev/kandev/internal/office/completiongates"
 	officeconfig "github.com/kandev/kandev/internal/office/config"
 	"github.com/kandev/kandev/internal/office/configsync"
 	"github.com/kandev/kandev/internal/office/costs"
@@ -227,21 +228,22 @@ func TestOfficeScopeCasesMatchRegisteredRoutes(t *testing.T) {
 // services.
 func officeTestServices() *office.Services {
 	return &office.Services{
-		Agents:       &officeagents.AgentService{},
-		Skills:       &skills.SkillService{},
-		Projects:     &projects.ProjectService{},
-		Costs:        &costs.CostService{},
-		Routines:     &routines.RoutineService{},
-		Approvals:    &approvals.ApprovalService{},
-		Channels:     &channels.ChannelService{},
-		Config:       &officeconfig.ConfigService{},
-		ConfigSync:   &configsync.Service{},
-		Dashboard:    &dashboard.DashboardService{},
-		Labels:       &labels.LabelService{},
-		Onboarding:   &onboarding.OnboardingService{},
-		TreeControls: &officeservice.Service{},
-		Workspaces:   &officeservice.Service{},
-		Documents:    &taskservice.DocumentService{},
+		Agents:          &officeagents.AgentService{},
+		Skills:          &skills.SkillService{},
+		Projects:        &projects.ProjectService{},
+		Costs:           &costs.CostService{},
+		Routines:        &routines.RoutineService{},
+		Approvals:       &approvals.ApprovalService{},
+		Channels:        &channels.ChannelService{},
+		Config:          &officeconfig.ConfigService{},
+		ConfigSync:      &configsync.Service{},
+		Dashboard:       &dashboard.DashboardService{},
+		Labels:          &labels.LabelService{},
+		Onboarding:      &onboarding.OnboardingService{},
+		TreeControls:    &officeservice.Service{},
+		Workspaces:      &officeservice.Service{},
+		Documents:       &taskservice.DocumentService{},
+		CompletionGates: &completiongates.Service{},
 	}
 }
 

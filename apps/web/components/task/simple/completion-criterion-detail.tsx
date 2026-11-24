@@ -8,9 +8,14 @@ import type { CriterionDetail, Reviewer } from "@/lib/completion-gates/criterion
 
 /** The line under a criterion's name: what decided it, then its commits. */
 export function CriterionDetailLine({ detail }: { detail: CriterionDetail }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const commits = detail.commits.join(", ");
-  const described = Boolean(detail.text || detail.reviewers);
+  const waitingFor = detail.waitingFor?.length
+    ? new Intl.ListFormat(i18n.language, { type: "conjunction" }).format(
+        detail.waitingFor.map((key) => t(key)),
+      )
+    : "";
+  const described = Boolean(detail.text || detail.reviewers || waitingFor);
   if (!described && !commits) return null;
   return (
     <p
@@ -18,6 +23,9 @@ export function CriterionDetailLine({ detail }: { detail: CriterionDetail }) {
       data-testid="completion-criterion-detail"
     >
       {detail.text && <span>{t(detail.text.key, detail.text.values)}</span>}
+      {waitingFor && (
+        <span>{t("office:completionGatesDetailApprovalAfter", { criteria: waitingFor })}</span>
+      )}
       {detail.reviewers && (
         <span className="inline-flex flex-wrap items-center gap-x-1">
           <Trans

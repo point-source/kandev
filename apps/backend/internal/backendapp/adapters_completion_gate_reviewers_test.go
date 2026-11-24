@@ -9,9 +9,19 @@ import (
 	workflowmodels "github.com/kandev/kandev/internal/workflow/models"
 )
 
-type seaterTasks struct{ task models.Task }
+// seaterTasks returns the task, placed at each of moves in turn on later reads.
+type seaterTasks struct {
+	task  models.Task
+	moves []string
+}
 
-func (s seaterTasks) GetTask(context.Context, string) (*models.Task, error) { return &s.task, nil }
+func (s *seaterTasks) GetTask(context.Context, string) (*models.Task, error) {
+	task := s.task
+	if len(s.moves) > 0 {
+		s.task.WorkflowStepID, s.moves = s.moves[0], s.moves[1:]
+	}
+	return &task, nil
+}
 
 type seaterSteps struct{}
 
@@ -44,10 +54,10 @@ func (s *seaterRuns) QueueRun(_ context.Context, agentID, _, payload, _ string) 
 	return nil
 }
 
-func newSeater(cast engine.ParticipantSeatCastResult, step string) (completionGateReviewerSeater, *seaterAdds, *seaterRuns) {
+func newSeater(cast engine.ParticipantSeatCastResult, step string, moves ...string) (completionGateReviewerSeater, *seaterAdds, *seaterRuns) {
 	adds, runs := &seaterAdds{}, &seaterRuns{}
 	return completionGateReviewerSeater{
-		tasks: seaterTasks{task: models.Task{ID: "t1", WorkflowID: "wf", WorkflowStepID: step, AssigneeAgentProfileID: "worker"}},
+		tasks: &seaterTasks{task: models.Task{ID: "t1", WorkflowID: "wf", WorkflowStepID: step, AssigneeAgentProfileID: "worker"}, moves: moves},
 		steps: seaterSteps{}, caster: seaterCaster{cast: cast}, reviewers: adds, runs: runs,
 	}, adds, runs
 }
@@ -79,5 +89,13 @@ func TestReviewerSeaterLeavesTheHoldWithoutANewReviewer(t *testing.T) {
 		if seated, err := seater.SeatReviewer(context.Background(), "t1"); err != nil || seated || len(adds.added) != 0 || len(runs.agents) != 0 {
 			t.Errorf("%s: seated=%v err=%v adds=%v runs=%v", name, seated, err, adds.added, runs.agents)
 		}
+	}
+}
+
+// @covers AC-OFFICE-COMPLETION-GATES-009.4
+func TestReviewerSeaterKeepsTheHoldWhenTheTaskLeftReviewWhileSeating(t *testing.T) {
+	seater, _, runs := newSeater(engine.ParticipantSeatCastResult{AgentProfileID: "qa"}, "review", "work")
+	if seated, err := seater.SeatReviewer(context.Background(), "t1"); err != nil || seated || len(runs.agents) != 0 {
+		t.Fatalf("seated=%v err=%v runs=%v", seated, err, runs.agents)
 	}
 }

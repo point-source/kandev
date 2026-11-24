@@ -67,6 +67,10 @@ func TestAggregateCIProtectedPaths(t *testing.T) {
 	if got := aggregateCI(ciInput{criterion: ciCriterion(".github/**"), checks: []CheckObservation{success()}, files: renamed}); got.hold != HoldProtectedFilesChanged {
 		t.Fatalf("rename source not matched: %+v", got)
 	}
+	failing := []CheckObservation{{State: checkStateFailure, FailingNames: []string{"lint"}}}
+	if got := aggregateCI(ciInput{criterion: ciCriterion("tests/**"), checks: failing, files: files}); got.hold != HoldProtectedFilesChanged {
+		t.Fatalf("failing checks sent back a protected change without a person: %+v", got)
+	}
 	partial := []FilesObservation{{Paths: []string{"src/a.go"}, Complete: false}}
 	if got := aggregateCI(ciInput{criterion: ciCriterion("tests/**"), checks: []CheckObservation{success()}, files: partial}); got.result != models.TaskCompletionResultCannotEvaluate || got.reason != ReasonChangedFilesIncomplete {
 		t.Fatalf("incomplete list = %+v", got)

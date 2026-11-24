@@ -55,6 +55,11 @@ func (a completionGateReviewerSeater) SeatReviewer(ctx context.Context, taskID s
 	if err := a.reviewers.AddTaskReviewer(ctx, "", taskID, cast.AgentProfileID); err != nil {
 		return false, err
 	}
+	// The seat lands at the task's current step; a task that left Review in
+	// the meantime keeps its hold and gets a new cast when it returns.
+	if after, err := a.tasks.GetTask(ctx, taskID); err != nil || after.WorkflowStepID != step.ID {
+		return false, err
+	}
 	payload, _ := json.Marshal(map[string]string{"task_id": taskID, "workflow_step_id": step.ID})
 	key := "completion_gate_reseat:" + taskID + ":" + cast.AgentProfileID
 	if err := a.runs.QueueRun(ctx, cast.AgentProfileID, reseatRunReason, string(payload), key); err != nil {

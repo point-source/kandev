@@ -37,7 +37,7 @@ type Service struct {
 	limits   *LimitsPolicy
 	agents   AgentDirectory
 	held     HeldLister
-	stages   ReviewStageReader
+	stages   WorkflowStageReader
 	seater   ReviewerSeater
 	bus      bus.EventBus
 	CI       *CIVerifier
@@ -67,8 +67,7 @@ type Dependencies struct {
 	Runs     RunQueue
 	History  HistoryReader
 	Held     HeldLister
-	Stages   ReviewStageReader
-	Seater   ReviewerSeater
+	Stages   WorkflowStageReader
 	Ledger   TransitionReader
 	Bus      bus.EventBus
 	Logger   *logger.Logger
@@ -91,7 +90,7 @@ func NewService(deps Dependencies) *Service {
 	review.SetPolicy(router)
 	return &Service{
 		gates: deps.Gates, prs: deps.PRs, tasks: deps.Tasks, runs: deps.Runs, settings: deps.Settings, limits: limits, agents: deps.Agents,
-		held: deps.Held, stages: deps.Stages, seater: deps.Seater, bus: deps.Bus, CI: ci, Review: review, Router: router,
+		held: deps.Held, stages: deps.Stages, bus: deps.Bus, CI: ci, Review: review, Router: router,
 		escalator: escalator, ledger: deps.Ledger, transitions: newTransitionTracker(), logger: deps.Logger,
 	}
 }
@@ -127,6 +126,7 @@ func (s *Service) Start(parent context.Context) error {
 		events.TaskMoved:           s.async(ctx, s.handleTaskMoved),
 		events.TaskUpdated:         s.async(ctx, s.handleTaskUpdated),
 		events.GitHubTaskPRUpdated: s.async(ctx, s.handleHeadsChanged),
+		events.GitHubTaskPRDeleted: s.async(ctx, s.handleHeadsChanged),
 	} {
 		sub, err := s.bus.Subscribe(subject, handler)
 		if err != nil {
@@ -191,6 +191,7 @@ func (s *Service) async(ctx context.Context, handle func(context.Context, map[st
 func (s *Service) handleHeadsChanged(ctx context.Context, payload map[string]any) {
 	if taskID, _ := payload["task_id"].(string); taskID != "" {
 		s.Router.OnHeadsChanged(ctx, taskID)
+		s.Router.EvaluateApproval(ctx, taskID)
 	}
 }
 
@@ -223,12 +224,19 @@ func (s *Service) SendBack(ctx context.Context, taskID, criterionID string, requ
 		return nil, err
 	}
 	background := context.WithoutCancel(ctx)
-	criterion := findCriterionByID(outcome.Snapshot, criterionID)
-	key := "send-back:" + request.ExpectedSubjectRevision
-	if s.Router.sendBack(background, taskID, criterion, key) {
-		s.wakeAssignee(background, taskID, strings.TrimSpace(request.Reason), key)
-	}
+	s.routeSendBack(background, taskID, findCriterionByID(outcome.Snapshot, criterionID), strings.TrimSpace(request.Reason))
+	s.Router.EvaluateApproval(background, taskID)
 	return s.gates.GetTaskCompletionGate(ctx, taskID)
+}
+
+// routeSendBack counts a person's send back once per heads and returns the
+// task to work, waking the worker when it is already there. A send back held
+// at the rework limit routes the same way once the limit is raised.
+func (s *Service) routeSendBack(ctx context.Context, taskID string, criterion models.TaskCompletionCriterion, reason string) {
+	key := "send-back:" + criterion.ResultSubjectRevision
+	if s.Router.sendBack(ctx, taskID, criterion, key) {
+		s.wakeAssignee(ctx, taskID, reason, key)
+	}
 }
 
 // Accept verifies a held review at the heads shown as the person's verdict.
@@ -239,6 +247,29 @@ func (s *Service) Accept(ctx context.Context, taskID, criterionID string, reques
 		return nil, ErrReasonRequired
 	}
 	outcome, err := s.applyPersonControl(ctx, taskID, criterionID, models.TaskCompletionControlAccept, request)
+	if err != nil {
+		return nil, err
+	}
+	background := context.WithoutCancel(ctx)
+	s.Router.EvaluateApproval(background, taskID)
+	if outcome.Snapshot != nil && !outcome.Snapshot.Blocked {
+		s.Router.retryCompletion(background, taskID, request.ExpectedSubjectRevision)
+	}
+	return s.gates.GetTaskCompletionGate(ctx, taskID)
+}
+
+// Approve passes an approval that asks the person, at the heads shown, as the
+// person's verdict, then completes the task through its normal transition
+// once every criterion passes. The ask is re-evaluated first, so an approval
+// whose other criteria stopped passing is refused as changed.
+func (s *Service) Approve(ctx context.Context, taskID, criterionID string, request PersonAction) (*models.TaskCompletionGateSnapshot, error) {
+	if _, err := s.authorizeHuman(ctx, taskID); err != nil {
+		return nil, err
+	}
+	unlock := s.Router.approvals.lock(taskID)
+	s.Router.evaluateApprovalLocked(ctx, taskID)
+	outcome, err := s.applyPersonControl(ctx, taskID, criterionID, models.TaskCompletionControlApprove, request)
+	unlock()
 	if err != nil {
 		return nil, err
 	}

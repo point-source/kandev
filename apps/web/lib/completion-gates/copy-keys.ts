@@ -1,11 +1,13 @@
 // Translation keys for completion-gate values. Keys, not copy: components
 // resolve them with t() at render.
+import { ApiError } from "@/lib/api/client";
 import type { CriterionAction, CriterionDisplayStatus } from "./criteria-display";
 
 /** Criterion names by kind; a check is named with its runner (github). */
 export const KIND_KEYS: Record<string, string> = {
   check: "office:completionGatesKindCheckGithub",
   review: "office:completionGatesKindReview",
+  approval: "office:completionGatesKindApproval",
   attested: "office:completionGatesKindAttested",
 };
 
@@ -39,6 +41,7 @@ const ACTION_KEYS: Record<CriterionAction, string> = {
   extend_rounds: "office:completionGatesAllowMoreRounds",
   extend_attempts: "office:completionGatesAllowMoreAttempts",
   accept: "office:completionGatesAcceptAtCommit",
+  approve: "office:completionGatesApproveAtCommit",
 };
 
 /** The label of an action on a criterion; a review is sent back at a commit. */
@@ -83,6 +86,11 @@ export const DIALOG_KEYS: Record<
     description: "office:completionGatesAcceptDescription",
     confirm: "office:completionGatesAcceptAtCommit",
   },
+  approve: {
+    title: "office:completionGatesApproveTitle",
+    description: "office:completionGatesApproveDescription",
+    confirm: "office:completionGatesApproveAtCommit",
+  },
 };
 
 /** Actions that record the person's reason as required. */
@@ -91,3 +99,13 @@ export const REASON_REQUIRED_ACTIONS = new Set<CompletionDialogAction>([
   "send_back",
   "accept",
 ]);
+
+const STALE_ACTION_CODE = "task_completion_evidence_changed"; // i18n-exempt: backend error code
+
+/** The message for a person's action the backend refused. */
+export function actionErrorKey(error: unknown): string {
+  const body = error instanceof ApiError ? (error.body as { code?: unknown } | null) : null;
+  return body?.code === STALE_ACTION_CODE
+    ? "office:completionGatesActionStale"
+    : "office:completionGatesActionFailed";
+}

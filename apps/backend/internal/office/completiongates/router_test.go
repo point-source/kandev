@@ -90,7 +90,7 @@ func TestRouterLeavesAWorkingTaskInPlace(t *testing.T) {
 }
 
 // @covers AC-OFFICE-COMPLETION-GATES-007.3
-func TestRouterHoldsAtTheReworkCap(t *testing.T) {
+func TestRouterHoldsAtTheReworkLimit(t *testing.T) {
 	limited := ciCriterion()
 	limited.ReworkCount = DefaultLimit
 	router, gates, navigator, escalator := setupRouter(t, "approval", limited)
@@ -107,7 +107,7 @@ func TestRouterHoldsAtTheReworkCap(t *testing.T) {
 }
 
 // @covers AC-OFFICE-COMPLETION-GATES-006.2, AC-OFFICE-COMPLETION-GATES-007.3
-func TestRouterCountsAttemptsAndHoldsAtTheAttemptCap(t *testing.T) {
+func TestRouterCountsAttemptsAndHoldsAtTheVerificationLimit(t *testing.T) {
 	router, _, _, _ := setupRouter(t, "approval", ciCriterion())
 	change := models.TaskCompletionEvaluationChange{Result: models.TaskCompletionResultCannotEvaluate}
 	router.Prepare(context.Background(), "task-1", ciCriterion(), &change)

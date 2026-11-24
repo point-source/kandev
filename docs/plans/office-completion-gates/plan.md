@@ -1,6 +1,6 @@
 ---
 created: 2026-11-20
-status: in_progress
+status: implemented
 requirements:
   - REQ-TASKS-COMPLETION-006
   - REQ-OFFICE-COMPLETION-GATES-001
@@ -12,6 +12,7 @@ requirements:
   - REQ-OFFICE-COMPLETION-GATES-007
   - REQ-OFFICE-COMPLETION-GATES-008
   - REQ-OFFICE-COMPLETION-GATES-009
+  - REQ-OFFICE-COMPLETION-GATES-010
 system_design:
   - ../../specs/office/system-design/completion-gates.md
   - ../../specs/office/system-design/completion-gates-01.md
@@ -42,6 +43,11 @@ Settled with the user on 2026-11-20:
   (`program`, `person`, `agent`) replace confidence levels; holds carry a
   `hold_kind` and show as **Needs you**; "limit" replaces "cap"; a review no
   agent can approve holds as `no_reviewer_available`.
+- Added on 2026-11-22 (Task 10, ADR amendment): human review is a criterion
+  of its own, kind `approval`, usable alone or with the check and the review.
+  A person is asked only after the task left Work and every other criterion
+  passes; any person who can change the task approves; it lands on this
+  branch, and the person's "review requested" Inbox items give way to it.
 - Assumption: "CI passes" uses PR-status check selection; no required-check
   list.
 
@@ -50,9 +56,10 @@ Order: 01 is the task-owned primitive every other order writes through. 02 and
 both. 05 adds limits, holds and escalation on top of 04. 06 adds the creation
 surfaces and workspace defaults and needs 05's settings table. 07 and 08 are
 the UI. 09 reworks the delivered package to the people-act-on-exceptions model
-and needs all of them.
+and needs all of them. 10 adds the human approval criterion on top of 09.
 
-Waves: 1 = 01; 2 = 02 and 03; 3 = 04; 4 = 05; 5 = 06 and 07; 6 = 08; 7 = 09. Each
+Waves: 1 = 01; 2 = 02 and 03; 3 = 04; 4 = 05; 5 = 06 and 07; 6 = 08; 7 = 09;
+8 = 10. Each
 wave ends with a working product. After wave 2, criteria set through the
 existing HTTP API are verified and enforced. After wave 3 the work routes
 itself; after wave 4 it is bounded. After wave 5 every surface can create
@@ -100,6 +107,7 @@ records why verification is in process and fenced by kind.
 | 06 | `task/handlers`, `office/runtime`, `office/routines`, `mcp`, `backendapp`, `cmd/agentctl` |
 | 07 | `apps/web/components/task/simple`, `apps/web/app/office/inbox`, `apps/web/lib/api` |
 | 08 | `apps/web/app/office/components`, `apps/web/app/office/workspace/settings` |
+| 10 | `task/models`, `task/repository/sqlite`, `office/completiongates`, `office/dashboard`, `mcp`, `cmd/agentctl`, `apps/web/lib/completion-gates`, `apps/web/components/task/simple`, `apps/web/app/office` |
 
 ## ASCII UI preview
 
@@ -225,6 +233,67 @@ is the hold's detail line and the task links to its page.
 Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.10`, `003.2` and `009.2` to
 `.4`.
 
+`UI-08: Human approval row`. Office task page criteria section, a task with a
+check, a review and a human approval. Three states; actions only while asked.
+
+```text
+| CI check (GitHub)      [Passed]  · a1b2c3d                    |
+| Review                 [Pending]                              |
+|   Needs approval · a1b2c3d                                    |
+|   [ Send back at this commit ]                                |
+|---------------------------------------------------------------|
+| Human approval         [Pending]                              |
+|   Asked after CI check and Review pass                        |
+|   Rework rounds 0 of 3                                        |
+|   [ Send back at this commit ]                                |
+
+  ...after CI and Review pass, task past Work:
+
+| Human approval         [Needs you]                            |
+|   Waiting for your approval · a1b2c3d                         |
+|   Rework rounds 0 of 3                                        |
+|   [ Approve at this commit ]  [ Send back ]                   |
+
+  ...after Approve:
+
+| Human approval         [Passed]                               |
+|   Approved by you: Checked the redirect flow · a1b2c3d        |
+```
+
+Alone on a task, the pending line reads "Asked once the task leaves Work".
+
+`UI-09: Approve dialog`. Opens from either action; a bottom sheet on phones.
+
+```text
++------------------------------------------------+
+| Approve at a1b2c3d                             |
+| Note (optional)                                |
+| [                                            ] |
+|                    [ Cancel ]  [ Approve ]     |
++------------------------------------------------+
+```
+
+`UI-10: Inbox approval item`. Office Inbox, shared desktop and phone list.
+The person's "review requested" rows no longer appear.
+
+```text
+Desktop
+| (v) Approval needed · KAN-42 Fix login redirect    2 min ago  |
+|     a1b2c3d     [ Approve at this commit ]  [ Send back ]     |
+
+Phone
++-----------------------------+
+| (v) Approval needed         |
+| KAN-42 Fix login redirect   |
+| a1b2c3d · 2 min ago         |
+| [ Approve at this commit  ] |
+| [ Send back               ] |
++-----------------------------+
+```
+
+`UI-05` and `UI-06` gain a **Human approval** checkbox beside Review; it has
+only the rework limit. Maps to `AC-OFFICE-COMPLETION-GATES-010.1` to `.7`.
+
 ## Tests
 
 | AC | Evidence (work order) |
@@ -238,6 +307,7 @@ Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.10`, `003.2` and `009.2` to
 | GATES-006.* | 04 router tests |
 | GATES-007.* | 05 limits, hold, escalation tests |
 | GATES-008.* | 07 and 08 unit tests and E2E (chromium and mobile-chrome) |
+| GATES-010.* | 10 verifier, control, Inbox and creation tests; approval E2E (chromium and mobile-chrome) |
 
 ## E2E tests
 
@@ -248,6 +318,9 @@ Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.10`, `003.2` and `009.2` to
   twin: override a blocked completion with a reason (07).
 - `apps/web/e2e/tests/office/completion-gates-create.spec.ts` and mobile twin:
   create with criteria; workspace default prefill (08).
+- `apps/web/e2e/tests/office/completion-gates-approval.spec.ts` and mobile
+  twin: a task with CI and human approval is asked after CI passes, approved
+  from the Inbox, and completes; a push re-asks; Send back wakes the worker (10).
 
 ## Work orders
 
@@ -260,6 +333,7 @@ Maps to `AC-OFFICE-COMPLETION-GATES-008.1` to `.10`, `003.2` and `009.2` to
 - [x] [Task 07: Gate status and recovery UI](task-07-gate-status-ui.md)
 - [x] [Task 08: Criteria in task creation and settings UI](task-08-creation-ui.md)
 - [x] [Task 09: People act on exceptions](task-09-people-act-on-exceptions.md)
+- [x] [Task 10: Human approval criterion](task-10-human-approval.md)
 
 ## Verification results
 

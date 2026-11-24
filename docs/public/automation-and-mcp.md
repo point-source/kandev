@@ -1184,11 +1184,13 @@ $KANDEV_CLI kandev task create \
 
 `task create` accepts completion criteria that Kandev verifies itself:
 
-- `--require github-check` or `--require review` (repeatable). Omit the flag
-  to apply the workspace default; an Office run cannot remove a default.
+- `--require github-check`, `--require review` or `--require approval`
+  (repeatable). An approval passes only when a person approves the PR head
+  commit. Omit the flag to apply the workspace default; an Office run cannot
+  remove a default.
 - `--protect GLOB` (repeatable) protects paths for `github-check`.
 - `--rework-limit N` and `--verification-limit N` set limits within the
-  workspace ceiling.
+  workspace ceiling. An approval takes only the rework limit.
 - `--review-wait-limit DURATION` (for example `2h`) sets how long a parked
   reviewer may wait before a person is asked. Unset waits indefinitely.
 

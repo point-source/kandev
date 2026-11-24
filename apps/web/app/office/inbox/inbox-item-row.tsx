@@ -44,6 +44,10 @@ const FALLBACK_TYPE_CONFIG: Record<string, { icon: typeof IconShieldCheck; label
   task_review_request: { icon: IconEye, labelKey: "office:reviewRequest" },
   provider_degraded: { icon: IconRoute, labelKey: "office:providerDegraded" },
   completion_gate_hold: { icon: IconPlayerPause, labelKey: "office:completionGatesTitle" },
+  completion_gate_approval: {
+    icon: IconShieldCheck,
+    labelKey: "office:completionGatesInboxApprovalNeeded",
+  },
 };
 
 // taskReviewHref returns the deep link for a `task_review_request`

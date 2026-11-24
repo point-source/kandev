@@ -89,16 +89,22 @@ func (s *Service) ReviewSeatLaunched(ctx context.Context, taskID string) {
 // sweepReviewWaits holds every review that has waited for a parked reviewer
 // longer than its review wait limit. Reviews without a limit wait.
 func (s *Service) sweepReviewWaits(ctx context.Context, now time.Time) {
+	s.forEachUnmetReview(ctx, "", func(taskID string) { s.holdExpiredReviewWait(ctx, taskID, now) })
+}
+
+// forEachUnmetReview visits, in task order, every task whose review is unmet,
+// limited to reviews with the given hold kind when one is set.
+func (s *Service) forEachUnmetReview(ctx context.Context, holdKind string, visit func(taskID string)) {
 	after := ""
 	for {
 		ids, err := s.gates.ListTaskIDsWithUnmetCompletionCriteria(ctx, models.TaskCompletionSweepQuery{
-			Kind: models.TaskCompletionCriterionReview, AfterTaskID: after, Limit: sweepBatchSize,
+			Kind: models.TaskCompletionCriterionReview, HoldKind: holdKind, AfterTaskID: after, Limit: sweepBatchSize,
 		})
 		if err != nil || len(ids) == 0 {
 			return
 		}
 		for _, taskID := range ids {
-			s.holdExpiredReviewWait(ctx, taskID, now)
+			visit(taskID)
 		}
 		if len(ids) < sweepBatchSize {
 			return
@@ -121,22 +127,7 @@ func (s *Service) sweepReviewerSeats(ctx context.Context) {
 	if s.seater == nil {
 		return
 	}
-	after := ""
-	for {
-		ids, err := s.gates.ListTaskIDsWithUnmetCompletionCriteria(ctx, models.TaskCompletionSweepQuery{
-			Kind: models.TaskCompletionCriterionReview, HoldKind: HoldNoReviewerAvailable, AfterTaskID: after, Limit: sweepBatchSize,
-		})
-		if err != nil || len(ids) == 0 {
-			return
-		}
-		for _, taskID := range ids {
-			s.reseatReviewer(ctx, taskID)
-		}
-		if len(ids) < sweepBatchSize {
-			return
-		}
-		after = ids[len(ids)-1]
-	}
+	s.forEachUnmetReview(ctx, HoldNoReviewerAvailable, func(taskID string) { s.reseatReviewer(ctx, taskID) })
 }
 
 func (s *Service) reseatReviewer(ctx context.Context, taskID string) {
@@ -183,11 +174,16 @@ func (s *Service) holdReview(ctx context.Context, taskID string, review models.T
 	if links, err := s.prs.LinkedPRs(ctx, taskID); err == nil && len(links) > 0 {
 		heads = HeadsRevision(links)
 	}
-	outcome, err := s.gates.ApplyTaskCompletionControl(ctx, models.TaskCompletionControlChange{
+	change := models.TaskCompletionControlChange{
 		TaskID: taskID, CriterionID: review.ID, CriterionRevision: review.CriterionRevision,
 		Action: models.TaskCompletionControlHold, HoldKind: kind, Detail: []string{cause}, SubjectRevision: heads,
 		ActorKind: "system", ActorID: reviewerActor,
-	})
+	}
+	if kind == HoldReviewWaitLimitReached {
+		// The reviewer may have launched since the sweep read the wait.
+		change.RequireResultReason = ReasonWaitingForReviewer
+	}
+	outcome, err := s.gates.ApplyTaskCompletionControl(ctx, change)
 	if err != nil {
 		s.logger.Warn("completion gate review hold failed", zap.String("task_id", taskID), zap.String("hold_kind", kind), zap.Error(err))
 		return

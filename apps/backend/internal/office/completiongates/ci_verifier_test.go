@@ -59,7 +59,7 @@ func TestCIVerifierDropsObservationOfAMovedHead(t *testing.T) {
 	}
 }
 
-func TestCIVerifierHoldsProtectedChangeAndSkipsCapHolds(t *testing.T) {
+func TestCIVerifierHoldsProtectedChangeAndSkipsLimitHolds(t *testing.T) {
 	verifier, gates, prs := setupCI(t, "tests/**")
 	prs.checks["pr-1"] = CheckObservation{HeadSHA: "h1", State: checkStateSuccess, Observed: 1}
 	prs.files["pr-1"] = FilesObservation{HeadSHA: "h1", Paths: []string{"tests/x_test.go"}, Complete: true}

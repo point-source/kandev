@@ -104,6 +104,9 @@ func TestAParkThatOutlastsTheWaitLimitHolds(t *testing.T) {
 	if review := reviewState(gates); review.HoldKind != HoldReviewWaitLimitReached {
 		t.Fatalf("review = %+v", review)
 	}
+	if hold := gates.controls[len(gates.controls)-1]; hold.RequireResultReason != ReasonWaitingForReviewer {
+		t.Fatalf("wait hold is not conditioned on the wait it observed: %+v", hold)
+	}
 	svc.ReviewSeatLaunched(context.Background(), "task-1")
 	if review := reviewState(gates); review.HoldKind != "" {
 		t.Fatalf("launch left the wait hold: %+v", review)

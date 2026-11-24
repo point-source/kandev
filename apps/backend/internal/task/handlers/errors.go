@@ -367,7 +367,7 @@ func isValidationError(err error) bool {
 		errors.Is(err, service.ErrWorkspaceIdleTimeoutInvalid) {
 		return true
 	}
-	if errors.Is(err, service.ErrInvalidWorkflowChange) {
+	if errors.Is(err, service.ErrInvalidWorkflowChange) || errors.Is(err, taskrepository.ErrTaskCompletionCriteriaInvalid) {
 		return true
 	}
 	if errors.Is(err, service.ErrTaskTitleTooLong) {

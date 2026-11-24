@@ -23,6 +23,7 @@ import { Input } from "@kandev/ui/input";
 import { Label } from "@kandev/ui/label";
 import { Textarea } from "@kandev/ui/textarea";
 import { useResponsiveBreakpoint } from "@/hooks/use-responsive-breakpoint";
+import { actionErrorKey } from "@/lib/completion-gates/copy-keys";
 
 export type CompletionActionValues = { reason: string; rework: number; attempts: number };
 
@@ -75,7 +76,7 @@ function ActionBody({ reasonRequired, limit, confirmLabel, onConfirm, onOpenChan
   const [reason, setReason] = useState("");
   const [limitValue, setLimitValue] = useState("");
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const raised = Number(limitValue) || 0;
   const limits = {
     rework: limit === "rework" ? raised : 0,
@@ -85,12 +86,12 @@ function ActionBody({ reasonRequired, limit, confirmLabel, onConfirm, onOpenChan
 
   const submit = async () => {
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     try {
       await onConfirm({ reason: reason.trim(), ...limits });
       onOpenChange(false);
-    } catch {
-      setFailed(true);
+    } catch (error) {
+      setFailed(actionErrorKey(error));
     } finally {
       setBusy(false);
     }
@@ -128,7 +129,7 @@ function ActionBody({ reasonRequired, limit, confirmLabel, onConfirm, onOpenChan
       </div>
       {failed && (
         <p role="alert" className="text-sm text-destructive">
-          {t("office:completionGatesActionFailed")}
+          {t(failed)}
         </p>
       )}
       <Footer>

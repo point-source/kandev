@@ -64,15 +64,22 @@ func (s *Service) handleTaskMoved(ctx context.Context, payload map[string]any) {
 		return
 	}
 	s.Router.OnTaskMoved(ctx, taskID, fromStepID, transitionKey(payload["step_transition_id"]))
+	s.Router.EvaluateApproval(ctx, taskID)
 }
 
 // handleTaskUpdated routes workflow-engine moves, which publish task.updated
 // rather than task.moved. The task's newest ledger row names the source step.
+// Every Office task update also re-evaluates the approval, since criteria
+// changes and attested evidence publish task.updated without a move.
 func (s *Service) handleTaskUpdated(ctx context.Context, payload map[string]any) {
 	office, _ := payload["is_from_office"].(bool)
 	taskID, _ := payload["task_id"].(string)
+	if !office || taskID == "" {
+		return
+	}
+	defer s.Router.EvaluateApproval(ctx, taskID)
 	id := transitionID(payload["step_transition_id"])
-	if !office || taskID == "" || id <= 0 || s.ledger == nil || !s.transitions.claim(taskID, id) {
+	if id <= 0 || s.ledger == nil || !s.transitions.claim(taskID, id) {
 		return
 	}
 	rows, _, err := s.ledger.ListTaskStepTransitions(ctx, taskID, 1, "")

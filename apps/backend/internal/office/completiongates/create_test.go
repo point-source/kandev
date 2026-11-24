@@ -10,9 +10,13 @@ import (
 	taskservice "github.com/kandev/kandev/internal/task/service"
 )
 
-type fakeStages struct{ review bool }
+type fakeStages struct{ review, noStepAfterWork bool }
 
 func (f fakeStages) HasReviewStage(context.Context, string) (bool, error) { return f.review, nil }
+
+func (f fakeStages) HasStepAfterWork(context.Context, string) (bool, error) {
+	return !f.noStepAfterWork, nil
+}
 
 func newCreateService(t *testing.T, defaults []officemodels.CompletionGateCriterionSpec, review bool) *Service {
 	t.Helper()

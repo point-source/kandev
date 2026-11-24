@@ -64,3 +64,17 @@ func TestEffectiveLimitsRoute(t *testing.T) {
 		t.Fatalf("limits = %+v", response.Limits)
 	}
 }
+
+// @covers AC-OFFICE-COMPLETION-GATES-008.9, AC-OFFICE-COMPLETION-GATES-004.6
+func TestPersonActionsRefuseAgentRunTokens(t *testing.T) {
+	svc, _ := newControlService(t, ciCriterion())
+	body := `{"expected_criterion_revision":1,"expected_subject_revision":"pr-1@h1","reason":"agent"}`
+	for _, action := range []string{"allow", "send-back", "accept"} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/office/tasks/task-1/completion-gate/criteria/ci/"+action, strings.NewReader(body))
+		recorder := httptest.NewRecorder()
+		mountedHandler(t, svc, true).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "completion_control_requires_person") {
+			t.Errorf("agent %s = %d %s", action, recorder.Code, recorder.Body.String())
+		}
+	}
+}

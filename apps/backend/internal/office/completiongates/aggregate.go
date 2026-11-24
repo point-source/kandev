@@ -38,12 +38,14 @@ type ciOutcome struct {
 
 // aggregateCI applies the CI rules across every linked PR, first match wins.
 func aggregateCI(input ciInput) ciOutcome {
-	if failing := failingCheckNames(input.checks); len(failing) > 0 {
-		return ciOutcome{result: models.TaskCompletionResultFail, reason: ReasonChecksFailed, detail: failing}
-	}
+	// A protected change needs a person before anything else, so a failing
+	// check never sends it back to the worker unseen.
 	allowed := input.criterion.ProtectedAllowedRevision != "" && input.criterion.ProtectedAllowedRevision == input.revision
 	if matched := protectedMatches(input.criterion.Config.ProtectedPaths, input.files); len(matched) > 0 && !allowed {
 		return ciOutcome{result: models.TaskCompletionResultPending, reason: HoldProtectedFilesChanged, detail: matched, hold: HoldProtectedFilesChanged}
+	}
+	if failing := failingCheckNames(input.checks); len(failing) > 0 {
+		return ciOutcome{result: models.TaskCompletionResultFail, reason: ReasonChecksFailed, detail: failing}
 	}
 	// Running checks decide nothing yet, so an incomplete file list waits for
 	// them instead of spending an attempt.

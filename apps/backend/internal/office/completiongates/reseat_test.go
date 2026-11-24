@@ -28,8 +28,9 @@ func newReseatService(t *testing.T, cause string, seater *fakeSeater) (*Service,
 	svc := NewService(Dependencies{
 		Gates: gates, PRs: newFakePRs(), Tasks: fakeTasks{assignee: "worker"}, Reviews: &fakeReviews{},
 		Settings: &fakeSettings{settings: officemodels.CompletionGateSettings{}}, Agents: fakeAgents{ceo: "ceo"},
-		Runs: &payloadRuns{}, Held: fakeHeld{}, Seater: seater, Logger: newTestLogger(t),
+		Runs: &payloadRuns{}, Held: fakeHeld{}, Logger: newTestLogger(t),
 	})
+	svc.SetReviewerSeater(seater)
 	return svc, gates
 }
 

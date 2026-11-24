@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,6 +30,7 @@ func TestHTTPCompletionGateHostErrorsHaveStableCodes(t *testing.T) {
 		{repository.ErrTaskCompletionVerifierReserved, http.StatusConflict, "task_completion_verifier_reserved"},
 		{repository.ErrTaskCompletionSelfVerification, http.StatusForbidden, "task_completion_self_verification"},
 		{&service.CompletionCriteriaRefusal{Code: "completion_criteria_requires_review_stage"}, http.StatusBadRequest, "completion_criteria_requires_review_stage"},
+		{fmt.Errorf("%w: a task carries at most one approval criterion", repository.ErrTaskCompletionCriteriaInvalid), http.StatusBadRequest, "invalid_completion_gate"},
 	} {
 		response := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(response)
