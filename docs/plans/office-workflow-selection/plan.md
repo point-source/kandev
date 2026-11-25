@@ -125,7 +125,9 @@ illustrative.
 | New Office tasks use the selected workflow. Tasks already created keep    |
 | theirs.                                                                   |
 |                                                                           |
-| Office workflow  [ Office Default (copy)                          v ]     |
+| +-----------------------------------------------------------------------+ |
+| | Office workflow                    [ Office Default (copy)        v ] | |
+| +-----------------------------------------------------------------------+ |
 |                                                                           |
 | +-----------------------------------------------------------------------+ |
 | | Office Default   [Built-in] [Read-only]            [Duplicate] [...]  | |
@@ -147,7 +149,9 @@ Shown under the picker after a refused choice; the picker keeps the previous
 value. AC-004.4, AC-005.6.
 
 ```text
-Office workflow  [ Office Default (copy)                          v ]
++-------------------------------------------------------------------------+
+| Office workflow                      [ Office Default (copy)        v ] |
++-------------------------------------------------------------------------+
 +-------------------------------------------------------------------------+
 | ! "Lean office" can't be the Office workflow                           |
 |  - Step "Ship" is the last step but doesn't complete the task. Turn on |
@@ -173,7 +177,8 @@ AC-002.3.
 ### UI-04: Office step editor (desktop)
 
 Step panel of an Office copy. Stage type replaces the hold checkbox; Office
-events is an advanced section. AC-003.1 to 003.3.
+events is an unframed disclosure inside the step panel, so the panel stays
+the only frame; the box below is the text area itself. AC-003.1 to 003.3.
 
 ```text
 +-- Step: Verify ---------------------------------------------------------+

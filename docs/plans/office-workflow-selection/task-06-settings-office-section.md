@@ -129,3 +129,4 @@ Tasks 03, 04, 05.
 - `pnpm run i18n:check`, `pnpm run i18n:ratchet`, `pnpm run typecheck`, `pnpm run lint`: pass.
 - Deviation: the Kanban list also keeps excluding `style: office` workflows so the existing export E2E contract holds.
 - Review fixes: Office save refusals and version conflicts show their localized reasons in a toast; Delete is disabled with the named reason for the built-in and selected workflow, and Migrate & Delete re-reads the selection before moving tasks; saves send the loaded workflow and step versions.
+- Layout alignment with [DESIGN.md Settings](../../../DESIGN.md#settings) (#5504): the picker is a `SettingsRow` in one bordered group under the section heading, and the refusal alert sits below that group. Desktop and phone Office and settings-composition E2E specs pass.

@@ -110,7 +110,8 @@ function SettingsGroupHeader({
   );
 }
 
-function SettingsGroupContent({
+/** The bordered (or frameless) body of a group, for content under an existing heading. */
+export function SettingsGroupContent({
   frame,
   isDirty,
   contentClassName,

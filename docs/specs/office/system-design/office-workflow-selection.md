@@ -342,8 +342,11 @@ New `app/settings/workspace/office-workflows-section.tsx`, rendered only when
 
 - **Picker.** `Select` bound to `GET .../office-workflow`; choosing calls the
   PUT. Disabled unless `hasScope(workspace.scopes, SCOPE.workspaceManage)`.
-  A 422 renders the localized problem list in an inline `Alert` under the
-  picker and keeps the previous value.
+  It is a `SettingsRow` in one bordered `SettingsGroupContent` under the
+  section heading, the preference-group pattern from
+  [Layout in DESIGN.md](../../../../DESIGN.md#settings). A 422 renders the
+  localized problem list in an inline `Alert` under that group and keeps the
+  previous value.
 - **List.** One `WorkflowCard` per Office workflow. The built-in shows a
   **Built-in** badge, read-only, with Duplicate and Export. Copies are
   editable, with Duplicate, Export and Delete. The selected workflow shows a
@@ -360,7 +363,8 @@ New `app/settings/workspace/office-workflows-section.tsx`, rendered only when
 - **Import** stays the tab-level action; Office files land in the Office
   section after reload.
 
-Phone (≤390px): the picker spans full width above the list; badges wrap below
+Phone (≤390px): the picker row stacks its label above a full-width control
+with a 44px target, above the list; badges wrap below
 the workflow name; card actions use the existing overflow menu; the problem
 list wraps without horizontal scroll (AC-002.6, AC-004.6).
 

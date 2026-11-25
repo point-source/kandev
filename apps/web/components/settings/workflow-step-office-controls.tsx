@@ -140,8 +140,8 @@ function StepOfficeEventsEditor({ step, steps, onUpdate, readOnly }: OfficeStepC
   const { text, error, change } = useOfficeEventsText(step, steps, onUpdate);
   const id = `${step.id}-office-events`;
   return (
-    <details className="rounded-md border p-3" data-testid="office-events-editor">
-      <summary className="cursor-pointer text-sm font-medium">
+    <details data-testid="office-events-editor">
+      <summary className="inline-flex w-fit cursor-pointer items-center text-sm font-medium max-md:min-h-11 [@media(pointer:coarse)]:min-h-11">
         {t("workflows:officeEventsTitle")}
       </summary>
       <div className="mt-2 grid gap-1.5">

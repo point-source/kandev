@@ -90,4 +90,15 @@ describe("OfficeWorkflowsSection", () => {
     expect(screen.getByTestId("office-workflow-select").hasAttribute("disabled")).toBe(true);
     expect(screen.getByText(i18n.t("workflows:officeWorkflowPickerNoAccess"))).toBeTruthy();
   });
+
+  // @covers AC-OFFICE-WORKFLOW-SELECT-002.1
+  it("puts the picker in a settings row inside one bordered group", async () => {
+    render(
+      <OfficeWorkflowsSection workspace={workspace} officeWorkflows={[builtIn, copy]} canManage />,
+    );
+    await waitFor(() => expect(getOfficeWorkflowState).toHaveBeenCalled());
+    const row = screen.getByTestId("office-workflow-picker");
+    expect(row.getAttribute("data-settings-row")).toBe("true");
+    expect(row.closest('[data-settings-group-card="true"]')).not.toBeNull();
+  });
 });

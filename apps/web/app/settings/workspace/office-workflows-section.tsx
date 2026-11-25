@@ -4,8 +4,8 @@ import { useTranslation } from "react-i18next";
 import { IconAlertTriangle, IconBuildingSkyscraper, IconInfoCircle } from "@tabler/icons-react";
 import { Alert, AlertDescription } from "@kandev/ui/alert";
 import { Badge } from "@kandev/ui/badge";
-import { Label } from "@kandev/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@kandev/ui/select";
+import { SettingsGroupContent, SettingsRow } from "@/components/settings/settings-group";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { useRouter } from "@/lib/routing/client-router";
 import {
@@ -47,37 +47,39 @@ function OfficeWorkflowPicker({
     if (outcome === "selected") onSelected(workflowId, candidate?.is_office ?? true);
   };
   return (
-    <div className="grid gap-1.5" data-testid="office-workflow-picker">
-      <Label htmlFor="office-workflow-select">{t("workflows:officeWorkflowPickerLabel")}</Label>
-      <Select
-        value={selected}
-        onValueChange={(value) => void handleChange(value)}
-        disabled={!canManage || selection.selecting || candidates.length === 0}
-      >
-        <SelectTrigger
-          id="office-workflow-select"
-          className="w-full md:max-w-md"
-          data-testid="office-workflow-select"
-        >
-          <SelectValue placeholder={t("workflows:officeWorkflowPickerPlaceholder")} />
-        </SelectTrigger>
-        <SelectContent>
-          {candidates.map((candidate) => (
-            <SelectItem key={candidate.id} value={candidate.id}>
-              {candidate.built_in
-                ? t("workflows:officeWorkflowBuiltInOption", { name: candidate.name })
-                : candidate.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {!canManage && (
-        <p className="text-xs text-muted-foreground">
-          {t("workflows:officeWorkflowPickerNoAccess")}
-        </p>
-      )}
-      <OfficeWorkflowRefusal selection={selection} />
-    </div>
+    <SettingsGroupContent frame="card" isDirty={false}>
+      <SettingsRow
+        label={t("workflows:officeWorkflowPickerLabel")}
+        description={canManage ? undefined : t("workflows:officeWorkflowPickerNoAccess")}
+        controlId="office-workflow-select"
+        data-testid="office-workflow-picker"
+        controlWrapperClassName="md:w-72"
+        control={
+          <Select
+            value={selected}
+            onValueChange={(value) => void handleChange(value)}
+            disabled={!canManage || selection.selecting || candidates.length === 0}
+          >
+            <SelectTrigger
+              id="office-workflow-select"
+              className="w-full"
+              data-testid="office-workflow-select"
+            >
+              <SelectValue placeholder={t("workflows:officeWorkflowPickerPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              {candidates.map((candidate) => (
+                <SelectItem key={candidate.id} value={candidate.id}>
+                  {candidate.built_in
+                    ? t("workflows:officeWorkflowBuiltInOption", { name: candidate.name })
+                    : candidate.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+      />
+    </SettingsGroupContent>
   );
 }
 
@@ -85,7 +87,7 @@ function OfficeWorkflowRefusal({ selection }: { selection: OfficeWorkflowSelecti
   const { t } = useTranslation();
   if (selection.problems.length === 0 && !selection.error) return null;
   return (
-    <Alert variant="destructive" className="mt-2" data-testid="office-workflow-refusal">
+    <Alert variant="destructive" data-testid="office-workflow-refusal">
       <IconAlertTriangle className="h-4 w-4" />
       <AlertDescription>
         <p className="font-medium">{t("workflows:officeWorkflowRefusalTitle")}</p>
@@ -182,6 +184,7 @@ export function OfficeWorkflowsSection({
           canManage={canManage}
           onSelected={handleSelected}
         />
+        <OfficeWorkflowRefusal selection={selection} />
         <WorkflowList
           workflowItems={office.items}
           savedWorkflowItems={office.savedItems}

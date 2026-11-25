@@ -113,4 +113,10 @@ describe("OfficeStepControls", () => {
     expect(screen.getByTestId(TEXTAREA).hasAttribute("disabled")).toBe(true);
     expect(screen.getByTestId("step-stage-type-select").hasAttribute("disabled")).toBe(true);
   });
+
+  it("opens events as a plain disclosure without a nested frame", () => {
+    render(<OfficeStepControls step={review} steps={steps} onUpdate={vi.fn()} readOnly={false} />);
+    const disclosure = screen.getByTestId("office-events-editor");
+    expect(disclosure.className).not.toMatch(/\bborder\b/);
+  });
 });
